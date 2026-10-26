@@ -4,115 +4,34 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AP Inbox</title>
+<link rel="stylesheet" href="assets/app.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js"></script>
 <script src="config.js"></script>
-<style>
-  :root {
-    --bg: #f6f7f9; --panel: #fff; --text: #14171f; --muted: #5d6573; --line: #e3e6eb;
-    --accent: #2357d9; --accent-text: #fff; --danger: #b42318; --danger-bg: #fdecea;
-    --warn: #8a5300; --warn-bg: #fff4e0; --ok: #116b3a; --ok-bg: #e6f5ec; --chip: #eef1f6;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #101318; --panel: #181c23; --text: #e8ebf0; --muted: #9aa3b2; --line: #2a303a;
-      --accent: #6b93ff; --accent-text: #0b0e13; --danger: #ff8a80; --danger-bg: #3a1714;
-      --warn: #ffc56b; --warn-bg: #33240c; --ok: #7ad7a0; --ok-bg: #12301f; --chip: #232934;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI", system-ui, sans-serif; }
-  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
-           padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
-  header h1 { font-size: 17px; margin: 0; }
-  main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
-  h2 { font-size: 15px; margin: 0 0 12px; }
-  button, .btn { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
-                 padding: 6px 12px; border-radius: 7px; cursor: pointer; }
-  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-  button.danger { color: var(--danger); }
-  button:disabled { opacity: .5; cursor: default; }
-  input, select, textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
-                            border-radius: 7px; padding: 6px 8px; width: 100%; }
-  label { display: grid; gap: 4px; color: var(--muted); font-size: 13px; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
-  .muted { color: var(--muted); }
-  .hidden { display: none !important; }
-  .tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
-  .tabs button[aria-selected="true"] { background: var(--chip); font-weight: 600; }
-  .item { border: 1px solid var(--line); border-radius: 9px; padding: 12px; margin-bottom: 10px; }
-  .item.flagged { border-color: var(--danger); background: var(--danger-bg); }
-  .item h3 { font-size: 14px; margin: 0; }
-  .chip { display: inline-block; padding: 1px 8px; border-radius: 99px; background: var(--chip); font-size: 12px; }
-  .chip.flagged { background: var(--danger); color: #fff; }
-  .chip.action_needed { background: var(--warn-bg); color: var(--warn); }
-  .chip.done { background: var(--ok-bg); color: var(--ok); }
-  .next { margin: 8px 0 4px; }
-  .signals { color: var(--danger); font-size: 13px; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 8px; }
-  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .table-wrap { overflow-x: auto; }
-  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
-           padding: 8px 14px; border-radius: 8px; max-width: calc(100% - 32px); }
-  details summary { cursor: pointer; font-weight: 600; }
-</style>
 </head>
 <body>
-<header>
-  <h1>AP Inbox</h1>
-  <div class="row" id="topbar" hidden>
-    <select id="mailboxSelect" aria-label="Mailbox" style="width:auto"></select>
-    <button class="primary" id="runNow">Process inbox now</button>
-    <button id="signOut">Sign out</button>
-  </div>
-</header>
+<header id="appHeader"></header>
 
 <main>
-  <section id="signin" class="hidden">
-    <h2>Sign in</h2>
-    <form id="signinForm" class="row">
-      <input type="email" id="signinEmail" placeholder="you@company.com" required style="max-width:320px">
-      <button class="primary">Email me a sign-in link</button>
-    </form>
+  <section id="empty" class="hidden">
+    <h1>Connect your first mailbox</h1>
+    <p class="muted">AP Inbox reads the mailbox that receives your invoices, bills and statements, sorts every email and
+      tells you what to do next. Connect Microsoft 365, Gmail or any other provider to get started.</p>
+    <a class="btn primary" href="connect.html">Connect a mailbox</a>
   </section>
 
-  <section id="connect" class="hidden">
-    <details id="connectDetails">
-      <summary>Connect a mailbox</summary>
-      <div class="grid2" style="margin-top:12px">
-        <div>
-          <p class="muted">Sign in to the mailbox itself.</p>
-          <div class="row">
-            <button data-oauth="microsoft">Microsoft 365 / Outlook</button>
-            <button data-oauth="gmail">Gmail / Google Workspace</button>
-          </div>
-        </div>
-        <form id="appForm">
-          <p class="muted">Shared Microsoft 365 mailbox (app permissions, set up by your admin).</p>
-          <div class="row"><input type="email" name="email" placeholder="ap@company.com" required style="flex:1">
-          <button>Connect</button></div>
-        </form>
+  <section id="toolbar" class="hidden">
+    <div class="row between">
+      <div class="row">
+        <select id="mailboxSelect" aria-label="Mailbox" style="width:auto; max-width:100%"></select>
+        <a class="btn" href="connect.html">+ Add mailbox</a>
       </div>
-      <form id="imapForm" style="margin-top:16px">
-        <p class="muted">Any other provider over IMAP + SMTP (SMTP must use port 465).</p>
-        <div class="grid2">
-          <label>Email address<input name="email" type="email" required></label>
-          <label>Username (if different)<input name="username"></label>
-          <label>Password / app password<input name="password" type="password" required></label>
-          <label>IMAP host<input name="imap_host" required placeholder="imap.example.com"></label>
-          <label>IMAP port<input name="imap_port" value="993"></label>
-          <label>SMTP host<input name="smtp_host" required placeholder="smtp.example.com"></label>
-          <label>SMTP port<input name="smtp_port" value="465"></label>
-        </div>
-        <button style="margin-top:10px">Connect IMAP mailbox</button>
-      </form>
-    </details>
+      <button class="primary" id="runNow">Process inbox now</button>
+    </div>
+    <p class="muted small" id="lastRun" style="margin:8px 0 0"></p>
   </section>
 
   <section id="settings" class="hidden">
-    <details>
+    <details id="settingsDetails">
       <summary>Mailbox settings</summary>
       <form id="settingsForm" style="margin-top:12px">
         <div class="grid2">
@@ -121,9 +40,13 @@
           <label>Look back (hours)<input name="lookback_hours" type="number" min="1" max="744"></label>
           <label>Processed label / category<input name="processed_label"></label>
         </div>
-        <label style="margin-top:12px; flex-direction:row; display:flex; gap:8px; align-items:center; color:var(--text)">
-          <input type="checkbox" name="auto_forward_invoices" style="width:auto">
+        <label class="check" style="margin-top:12px">
+          <input type="checkbox" name="auto_forward_invoices">
           Forward clean invoices to Smart AP automatically (otherwise you confirm each one here)
+        </label>
+        <label class="check" style="margin-top:6px">
+          <input type="checkbox" name="active">
+          Include this mailbox in the scheduled run
         </label>
         <div class="grid2" style="margin-top:12px">
           <label>Entities / properties we manage (one per line; blank = don't check)<textarea name="managed_entities" rows="3"></textarea></label>
@@ -131,22 +54,19 @@
         </div>
         <div class="row" style="margin-top:12px">
           <button class="primary">Save settings</button>
-          <button type="button" class="danger" id="disconnect">Disconnect mailbox</button>
+          <a class="btn" id="reconnect" href="connect.html">Reconnect mailbox</a>
         </div>
       </form>
     </details>
   </section>
 
   <section id="items" class="hidden">
-    <div class="row" style="justify-content:space-between">
-      <h2>Action items</h2>
-      <span class="muted" id="lastRun"></span>
-    </div>
+    <h2>Action items</h2>
     <div class="tabs" role="tablist">
       <button role="tab" data-tab="open" aria-selected="true">To do</button>
-      <button role="tab" data-tab="done">Done</button>
-      <button role="tab" data-tab="info">No action</button>
-      <button role="tab" data-tab="all">All</button>
+      <button role="tab" data-tab="done" aria-selected="false">Done</button>
+      <button role="tab" data-tab="info" aria-selected="false">No action</button>
+      <button role="tab" data-tab="all" aria-selected="false">All</button>
     </div>
     <div id="itemList"></div>
   </section>
@@ -163,77 +83,35 @@
     </details>
   </section>
 </main>
-<div id="toast" class="hidden" role="status"></div>
 
-<script>
-const sb = supabase.createClient(window.APP_CONFIG.SUPABASE_URL, window.APP_CONFIG.SUPABASE_ANON_KEY);
-const fnUrl = (name) => `${window.APP_CONFIG.SUPABASE_URL}/functions/v1/${name}`;
-const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const money = (n, cur) => n == null ? "" : new Intl.NumberFormat("en-US", { style: "currency", currency: /^[A-Z]{3}$/.test(cur ?? "") ? cur : "USD" }).format(n);
-const fmtDate = (s) => s ? new Date(s).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "";
+<script type="module">
+import { $, callFn, esc, fmtDate, money, PROVIDER_LABEL, renderHeader, requireSession, sb, toast } from "./assets/common.js";
+
 const LABEL = { invoice: "Invoice", utility_bill: "Portal bill", vendor_info: "Vendor info", statement: "Statement", other: "Other" };
 const RECON = { found_in_ledger: "In AP system", received_by_email: "Received by email", amount_mismatch: "Amount mismatch", missing: "Missing" };
+
+const session = await requireSession();
+renderHeader("dashboard", session);
 
 let mailboxes = [];
 let current = null;
 let tab = "open";
 
-function toast(msg) {
-  const t = $("toast"); t.textContent = msg; t.classList.remove("hidden");
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.add("hidden"), 5000);
-}
-
-async function callFn(name, body) {
-  const { data: { session } } = await sb.auth.getSession();
-  const res = await fetch(fnUrl(name), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}`, apikey: window.APP_CONFIG.SUPABASE_ANON_KEY },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
-  return data;
-}
-
-async function init() {
-  const params = new URLSearchParams(location.search);
-  if (params.get("connected")) toast(`Connected ${params.get("connected")}`);
-  if (params.get("connect_error")) toast(`Could not connect: ${params.get("connect_error")}`);
-  if (params.has("connected") || params.has("connect_error")) history.replaceState(null, "", location.pathname);
-
-  const { data: { session } } = await sb.auth.getSession();
-  render(!!session);
-  sb.auth.onAuthStateChange((_e, s) => render(!!s));
-}
-
-async function render(signedIn) {
-  $("signin").classList.toggle("hidden", signedIn);
-  $("topbar").hidden = !signedIn;
-  for (const id of ["connect", "settings", "items", "ledger"]) $(id).classList.toggle("hidden", !signedIn);
-  if (!signedIn) return;
-  await loadMailboxes();
-  await loadLedgerCount();
-}
-
 async function loadMailboxes() {
   const { data, error } = await sb.from("mailboxes").select("*").order("created_at");
   if (error) return toast(error.message);
   mailboxes = data;
-  const sel = $("mailboxSelect");
-  sel.innerHTML = mailboxes.map((m) => `<option value="${m.id}">${esc(m.email_address)} (${esc(m.provider)})</option>`).join("");
-  if (!mailboxes.length) {
-    current = null;
-    $("connectDetails").open = true;
-    $("settings").classList.add("hidden");
-    $("runNow").disabled = true;
-    $("itemList").innerHTML = `<p class="muted">Connect a mailbox to get started.</p>`;
-    return;
-  }
-  $("runNow").disabled = false;
-  current = mailboxes.find((m) => m.id === current?.id) ?? mailboxes[0];
-  sel.value = current.id;
-  $("settings").classList.remove("hidden");
+  const has = mailboxes.length > 0;
+  $("empty").classList.toggle("hidden", has);
+  for (const id of ["toolbar", "settings", "items", "ledger"]) $(id).classList.toggle("hidden", !has);
+  if (!has) return;
+
+  const wanted = new URLSearchParams(location.search).get("mailbox");
+  current = mailboxes.find((m) => m.id === (current?.id ?? wanted)) ?? mailboxes[0];
+  $("mailboxSelect").innerHTML = mailboxes.map((m) =>
+    `<option value="${m.id}">${esc(m.email_address)} · ${esc(PROVIDER_LABEL[m.provider])}</option>`).join("");
+  $("mailboxSelect").value = current.id;
+  if (location.hash === "#settings") $("settingsDetails").open = true;
   fillSettings();
   await loadItems();
 }
@@ -245,8 +123,11 @@ function fillSettings() {
   f.lookback_hours.value = current.lookback_hours;
   f.processed_label.value = current.processed_label;
   f.auto_forward_invoices.checked = current.auto_forward_invoices;
+  f.active.checked = current.active;
   f.managed_entities.value = (current.managed_entities ?? []).join("\n");
   f.portal_vendors.value = (current.portal_vendors ?? []).map((p) => `${p.name} | ${p.portal}`).join("\n");
+  $("reconnect").href = `connect.html?provider=${current.provider}`;
+  if (!current.smart_ap_address) $("settingsDetails").open = true;
 }
 
 async function loadItems() {
@@ -256,7 +137,7 @@ async function loadItems() {
   $("lastRun").textContent = r
     ? `Last run ${fmtDate(r.started_at)} ${new Date(r.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: ${r.status}` +
       (r.status === "failed" ? ` - ${r.error}` : r.report_sent_to ? ` · report sent to ${r.report_sent_to}` : "")
-    : "Not run yet";
+    : "Not run yet. Click \"Process inbox now\" or wait for the scheduled run.";
 
   let q = sb.from("emails").select("*, statement_lines(*)").eq("mailbox_id", current.id).neq("status", "skipped");
   if (tab === "open") q = q.in("status", ["flagged", "action_needed"]);
@@ -276,7 +157,7 @@ function itemHtml(e) {
   const canForward = e.category === "invoice" && !e.forwarded_at && e.status !== "done";
   const open = e.status === "action_needed" || e.status === "flagged";
   return `<div class="item ${e.status === "flagged" ? "flagged" : ""}">
-    <div class="row" style="justify-content:space-between">
+    <div class="row between">
       <h3>${esc(LABEL[e.category])} · ${esc(e.vendor_name ?? e.from_address)}</h3>
       <span class="chip ${e.status}">${e.status === "action_needed" ? "To do" : e.status === "flagged" ? "Possible fraud" : e.status === "done" ? "Done" : "No action"}</span>
     </div>
@@ -305,14 +186,12 @@ async function loadLedgerCount() {
 
 // --- events ------------------------------------------------------------------------------
 
-$("signinForm").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const { error } = await sb.auth.signInWithOtp({ email: $("signinEmail").value, options: { emailRedirectTo: location.href } });
-  toast(error ? error.message : "Check your email for the sign-in link.");
-});
-
-$("signOut").onclick = () => sb.auth.signOut();
-$("mailboxSelect").onchange = (ev) => { current = mailboxes.find((m) => m.id === ev.target.value); fillSettings(); loadItems(); };
+$("mailboxSelect").onchange = (ev) => {
+  current = mailboxes.find((m) => m.id === ev.target.value);
+  history.replaceState(null, "", `?mailbox=${current.id}`);
+  fillSettings();
+  loadItems();
+};
 
 $("runNow").onclick = async () => {
   $("runNow").disabled = true;
@@ -328,23 +207,6 @@ $("runNow").onclick = async () => {
   finally { $("runNow").disabled = false; }
 };
 
-document.querySelectorAll("[data-oauth]").forEach((b) => b.onclick = async () => {
-  try { location.href = (await callFn("connect", { provider: b.dataset.oauth })).url; } catch (e) { toast(e.message); }
-});
-
-$("appForm").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  try { await callFn("connect", { provider: "microsoft_app", email: ev.target.email.value }); toast("Mailbox connected"); await loadMailboxes(); }
-  catch (e) { toast(e.message); }
-});
-
-$("imapForm").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const body = Object.fromEntries(new FormData(ev.target));
-  try { await callFn("connect", { provider: "imap", ...body }); ev.target.reset(); toast("Mailbox connected"); await loadMailboxes(); }
-  catch (e) { toast(e.message); }
-});
-
 $("settingsForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const f = ev.target;
@@ -356,6 +218,7 @@ $("settingsForm").addEventListener("submit", async (ev) => {
     lookback_hours: Number(f.lookback_hours.value) || 24,
     processed_label: f.processed_label.value.trim() || "AI-Processed",
     auto_forward_invoices: f.auto_forward_invoices.checked,
+    active: f.active.checked,
     managed_entities: f.managed_entities.value.split("\n").map((s) => s.trim()).filter(Boolean),
     portal_vendors,
   };
@@ -364,14 +227,6 @@ $("settingsForm").addEventListener("submit", async (ev) => {
   Object.assign(current, update);
   toast("Settings saved");
 });
-
-$("disconnect").onclick = async () => {
-  if (!confirm(`Disconnect ${current.email_address}? Its action items are deleted too.`)) return;
-  const { error } = await sb.from("mailboxes").delete().eq("id", current.id);
-  if (error) return toast(error.message);
-  current = null;
-  await loadMailboxes();
-};
 
 document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => {
   tab = b.dataset.tab;
@@ -400,9 +255,8 @@ $("ledgerImport").onclick = async () => {
   const head = rows[0].map((h) => h.trim().toLowerCase());
   const col = (n) => head.indexOf(n);
   if (col("vendor_name") < 0 || col("invoice_number") < 0) return toast("CSV needs vendor_name and invoice_number columns");
-  const { data: { user } } = await sb.auth.getUser();
   const records = rows.slice(1).filter((r) => r[col("vendor_name")] && r[col("invoice_number")]).map((r) => ({
-    owner_user_id: user.id,
+    owner_user_id: session.user.id,
     vendor_name: r[col("vendor_name")].trim(),
     invoice_number: r[col("invoice_number")].trim(),
     invoice_date: col("invoice_date") >= 0 && r[col("invoice_date")] ? r[col("invoice_date")].trim() : null,
@@ -430,7 +284,8 @@ function parseCsv(text) {
   return rows.filter((r) => r.some((c) => c.trim()));
 }
 
-init();
+await loadMailboxes();
+await loadLedgerCount();
 </script>
 </body>
 </html>

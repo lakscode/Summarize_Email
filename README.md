@@ -36,7 +36,7 @@ web/index.html ──► connect (OAuth / IMAP) · item-action (Send to Smart AP
 - `supabase/functions/connect` — Microsoft / Google OAuth, shared M365 mailbox, IMAP
 - `supabase/functions/item-action` — dashboard buttons
 - `supabase/functions/_shared` — providers, classifier prompt and schema (`classify.ts`), safety checks, reconciliation, report
-- `web/` — static dashboard (any static host)
+- `web/` — static UI: login, mailbox setup and action-item pages (any static host)
 - `supabase/cron.sql` — the schedule
 
 ## Setup
@@ -49,8 +49,17 @@ npx supabase link --project-ref <project-ref>
 npx supabase db push
 ```
 
-In **Authentication → URL Configuration**, add where you'll host the dashboard (e.g. `http://localhost:5500`)
-to the redirect URLs. Email sign-in (magic link) is used.
+In **Authentication → URL Configuration**, set the Site URL to where you'll host the dashboard and add
+`http://localhost:5500/**` (and your hosted address with `/**`) to the redirect URLs.
+
+The login page offers **Microsoft**, **Google** and **email** (password or emailed link). Email works out of the
+box; turn the others on under **Authentication → Sign In / Providers**:
+- **Azure (Microsoft):** reuse the Entra app from step 2 — add `https://<project-ref>.supabase.co/auth/v1/callback`
+  as a second redirect URI and enter its client ID, secret and tenant URL in the Azure provider.
+- **Google:** reuse the Google OAuth client from step 2 — add `https://<project-ref>.supabase.co/auth/v1/callback`
+  as a second redirect URI and enter its client ID and secret in the Google provider.
+
+Signing in only identifies the user; connecting the mailbox is a separate, explicit step on the Mailboxes page.
 
 ### 2. Mail provider app registrations (only the ones you need)
 
@@ -98,6 +107,12 @@ npm run dev        # writes web/config.js from web/.env and serves the dashboard
 The dashboard is a static page and can't read `.env` itself, so `npm run config` turns `web/.env` into
 `web/config.js`. Re-run it after editing `web/.env`. To host it elsewhere, run `npm run config`, deploy the
 `web/` folder to any static host and set `APP_URL` in `supabase/functions/.env` to that address.
+
+| Page | What it's for |
+|---|---|
+| `login.html` | Sign in with Microsoft, Google or email |
+| `connect.html` | **Mailboxes** — one setup page per option: Microsoft 365 / Outlook (Azure), shared Microsoft 365 mailbox, Gmail / Google Workspace, and any other provider over IMAP (with presets for Yahoo, AOL, Zoho, Fastmail, GoDaddy…). Each page explains the steps, the access granted, and what an administrator must configure; options the server isn't configured for are marked *needs admin setup*. |
+| `index.html` | **Action items** — run the inbox, work through the to-do list, mailbox settings, AP ledger import |
 
 Sign in, connect the mailbox, then open **Mailbox settings** and set the Smart AP address. Auto-forward is
 **off** by default: invoices wait for a one-click **Send to Smart AP** confirmation. Turn it on once you trust

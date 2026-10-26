@@ -1,4 +1,5 @@
 // Connect a mailbox.
+//   POST {action: "providers"}                            -> which options the admin has configured
 //   POST {provider: "microsoft" | "gmail"}                -> { url } to start OAuth consent
 //   GET  ?code=...&state=...                               -> OAuth callback, stores the refresh token
 //   POST {provider: "microsoft_app", email}               -> shared mailbox via app-only Graph permissions
@@ -12,7 +13,9 @@ import type { ProviderKind } from "../_shared/types.ts";
 import { adminClient, b64, callerUserId, corsHeaders, env, json } from "../_shared/util.ts";
 
 const redirectUri = () => Deno.env.get("OAUTH_REDIRECT_URI") ?? `${env("SUPABASE_URL")}/functions/v1/connect`;
-const appUrl = () => env("APP_URL", "http://localhost:5500");
+const appPage = (name: string) =>
+  `${env("APP_URL", "http://localhost:5500").replace(/\/(index\.html)?$/, "")}/${name}`;
+const has = (name: string) => !!Deno.env.get(name);
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -27,6 +30,19 @@ Deno.serve(async (req) => {
     const userId = await callerUserId(req);
     if (!userId) return json({ error: "Unauthorized" }, 401);
     const body = await req.json();
+
+    if (body.action === "providers") {
+      // Which connection options the administrator has configured (no secrets returned).
+      const ms = has("MS_CLIENT_ID") && has("MS_CLIENT_SECRET");
+      const tenant = Deno.env.get("MS_TENANT_ID") ?? "common";
+      return json({
+        microsoft: ms,
+        microsoft_app: ms && !["common", "organizations", "consumers"].includes(tenant),
+        gmail: has("GOOGLE_CLIENT_ID") && has("GOOGLE_CLIENT_SECRET"),
+        imap: true,
+        redirect_uri: redirectUri(),
+      });
+    }
 
     switch (body.provider) {
       case "microsoft":
@@ -96,13 +112,13 @@ Deno.serve(async (req) => {
 });
 
 async function oauthCallback(url: URL): Promise<Response> {
+  const state = await verifyState(url.searchParams.get("state") ?? "");
   const back = (params: Record<string, string>) =>
-    Response.redirect(`${appUrl()}?${new URLSearchParams(params)}`, 302);
+    Response.redirect(`${appPage("connect.html")}?${new URLSearchParams({ ...(state ? { provider: state.provider } : {}), ...params })}`, 302);
 
   if (url.searchParams.get("error")) {
     return back({ connect_error: url.searchParams.get("error_description") ?? url.searchParams.get("error")! });
   }
-  const state = await verifyState(url.searchParams.get("state") ?? "");
   if (!state) return back({ connect_error: "Invalid or expired sign-in state - please try again." });
   const code = url.searchParams.get("code")!;
 

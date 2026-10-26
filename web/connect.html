@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AP Inbox Mailboxes</title>
+<link rel="stylesheet" href="assets/app.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+</head>
+<body>
+<header id="appHeader"></header>
+<main class="narrow" id="view"></main>
+
+<script type="module">
+import { $, callFn, esc, fmtDate, PROVIDER_LABEL, renderHeader, requireSession, sb, toast } from "./assets/common.js";
+
+const session = await requireSession();
+renderHeader("connect", session);
+
+const PROVIDERS = {
+  microsoft: {
+    logo: "ms", letter: "M",
+    title: "Microsoft 365 / Outlook (Azure)",
+    tagline: "Your own work or school mailbox. You sign in with Microsoft and approve access.",
+    bestFor: "A personal AP mailbox you sign in to yourself.",
+    access: ["Read and update your mail (to read invoices and tag processed emails)", "Send mail as you (to forward invoices to Smart AP and send your report)", "Stay connected (so the daily run works while you're away)"],
+    steps: [
+      "Click <b>Sign in with Microsoft</b> and choose the mailbox's account.",
+      "Review the permissions and click <b>Accept</b>. If Microsoft says an admin must approve, send your IT team the details in <i>For administrators</i> below.",
+      "You're returned here and the mailbox appears under <i>Connected</i>.",
+    ],
+    admin: (r) => `Register an app in <b>Microsoft Entra ID → App registrations</b> (Web platform) with redirect URI
+      <code>${esc(r)}</code>. Add delegated Microsoft Graph permissions <code>offline_access</code>, <code>User.Read</code>,
+      <code>Mail.ReadWrite</code>, <code>Mail.Send</code>, create a client secret, and set <code>MS_CLIENT_ID</code> and
+      <code>MS_CLIENT_SECRET</code> in the server settings.`,
+  },
+  microsoft_app: {
+    logo: "msapp", letter: "S",
+    title: "Shared Microsoft 365 mailbox",
+    tagline: "A team AP mailbox (e.g. ap@company.com) connected by your IT admin, without anyone signing in.",
+    bestFor: "Shared AP inboxes used by several people.",
+    access: ["Read and update mail in the named mailbox only (when your admin scopes the app correctly)", "Send mail from that mailbox"],
+    steps: [
+      "Your admin grants the app access to the shared mailbox (see <i>For administrators</i>).",
+      "Enter the shared mailbox address below and click <b>Test and connect</b>.",
+      "We read the last hour of mail to confirm access, then save the mailbox.",
+    ],
+    admin: (r) => `In the same Entra app registration, add <b>application</b> permissions <code>Mail.ReadWrite</code> and
+      <code>Mail.Send</code>, grant admin consent, and set <code>MS_TENANT_ID</code> to your tenant ID.
+      <b>Limit the app to the AP mailbox</b> with Exchange RBAC for Applications; otherwise it can read every mailbox in
+      the organisation. (Redirect URI for the sign-in option: <code>${esc(r)}</code>.)`,
+  },
+  gmail: {
+    logo: "gm", letter: "G",
+    title: "Gmail / Google Workspace",
+    tagline: "A Gmail or Google Workspace mailbox. You sign in with Google and approve access.",
+    bestFor: "AP mailboxes hosted on Google.",
+    access: ["Read and label your mail", "Send mail as you (forwarding to Smart AP and your report)"],
+    steps: [
+      "Click <b>Sign in with Google</b> and choose the mailbox's account.",
+      "Allow the requested access. If Google warns the app is unverified, check with your administrator before continuing.",
+      "You're returned here and the mailbox appears under <i>Connected</i>.",
+    ],
+    admin: (r) => `In Google Cloud console enable the <b>Gmail API</b>, configure the OAuth consent screen (use <i>Internal</i>
+      for a Workspace domain), create an OAuth client of type <i>Web application</i> with redirect URI <code>${esc(r)}</code>,
+      and set <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> in the server settings.`,
+  },
+  imap: {
+    logo: "imap", letter: "@",
+    title: "Any other email (IMAP)",
+    tagline: "Yahoo, Zoho, Fastmail, GoDaddy, your web host, or any provider that offers IMAP and SMTP.",
+    bestFor: "Providers other than Microsoft and Google.",
+    access: ["Read mail and add a processed tag over IMAP", "Send mail over SMTP (forwarding and your report)"],
+    steps: [
+      "Pick your provider to fill in the server settings, or enter them yourself.",
+      "Create an <b>app password</b> in your provider's security settings if it offers one; your normal password may be rejected.",
+      "Click <b>Test and connect</b>. We sign in to IMAP to confirm the details before saving them (encrypted).",
+    ],
+    admin: () => "",
+  },
+};
+
+const IMAP_PRESETS = {
+  "": { label: "Choose a provider…" },
+  yahoo: { label: "Yahoo Mail", imap_host: "imap.mail.yahoo.com", smtp_host: "smtp.mail.yahoo.com", note: "Yahoo requires an app password (Account security → Generate app password)." },
+  aol: { label: "AOL Mail", imap_host: "imap.aol.com", smtp_host: "smtp.aol.com", note: "AOL requires an app password." },
+  zoho: { label: "Zoho Mail", imap_host: "imap.zoho.com", smtp_host: "smtp.zoho.com", note: "Enable IMAP access in Zoho Mail settings first. EU/IN accounts use imap.zoho.eu / imap.zoho.in." },
+  fastmail: { label: "Fastmail", imap_host: "imap.fastmail.com", smtp_host: "smtp.fastmail.com", note: "Fastmail requires an app password (Settings → Privacy & Security)." },
+  godaddy: { label: "GoDaddy Workspace Email", imap_host: "imap.secureserver.net", smtp_host: "smtpout.secureserver.net" },
+  gmail: { label: "Gmail (app password)", imap_host: "imap.gmail.com", smtp_host: "smtp.gmail.com", note: "Prefer the Gmail / Google Workspace option above; use this only if you must use an app password." },
+  other: { label: "Other / my web host", note: "Ask your host for the IMAP (SSL, usually port 993) and SMTP (SSL, port 465) server names." },
+};
+
+const params = new URLSearchParams(location.search);
+let availability = null;
+let mailboxes = [];
+
+async function load() {
+  const [avail, mb] = await Promise.all([
+    callFn("connect", { action: "providers" }).catch((e) => ({ error: e.message })),
+    sb.from("mailboxes").select("id, provider, email_address, display_name, active, last_run_at, smart_ap_address").order("created_at"),
+  ]);
+  availability = avail;
+  mailboxes = mb.data ?? [];
+  const key = params.get("provider");
+  PROVIDERS[key] ? renderProvider(key) : renderOverview();
+}
+
+function resultNotice() {
+  if (params.get("connected")) {
+    const m = mailboxes.find((x) => x.email_address === params.get("connected"));
+    return `<div class="notice ok"><b>Connected ${esc(params.get("connected"))}.</b>
+      Next, open <a href="index.html${m ? `?mailbox=${m.id}#settings` : ""}">mailbox settings</a> and enter your Smart AP address.</div>`;
+  }
+  if (params.get("connect_error")) return `<div class="notice err"><b>Couldn't connect:</b> ${esc(params.get("connect_error"))}</div>`;
+  return "";
+}
+
+function mailboxRows(list) {
+  if (!list.length) return `<p class="muted">No mailboxes connected yet.</p>`;
+  return `<div class="table-wrap"><table>
+    <tr><th>Mailbox</th><th>Type</th><th>Last run</th><th>Smart AP</th><th></th></tr>
+    ${list.map((m) => `<tr>
+      <td>${esc(m.email_address)}${m.active ? "" : ' <span class="chip">paused</span>'}</td>
+      <td>${esc(PROVIDER_LABEL[m.provider])}</td>
+      <td>${m.last_run_at ? fmtDate(m.last_run_at) : '<span class="muted">never</span>'}</td>
+      <td>${m.smart_ap_address ? '<span class="chip ok">set</span>' : '<span class="chip action_needed">not set</span>'}</td>
+      <td class="row" style="justify-content:flex-end">
+        <a class="btn" href="index.html?mailbox=${m.id}#settings">Settings</a>
+        <a class="btn" href="connect.html?provider=${m.provider}">Reconnect</a>
+        <button class="danger" data-disconnect="${m.id}" data-email="${esc(m.email_address)}">Disconnect</button>
+      </td></tr>`).join("")}
+  </table></div>`;
+}
+
+function renderOverview() {
+  $("view").innerHTML = `
+    ${resultNotice()}
+    <div><h1>Mailboxes</h1><p class="muted" style="margin:0">Connect the mailbox that receives your invoices, bills and statements.</p></div>
+    <div class="cards">
+      ${Object.entries(PROVIDERS).map(([key, p]) => {
+        const on = availability?.[key] !== false;
+        return `<a class="card" href="connect.html?provider=${key}">
+          <div class="row between"><span class="logo ${p.logo}">${p.letter}</span>
+            ${on ? "" : '<span class="chip action_needed">needs admin setup</span>'}</div>
+          <h3>${esc(p.title)}</h3>
+          <span class="muted small">${esc(p.tagline)}</span>
+          <span class="btn ${on ? "primary" : ""}" style="justify-self:start">Set up</span>
+        </a>`;
+      }).join("")}
+    </div>
+    <section><h2>Connected</h2>${mailboxRows(mailboxes)}</section>`;
+}
+
+function renderProvider(key) {
+  const p = PROVIDERS[key];
+  const on = availability?.[key] !== false;
+  const mine = mailboxes.filter((m) => m.provider === key);
+  const admin = p.admin(availability?.redirect_uri ?? "https://<project-ref>.supabase.co/functions/v1/connect");
+
+  $("view").innerHTML = `
+    <a href="connect.html" class="small">← All mailbox types</a>
+    ${resultNotice()}
+    <section>
+      <div class="row" style="gap:12px; margin-bottom:8px"><span class="logo ${p.logo}">${p.letter}</span>
+        <div><h1>${esc(p.title)}</h1><div class="muted small">Best for: ${esc(p.bestFor)}</div></div></div>
+      <p>${esc(p.tagline)}</p>
+      ${on ? "" : `<div class="notice warn">Your administrator hasn't set this option up yet. Share the
+        <i>For administrators</i> section below with them${key === "microsoft_app" ? "" : ", or use another option"}.</div>`}
+      <h2 style="margin-top:16px">How to connect</h2>
+      <ol class="steps">${p.steps.map((s) => `<li>${s}</li>`).join("")}</ol>
+      <div id="connectArea" style="margin-top:12px"></div>
+    </section>
+    <section>
+      <h2>What AP Inbox can do with this mailbox</h2>
+      <ul>${p.access.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>
+      <p class="muted small" style="margin-bottom:0">Credentials are stored encrypted in Supabase Vault and are never sent to the
+        browser. Email content is sent to Claude (Anthropic) for classification. Invoices are only forwarded automatically
+        if you turn that on in mailbox settings.</p>
+    </section>
+    ${admin ? `<section><details><summary>For administrators</summary><p class="small">${admin}</p></details></section>` : ""}
+    <section><h2>Connected ${esc(p.title)} mailboxes</h2>${mailboxRows(mine)}</section>`;
+
+  const area = $("connectArea");
+  if (key === "microsoft" || key === "gmail") {
+    area.innerHTML = `<button class="primary" id="oauthBtn" ${on ? "" : "disabled"}>
+      Sign in with ${key === "microsoft" ? "Microsoft" : "Google"}</button>`;
+    $("oauthBtn").onclick = async () => {
+      $("oauthBtn").disabled = true;
+      try { location.href = (await callFn("connect", { provider: key })).url; }
+      catch (e) { toast(e.message); $("oauthBtn").disabled = false; }
+    };
+  } else if (key === "microsoft_app") {
+    area.innerHTML = `<form id="appForm" class="row">
+      <input type="email" name="email" placeholder="ap@company.com" required style="flex:1; min-width:220px" ${on ? "" : "disabled"}>
+      <button class="primary" ${on ? "" : "disabled"}>Test and connect</button></form>`;
+    $("appForm").addEventListener("submit", (ev) => submitConnect(ev, { provider: "microsoft_app", email: ev.target.email.value }));
+  } else {
+    area.innerHTML = `<form id="imapForm" style="display:grid; gap:12px">
+      <label>Provider<select name="preset">${Object.entries(IMAP_PRESETS).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("")}</select></label>
+      <div id="presetNote" class="notice warn hidden"></div>
+      <div class="grid2">
+        <label>Email address<input name="email" type="email" required autocomplete="off"></label>
+        <label>Username <span class="small">(if different from the address)</span><input name="username" autocomplete="off"></label>
+        <label>Password or app password<input name="password" type="password" required autocomplete="new-password"></label>
+        <label>Folder to read<input name="inbox" value="INBOX"></label>
+        <label>IMAP server<input name="imap_host" required placeholder="imap.example.com"></label>
+        <label>IMAP port (SSL)<input name="imap_port" value="993" inputmode="numeric"></label>
+        <label>SMTP server<input name="smtp_host" required placeholder="smtp.example.com"></label>
+        <label>SMTP port (SSL)<input name="smtp_port" value="465" inputmode="numeric"></label>
+      </div>
+      <p class="muted small" style="margin:0">SMTP must use SSL on port 465; ports 25 and 587 are blocked by the hosting platform.</p>
+      <div><button class="primary">Test and connect</button></div>
+    </form>`;
+    const f = $("imapForm");
+    f.preset.onchange = () => {
+      const pr = IMAP_PRESETS[f.preset.value];
+      if (pr.imap_host) { f.imap_host.value = pr.imap_host; f.smtp_host.value = pr.smtp_host; f.imap_port.value = 993; f.smtp_port.value = 465; }
+      $("presetNote").textContent = pr.note ?? "";
+      $("presetNote").classList.toggle("hidden", !pr.note);
+    };
+    f.addEventListener("submit", (ev) => {
+      const body = Object.fromEntries(new FormData(f));
+      delete body.preset;
+      if (String(body.smtp_port) !== "465") return (ev.preventDefault(), toast("SMTP must use port 465 (SSL)."));
+      submitConnect(ev, { provider: "imap", ...body });
+    });
+  }
+}
+
+async function submitConnect(ev, body) {
+  ev.preventDefault();
+  const btn = ev.target.querySelector("button.primary");
+  btn.disabled = true; btn.textContent = "Testing connection…";
+  try {
+    const res = await callFn("connect", body);
+    location.href = `connect.html?provider=${body.provider}&connected=${encodeURIComponent(res.email)}`;
+  } catch (e) {
+    toast(`Couldn't connect: ${e.message}`);
+    btn.disabled = false; btn.textContent = "Test and connect";
+  }
+}
+
+$("view").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("[data-disconnect]");
+  if (!b) return;
+  if (!confirm(`Disconnect ${b.dataset.email}? Its action items are deleted too.`)) return;
+  const { error } = await sb.from("mailboxes").delete().eq("id", b.dataset.disconnect);
+  if (error) return toast(error.message);
+  toast(`Disconnected ${b.dataset.email}`);
+  await load();
+});
+
+await load();
+</script>
+</body>
+</html>
