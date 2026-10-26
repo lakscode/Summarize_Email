@@ -12,6 +12,12 @@ import { adminClient } from "../_shared/supabase.ts";
 const TIME_BUDGET_MS = 100_000;
 const MAX_LOOKBACK_HOURS = 24 * 14;
 
+// Link target for the summary email. Ignored if APP_URL points at Supabase rather than the hosted UI.
+const appUrl = (() => {
+  const v = Deno.env.get("APP_URL")?.replace(/\/+$/, "");
+  return v && /^https?:\/\//.test(v) && !v.includes(".supabase.co") ? v : null;
+})();
+
 Deno.serve(async (req) => {
   const db = adminClient();
   const { data: secret, error: secretError } = await db.rpc("cron_secret");
@@ -50,7 +56,7 @@ Deno.serve(async (req) => {
     }, now);
 
     try {
-      const result = await processMailbox(m.owner_user_id, m.id, hours, false, "schedule");
+      const result = await processMailbox(m.owner_user_id, m.id, hours, false, "schedule", appUrl);
       const finished = result.remaining === 0;
       await db.from("mailboxes").update({
         // Unfinished batches keep the run due (and last_run_at unchanged) so the next tick continues.

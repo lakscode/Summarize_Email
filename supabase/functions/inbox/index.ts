@@ -50,7 +50,9 @@ Deno.serve(async (req) => {
       const body = await req.json().catch(() => ({}));
       if (body.action !== "process" || !body.mailbox_id) return json({ error: "action 'process' and mailbox_id are required" }, 400);
       const hours = Math.min(Math.max(Number(body.lookback_hours) || 24, 1), 24 * 14);
-      return json(await processMailbox(user.id, body.mailbox_id, hours, body.reprocess === true));
+      const origin = req.headers.get("Origin");
+      const appUrl = origin && /^https?:\/\/[^/]+$/.test(origin) ? origin : null;
+      return json(await processMailbox(user.id, body.mailbox_id, hours, body.reprocess === true, "manual", appUrl));
     }
 
     return json({ error: "Method not allowed" }, 405);

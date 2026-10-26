@@ -115,6 +115,17 @@ export async function attachmentBytes(token: string, messageId: string, attachme
   return new Uint8Array(await res.arrayBuffer());
 }
 
+// Sends an HTML email from the connected mailbox (saved to its Sent Items).
+export async function sendMail(token: string, to: string, subject: string, html: string): Promise<void> {
+  await graph<void>(token, "/me/sendMail", {
+    method: "POST",
+    body: JSON.stringify({
+      message: { subject, body: { contentType: "HTML", content: html }, toRecipients: [{ emailAddress: { address: to } }] },
+      saveToSentItems: true,
+    }),
+  });
+}
+
 export async function forwardMessage(token: string, messageId: string, to: string, comment: string): Promise<void> {
   await graph<void>(token, `/me/messages/${encodeURIComponent(messageId)}/forward`, {
     method: "POST",

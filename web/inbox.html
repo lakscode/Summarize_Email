@@ -304,6 +304,8 @@
         ? `Processed ${data.processed} new email${data.processed === 1 ? "" : "s"} from ${data.mailbox}: ${parts.join(", ")}.`
         : `No new emails in ${data.mailbox} for that period.`;
       if (data.remaining) text += ` ${data.remaining} more waiting. Run again to continue.`;
+      if (data.report === "sent") text += ` Summary emailed to ${data.mailbox}.`;
+      if (data.report === "failed") text += " The summary email could not be sent (see Logs).";
       showMessage(text, data.counts.error ? "error" : "ok");
       await loadEmails();
     });

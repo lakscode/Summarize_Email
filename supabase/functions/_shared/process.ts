@@ -5,7 +5,8 @@
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { type AttachmentFile, classifyEmail, type Classification } from "./classify.ts";
 import { logApi, logStep } from "./log.ts";
-import { attachmentBytes, forwardMessage, type GraphMessage, graphToken, listAttachments, listInbox } from "./microsoft.ts";
+import { attachmentBytes, forwardMessage, type GraphMessage, graphToken, listAttachments, listInbox, sendMail } from "./microsoft.ts";
+import { buildReport, type ReportItem } from "./report.ts";
 import { adminClient } from "./supabase.ts";
 
 // Keeps one run well inside the Edge Function time limit; the UI offers to run again when more remain.
@@ -26,8 +27,10 @@ interface Run { id: string; userId: string; mailbox: string; trigger: string }
 const step = (run: Run, location: string, message: string, context: Record<string, unknown> = {}) =>
   logStep(location, message, run.userId, { run: run.id, mailbox: run.mailbox, trigger: run.trigger, ...context });
 
+// appUrl: where the app is hosted, for the "Open the Inbox" link in the summary email (null leaves it out).
 export async function processMailbox(
-  userId: string, mailboxId: string, hours: number, reprocess: boolean, trigger: "manual" | "schedule" = "manual",
+  userId: string, mailboxId: string, hours: number, reprocess: boolean,
+  trigger: "manual" | "schedule" = "manual", appUrl: string | null = null,
 ) {
   const db = adminClient();
   await db.rpc("expire_mailbox_access");
@@ -67,25 +70,48 @@ export async function processMailbox(
     { skipped_already_processed: messages.length - fresh.length });
 
   const counts: Record<string, number> = {};
+  const items: ReportItem[] = [];
   const queue = [...batch];
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
     for (let msg = queue.shift(); msg; msg = queue.shift()) {
-      const status = await processMessage(db, run, mailbox, token, msg, seenById.get(msg.id));
-      if (status) counts[status] = (counts[status] ?? 0) + 1;
+      const item = await processMessage(db, run, mailbox, token, msg, seenById.get(msg.id));
+      if (!item) continue;
+      items.push(item);
+      counts[item.status] = (counts[item.status] ?? 0) + 1;
     }
   }));
 
   await db.from("mailboxes").update({ last_processed_at: new Date().toISOString() }).eq("id", mailbox.id);
+  const remaining = fresh.length - batch.length;
+  const report = items.length ? await sendReport(run, mailbox, token, items, remaining, appUrl) : "skipped";
   const result = {
     mailbox: mailbox.email_address,
     scanned: messages.length,
     processed: batch.length,
-    remaining: fresh.length - batch.length,
+    remaining,
     counts,
+    report,
   };
   const summary = Object.entries(counts).map(([k, n]) => `${n} ${k.replace("_", " ")}`).join(", ") || "nothing new";
   await step(run, "process/finish", `Run finished in ${Math.round((Date.now() - started) / 1000)}s: ${summary}`, result);
   return result;
+}
+
+// Emails the run summary from the mailbox to itself (the mailbox owner). Needs Mail.Send, like forwarding.
+async function sendReport(
+  run: Run, mailbox: Mailbox, token: string, items: ReportItem[], remaining: number, appUrl: string | null,
+): Promise<"sent" | "failed"> {
+  const order = ["action_needed", "error", "done", "no_action"];
+  items.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+  const { subject, html } = buildReport(mailbox.email_address, items, remaining, run.trigger, appUrl);
+  try {
+    await sendMail(token, mailbox.email_address, subject, html);
+    await step(run, "process/report", `Summary email sent to ${mailbox.email_address}: "${subject}"`);
+    return "sent";
+  } catch (err) {
+    await logApi("process/report", err, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address } });
+    return "failed";
+  }
 }
 
 type Db = ReturnType<typeof adminClient>;
@@ -148,10 +174,10 @@ async function gatherAttachments(token: string, msg: GraphMessage) {
   return { names: all.map((a) => a.name), files, skipped };
 }
 
-// Returns the final status, or null if another run already claimed the message.
+// Returns the outcome for the summary email, or null if another run already claimed the message.
 async function processMessage(
   db: Db, run: Run, mailbox: Mailbox, token: string, msg: GraphMessage, existing?: ExistingRow,
-): Promise<string | null> {
+): Promise<ReportItem | null> {
   const userId = run.userId;
   const subject = msg.subject || "(no subject)";
   const rowId = await claim(db, userId, mailbox, msg, existing);
@@ -161,6 +187,16 @@ async function processMessage(
   }
   const from = msg.from?.emailAddress ?? {};
   const email = { email_id: rowId, subject, from: from.address };
+  const item: ReportItem = {
+    subject,
+    from: from.name ? `${from.name} <${from.address}>` : from.address ?? "unknown",
+    category: null,
+    summary: null,
+    next_step: null,
+    action: null,
+    status: "error",
+    web_link: msg.webLink ?? null,
+  };
 
   try {
     const attachments = await gatherAttachments(token, msg);
@@ -201,12 +237,12 @@ async function processMessage(
       updated_at: new Date().toISOString(),
     }).eq("id", rowId);
     if (error) throw new Error(error.message);
-    return status;
+    return { ...item, category: c.category, summary: c.summary, next_step: c.next_step, action, status };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await logApi("inbox/process", err, { userId, context: { run: run.id, mailbox: mailbox.email_address, ...email } });
     await db.from("processed_emails").update({ status: "error", error: message, updated_at: new Date().toISOString() }).eq("id", rowId);
-    return "error";
+    return { ...item, status: "error", action: message };
   }
 }
 
