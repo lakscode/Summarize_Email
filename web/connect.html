@@ -117,6 +117,19 @@ function resultNotice() {
   return "";
 }
 
+function serverNotice() {
+  if (availability?.error) {
+    return `<div class="notice err"><b>Can't reach the AP Inbox server:</b> ${esc(availability.error)}.
+      Check that the edge functions are deployed (<code>npm run deploy</code>).</div>`;
+  }
+  if (availability?.missing?.length) {
+    return `<div class="notice warn"><b>Server setup is incomplete.</b> These settings are missing:
+      <code>${availability.missing.map(esc).join("</code>, <code>")}</code>. An administrator needs to fill them in
+      <code>supabase/functions/.env</code> and run <code>npm run secrets</code>.</div>`;
+  }
+  return "";
+}
+
 function mailboxRows(list) {
   if (!list.length) return `<p class="muted">No mailboxes connected yet.</p>`;
   return `<div class="table-wrap"><table>
@@ -136,7 +149,7 @@ function mailboxRows(list) {
 
 function renderOverview() {
   $("view").innerHTML = `
-    ${resultNotice()}
+    ${resultNotice()}${serverNotice()}
     <div><h1>Mailboxes</h1><p class="muted" style="margin:0">Connect the mailbox that receives your invoices, bills and statements.</p></div>
     <div class="cards">
       ${Object.entries(PROVIDERS).map(([key, p]) => {
@@ -161,7 +174,7 @@ function renderProvider(key) {
 
   $("view").innerHTML = `
     <a href="connect.html" class="small">← All mailbox types</a>
-    ${resultNotice()}
+    ${resultNotice()}${serverNotice()}
     <section>
       <div class="row" style="gap:12px; margin-bottom:8px"><span class="logo ${p.logo}">${p.letter}</span>
         <div><h1>${esc(p.title)}</h1><div class="muted small">Best for: ${esc(p.bestFor)}</div></div></div>

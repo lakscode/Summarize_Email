@@ -41,11 +41,16 @@ Deno.serve(async (req) => {
         gmail: has("GOOGLE_CLIENT_ID") && has("GOOGLE_CLIENT_SECRET"),
         imap: true,
         redirect_uri: redirectUri(),
+        // Server settings that are required but not set (names only).
+        missing: ["ANTHROPIC_API_KEY", "CRON_SECRET", "OAUTH_STATE_SECRET", "APP_URL"].filter((n) => !has(n)),
       });
     }
 
     switch (body.provider) {
       case "microsoft":
+        if (!has("MS_CLIENT_ID") || !has("MS_CLIENT_SECRET")) {
+          return json({ error: "Microsoft isn't set up on the server yet (MS_CLIENT_ID / MS_CLIENT_SECRET are missing)." }, 400);
+        }
         return json({
           url: `https://login.microsoftonline.com/${env("MS_TENANT_ID", "common")}/oauth2/v2.0/authorize?` +
             new URLSearchParams({
@@ -59,6 +64,9 @@ Deno.serve(async (req) => {
             }),
         });
       case "gmail":
+        if (!has("GOOGLE_CLIENT_ID") || !has("GOOGLE_CLIENT_SECRET")) {
+          return json({ error: "Google isn't set up on the server yet (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are missing)." }, 400);
+        }
         return json({
           url: "https://accounts.google.com/o/oauth2/v2/auth?" +
             new URLSearchParams({

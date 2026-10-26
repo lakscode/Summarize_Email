@@ -52,14 +52,14 @@ npx supabase db push
 In **Authentication → URL Configuration**, set the Site URL to where you'll host the dashboard and add
 `http://localhost:5500/**` (and your hosted address with `/**`) to the redirect URLs.
 
-The login page offers **Microsoft**, **Google** and **email** (password or emailed link). Email works out of the
-box; turn the others on under **Authentication → Sign In / Providers**:
-- **Azure (Microsoft):** reuse the Entra app from step 2 — add `https://<project-ref>.supabase.co/auth/v1/callback`
-  as a second redirect URI and enter its client ID, secret and tenant URL in the Azure provider.
-- **Google:** reuse the Google OAuth client from step 2 — add `https://<project-ref>.supabase.co/auth/v1/callback`
-  as a second redirect URI and enter its client ID and secret in the Google provider.
+Users sign up and sign in with **email and password** only (`signup.html`, `login.html`); there is no Microsoft
+or Google login. The Email provider is on by default. Leave **Confirm email** on (Authentication → Sign In /
+Providers → Email) so new accounts must verify their address; the login page also offers *Forgot password?*
+and a one-time sign-in link. Supabase's built-in mailer is rate-limited — set up custom SMTP under
+Authentication → Emails before inviting a team.
 
-Signing in only identifies the user; connecting the mailbox is a separate, explicit step on the Mailboxes page.
+Signing in only identifies the user; connecting the mailbox (Microsoft 365, Gmail or IMAP) is a separate,
+explicit step on the Mailboxes page.
 
 ### 2. Mail provider app registrations (only the ones you need)
 
@@ -110,7 +110,8 @@ The dashboard is a static page and can't read `.env` itself, so `npm run config`
 
 | Page | What it's for |
 |---|---|
-| `login.html` | Sign in with Microsoft, Google or email |
+| `signup.html` | Create an account (name, email, password) |
+| `login.html` | Sign in with email and password, reset a forgotten password, or get a one-time sign-in link |
 | `connect.html` | **Mailboxes** — one setup page per option: Microsoft 365 / Outlook (Azure), shared Microsoft 365 mailbox, Gmail / Google Workspace, and any other provider over IMAP (with presets for Yahoo, AOL, Zoho, Fastmail, GoDaddy…). Each page explains the steps, the access granted, and what an administrator must configure; options the server isn't configured for are marked *needs admin setup*. |
 | `index.html` | **Action items** — run the inbox, work through the to-do list, mailbox settings, AP ledger import |
 

@@ -21,7 +21,8 @@ Deno.serve(async (req) => {
 
   const body = (await req.json().catch(() => ({}))) as { mailbox_id?: string; run_id?: string };
   const db = adminClient();
-  const isCron = req.headers.get("x-cron-secret") === env("CRON_SECRET");
+  const cronSecret = Deno.env.get("CRON_SECRET");
+  const isCron = !!cronSecret && req.headers.get("x-cron-secret") === cronSecret;
   const userId = isCron ? null : await callerUserId(req);
   if (!isCron && !userId) return json({ error: "Unauthorized" }, 401);
 
