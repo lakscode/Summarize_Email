@@ -72,20 +72,32 @@ the consent screen to *Internal*; external use of these scopes requires Google v
 
 ### 3. Secrets and functions
 
+There are two `.env` files, one per side of the app (both git-ignored; each has a `.env.example` template):
+
+| File | Used by | Holds |
+|---|---|---|
+| `supabase/functions/.env` | Edge functions (API) | Anthropic key, Microsoft / Google OAuth credentials, `CRON_SECRET`, `OAUTH_STATE_SECRET`, `APP_URL` |
+| `web/.env` | Dashboard (UI) | `SUPABASE_URL`, `SUPABASE_ANON_KEY` (public values only — never put the service-role key here) |
+
 ```bash
-cp supabase/functions/.env.example supabase/functions/.env   # fill it in
-npx supabase secrets set --env-file supabase/functions/.env
-npx supabase functions deploy process-inbox connect item-action
+# fill in supabase/functions/.env, then:
+npm run secrets    # supabase secrets set --env-file supabase/functions/.env
+npm run deploy     # supabase functions deploy process-inbox connect item-action
 ```
 
 `CRON_SECRET` and `OAUTH_STATE_SECRET` are any long random strings (e.g. `openssl rand -hex 32`).
 
 ### 4. Dashboard
 
+Fill in `web/.env` (Supabase dashboard → Project Settings → API), then:
+
 ```bash
-cp web/config.example.js web/config.js   # Supabase URL + anon key
-npx serve web -l 5500                    # or deploy web/ to any static host and set APP_URL to it
+npm run dev        # writes web/config.js from web/.env and serves the dashboard on http://localhost:5500
 ```
+
+The dashboard is a static page and can't read `.env` itself, so `npm run config` turns `web/.env` into
+`web/config.js`. Re-run it after editing `web/.env`. To host it elsewhere, run `npm run config`, deploy the
+`web/` folder to any static host and set `APP_URL` in `supabase/functions/.env` to that address.
 
 Sign in, connect the mailbox, then open **Mailbox settings** and set the Smart AP address. Auto-forward is
 **off** by default: invoices wait for a one-click **Send to Smart AP** confirmation. Turn it on once you trust
