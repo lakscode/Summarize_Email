@@ -1,1 +1,5 @@
 npx supabase link --project-ref bnzllbgsbrhiesaqnkcz # asks for the database password
+
+
+
+Read the user's Azure / Microsoft 365 (Outlook) mailbox, classify each accounts-payable email (invoice, utility bill, vendor information, account statement, or other), take the routine action where one is defined, and tell the employee exactly what they need to do next. Use this skill whenever the user asks to process, triage, sort, go through, or check their emails, inbox, AP inbox, invoices, bills or statements, or says things like "what do I need to do with my emails today", "process my mail"

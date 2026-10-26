@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Logs · SummarizeMail</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="assets/common.js"></script>
+</head>
+<body>
+  <div class="shell" hidden>
+    <aside id="sidebar" class="sidebar"></aside>
+
+    <main class="content">
+      <div id="message" class="message" hidden></div>
+      <h1>Logs</h1>
+      <p class="sub">Errors from the web app (UI) and the Supabase Edge Functions (API), newest first.</p>
+
+      <div class="toolbar">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-source="">All</button>
+          <button class="tab" data-source="ui">UI</button>
+          <button class="tab" data-source="api">API</button>
+        </div>
+        <div class="toolbar-actions">
+          <button class="secondary" id="refresh">Refresh</button>
+          <button class="secondary" id="clear">Clear</button>
+        </div>
+      </div>
+
+      <div class="panel log-panel">
+        <table class="logs">
+          <thead>
+            <tr><th>Time</th><th>Source</th><th>Level</th><th>Where</th><th>Message</th></tr>
+          </thead>
+          <tbody id="log-rows"></tbody>
+        </table>
+        <p class="empty" id="log-empty" hidden>No logs.</p>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let source = "";
+
+    (async () => {
+      const session = await requireSession();
+      if (!session) return;
+      renderSidebar("logs", session);
+      document.querySelector(".shell").hidden = false;
+      await loadLogs();
+    })();
+
+    async function loadLogs() {
+      const query = source ? `?source=${source}` : "";
+      const { data, error } = await callApi(`logs${query}`, { method: "GET" });
+      if (error) {
+        // Not via showMessage(..., "error"): if the logs API is down, logging that would fail too.
+        const el = document.getElementById("message");
+        el.textContent = `Could not load logs: ${error}`;
+        el.className = "message error";
+        el.hidden = false;
+        return;
+      }
+      document.getElementById("message").hidden = true;
+      document.getElementById("log-rows").replaceChildren(...data.logs.map(logRow));
+      document.getElementById("log-empty").hidden = data.logs.length > 0;
+    }
+
+    function cell(text, className) {
+      const td = document.createElement("td");
+      if (className) td.className = className;
+      td.textContent = text;
+      return td;
+    }
+
+    function logRow(log) {
+      const tr = document.createElement("tr");
+      tr.append(
+        cell(new Date(log.created_at).toLocaleString(), "nowrap"),
+        badgeCell(log.source.toUpperCase(), `badge source-${log.source}`),
+        badgeCell(log.level, `badge level-${log.level}`),
+        cell(log.location || "—", "mono"),
+      );
+
+      const msg = document.createElement("td");
+      msg.className = "msg";
+      const text = document.createElement("div");
+      text.textContent = log.message;
+      msg.append(text);
+      if (log.context && Object.keys(log.context).length) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Details";
+        const pre = document.createElement("pre");
+        pre.textContent = JSON.stringify(log.context, null, 2);
+        details.append(summary, pre);
+        msg.append(details);
+      }
+      tr.append(msg);
+      return tr;
+    }
+
+    function badgeCell(text, className) {
+      const td = document.createElement("td");
+      const span = document.createElement("span");
+      span.className = className;
+      span.textContent = text;
+      td.append(span);
+      return td;
+    }
+
+    for (const tab of document.querySelectorAll(".tab")) {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
+        source = tab.dataset.source;
+        loadLogs();
+      });
+    }
+
+    document.getElementById("refresh").addEventListener("click", loadLogs);
+
+    document.getElementById("clear").addEventListener("click", async () => {
+      if (!confirm("Delete all of your logs?")) return;
+      const { error } = await callApi("logs", { method: "DELETE" });
+      if (error) return showMessage(`Could not clear logs: ${error}`, "error");
+      await loadLogs();
+    });
+  </script>
+</body>
+</html>

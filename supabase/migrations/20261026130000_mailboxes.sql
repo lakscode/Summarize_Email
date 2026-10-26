@@ -1,8 +1,10 @@
 -- Connected mailboxes. Created only by the `mailboxes` edge function (service role) after OAuth;
 -- the Microsoft refresh token lives in Vault and never reaches the browser.
+-- Written to be re-runnable: the hosted project may already have a mailboxes table from the
+-- earlier AP-inbox schema, which is kept (with its data) and brought in line here.
 create extension if not exists supabase_vault with schema vault;
 
-create table public.mailboxes (
+create table if not exists public.mailboxes (
   id uuid primary key default gen_random_uuid(),
   owner_user_id uuid not null references auth.users (id) on delete cascade,
   provider text not null default 'microsoft' check (provider in ('microsoft')),
@@ -15,7 +17,13 @@ create table public.mailboxes (
   unique (owner_user_id, email_address)
 );
 
+alter table public.mailboxes add column if not exists updated_at timestamptz not null default now();
+
 alter table public.mailboxes enable row level security;
+
+drop policy if exists "own mailboxes" on public.mailboxes;
+drop policy if exists "Users can read own mailboxes" on public.mailboxes;
+drop policy if exists "Users can delete own mailboxes" on public.mailboxes;
 
 create policy "Users can read own mailboxes"
   on public.mailboxes for select
@@ -34,7 +42,7 @@ grant select (id, owner_user_id, provider, email_address, display_name, active, 
 grant delete on public.mailboxes to authenticated;
 
 -- Vault helpers (service role only)
-create function public.mailbox_secret_put(p_secret_id uuid, p_secret text, p_name text)
+create or replace function public.mailbox_secret_put(p_secret_id uuid, p_secret text, p_name text)
 returns uuid
 language plpgsql security definer set search_path = '' as $$
 begin
@@ -45,7 +53,7 @@ begin
   return p_secret_id;
 end $$;
 
-create function public.mailbox_secret_get(p_secret_id uuid)
+create or replace function public.mailbox_secret_get(p_secret_id uuid)
 returns text
 language sql security definer set search_path = '' as $$
   select decrypted_secret from vault.decrypted_secrets where id = p_secret_id
@@ -57,7 +65,7 @@ grant execute on function public.mailbox_secret_put(uuid, text, text) to service
 grant execute on function public.mailbox_secret_get(uuid) to service_role;
 
 -- Remove the stored token from Vault when a mailbox is disconnected.
-create function public.mailboxes_delete_secret()
+create or replace function public.mailboxes_delete_secret()
 returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
@@ -69,6 +77,7 @@ end $$;
 
 revoke all on function public.mailboxes_delete_secret() from public, anon, authenticated;
 
+drop trigger if exists mailboxes_delete_secret on public.mailboxes;
 create trigger mailboxes_delete_secret
   after delete on public.mailboxes
   for each row execute function public.mailboxes_delete_secret();

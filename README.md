@@ -11,11 +11,15 @@ supabase/
   migrations/*_mailboxes.sql          connected mailboxes; OAuth refresh tokens stored in Vault
   functions/profile/index.ts          API: GET / PATCH the signed-in user's profile
   functions/mailboxes/index.ts        API: list / connect (Microsoft OAuth) / disconnect Azure mailboxes
+  migrations/*_app_logs.sql           error log for UI and API, shown on the Logs page
+  functions/logs/index.ts             API: list / write (UI errors) / clear the caller's logs
+  functions/_shared/log.ts            logApi() / fail(): Edge Function errors -> app_logs
   functions/_shared/cors.ts           CORS headers (UI and API are on different origins)
 web/
   index.html                          redirects to dashboard or login
   login.html / signup.html            auth forms
   dashboard.html                      protected page, loads profile via the Edge Function
+  logs.html                           UI + API error log (side menu > Logs)
   assets/common.js                    Supabase client + session helpers
   build-config.mjs                    writes web/config.js from env vars (web/.env locally, Vercel env in prod)
 ```

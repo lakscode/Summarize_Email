@@ -423,3 +423,7 @@ verify_jwt = true
 [functions.mailboxes]
 verify_jwt = false
 
+
+[functions.logs]
+verify_jwt = true
+

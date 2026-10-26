@@ -37,3 +37,8 @@ $$;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- Users who signed up before this migration.
+insert into public.profiles (id, email, full_name)
+select id, email, raw_user_meta_data ->> 'full_name' from auth.users
+on conflict (id) do nothing;

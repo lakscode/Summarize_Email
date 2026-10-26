@@ -10,36 +10,32 @@
   <script src="assets/common.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <span class="brand">SummarizeMail</span>
-    <span class="user">
-      <span class="email" id="user-email"></span>
-      <button class="secondary" id="logout">Log out</button>
-    </span>
-  </header>
+  <div class="shell" hidden>
+    <aside id="sidebar" class="sidebar"></aside>
 
-  <main class="dashboard" hidden>
-    <div id="message" class="message" hidden></div>
-    <h1 id="greeting">Dashboard</h1>
-    <p class="sub">You're signed in.</p>
-    <section class="grid">
-      <div class="tile"><div class="label">Name</div><div class="value" id="profile-name">—</div></div>
-      <div class="tile"><div class="label">Email</div><div class="value" id="profile-email">—</div></div>
-      <div class="tile"><div class="label">Member since</div><div class="value" id="profile-since">—</div></div>
-    </section>
+    <main class="content">
+      <div id="message" class="message" hidden></div>
+      <h1 id="greeting">Dashboard</h1>
+      <p class="sub">You're signed in.</p>
+      <section class="grid">
+        <div class="tile"><div class="label">Name</div><div class="value" id="profile-name">—</div></div>
+        <div class="tile"><div class="label">Email</div><div class="value" id="profile-email">—</div></div>
+        <div class="tile"><div class="label">Member since</div><div class="value" id="profile-since">—</div></div>
+      </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <h2>Mailboxes</h2>
-          <p class="sub">Connect an Azure / Microsoft 365 (Outlook) mailbox to summarize.</p>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Mailboxes</h2>
+            <p class="sub">Connect an Azure / Microsoft 365 (Outlook) mailbox to summarize.</p>
+          </div>
+          <button id="add-azure">Add Azure mailbox</button>
         </div>
-        <button id="add-azure">Add Azure mailbox</button>
-      </div>
-      <ul class="list" id="mailbox-list"></ul>
-      <p class="empty" id="mailbox-empty" hidden>No mailboxes connected yet.</p>
-    </section>
-  </main>
+        <ul class="list" id="mailbox-list"></ul>
+        <p class="empty" id="mailbox-empty" hidden>No mailboxes connected yet.</p>
+      </section>
+    </main>
+  </div>
 
   <script>
     (async () => {
@@ -47,12 +43,16 @@
       if (!session) return;
       const { user } = session;
 
-      document.getElementById("user-email").textContent = user.email;
-      document.querySelector("main").hidden = false;
+      renderSidebar("dashboard", session);
+      document.querySelector(".shell").hidden = false;
+
+      // The OAuth callback redirects back here with ?connected= / ?connect_error=; show that first so
+      // a later load error doesn't hide it.
+      showConnectResult();
 
       // Supabase Edge Function API: supabase/functions/profile
-      const { data, error } = await sb.functions.invoke("profile", { method: "GET" });
-      if (error) showMessage(`Could not load profile: ${error.message}`, "error");
+      const { data, error } = await callApi("profile", { method: "GET" });
+      if (error) showMessage(`Could not load profile: ${error}`, "error");
       const profile = data?.profile;
 
       const name = profile?.full_name || user.user_metadata?.full_name || "";
@@ -62,15 +62,11 @@
       document.getElementById("profile-since").textContent =
         new Date(profile?.created_at || user.created_at).toLocaleDateString();
 
-      showConnectResult();
       await loadMailboxes();
     })();
 
-    document.getElementById("logout").addEventListener("click", () => sb.auth.signOut());
-
     // --- Mailboxes (Supabase Edge Function API: supabase/functions/mailboxes) ---
 
-    // The OAuth callback redirects back here with ?connected=<email> or ?connect_error=<message>.
     function showConnectResult() {
       const params = new URLSearchParams(location.search);
       if (params.has("connected")) showMessage(`Connected ${params.get("connected")}.`, "ok");
@@ -80,8 +76,8 @@
     }
 
     async function loadMailboxes() {
-      const { data, error } = await sb.functions.invoke("mailboxes", { method: "GET" });
-      if (error) return showMessage(`Could not load mailboxes: ${error.message}`, "error");
+      const { data, error } = await callApi("mailboxes", { method: "GET" });
+      if (error) return showMessage(`Could not load mailboxes: ${error}`, "error");
       const list = document.getElementById("mailbox-list");
       list.replaceChildren(...data.mailboxes.map(mailboxRow));
       document.getElementById("mailbox-empty").hidden = data.mailboxes.length > 0;
@@ -104,10 +100,10 @@
       remove.addEventListener("click", async () => {
         if (!confirm(`Disconnect ${m.email_address}?`)) return;
         remove.disabled = true;
-        const { error } = await sb.functions.invoke(`mailboxes?id=${encodeURIComponent(m.id)}`, { method: "DELETE" });
+        const { error } = await callApi(`mailboxes?id=${encodeURIComponent(m.id)}`, { method: "DELETE" });
         if (error) {
           remove.disabled = false;
-          return showMessage(`Could not disconnect: ${error.message}`, "error");
+          return showMessage(`Could not disconnect: ${error}`, "error");
         }
         showMessage(`Disconnected ${m.email_address}.`, "ok");
         await loadMailboxes();
@@ -121,12 +117,10 @@
       const button = e.currentTarget;
       button.disabled = true;
       showMessage("");
-      const { data, error } = await sb.functions.invoke("mailboxes", { body: { action: "connect" } });
+      const { data, error } = await callApi("mailboxes", { body: { action: "connect" } });
       if (error) {
         button.disabled = false;
-        // Surface the function's own message (e.g. Azure not configured) rather than the generic HTTP error.
-        const detail = await error.context?.json?.().catch(() => null);
-        return showMessage(detail?.error || error.message, "error");
+        return showMessage(error, "error");
       }
       location.href = data.url;
     });
