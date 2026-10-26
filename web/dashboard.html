@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard · SummarizeMail</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="assets/common.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">SummarizeMail</span>
+    <span class="user">
+      <span class="email" id="user-email"></span>
+      <button class="secondary" id="logout">Log out</button>
+    </span>
+  </header>
+
+  <main class="dashboard" hidden>
+    <div id="message" class="message" hidden></div>
+    <h1 id="greeting">Dashboard</h1>
+    <p class="sub">You're signed in.</p>
+    <section class="grid">
+      <div class="tile"><div class="label">Name</div><div class="value" id="profile-name">—</div></div>
+      <div class="tile"><div class="label">Email</div><div class="value" id="profile-email">—</div></div>
+      <div class="tile"><div class="label">Member since</div><div class="value" id="profile-since">—</div></div>
+    </section>
+  </main>
+
+  <script>
+    (async () => {
+      const session = await requireSession();
+      if (!session) return;
+      const { user } = session;
+
+      document.getElementById("user-email").textContent = user.email;
+      document.querySelector("main").hidden = false;
+
+      const { data: profile, error } = await sb
+        .from("profiles")
+        .select("full_name, email, created_at")
+        .eq("id", user.id)
+        .maybeSingle();
+      if (error) showMessage(`Could not load profile: ${error.message}`, "error");
+
+      const name = profile?.full_name || user.user_metadata?.full_name || "";
+      document.getElementById("greeting").textContent = name ? `Hello, ${name}` : "Dashboard";
+      document.getElementById("profile-name").textContent = name || "—";
+      document.getElementById("profile-email").textContent = profile?.email || user.email;
+      document.getElementById("profile-since").textContent =
+        new Date(profile?.created_at || user.created_at).toLocaleDateString();
+    })();
+
+    document.getElementById("logout").addEventListener("click", () => sb.auth.signOut());
+  </script>
+</body>
+</html>

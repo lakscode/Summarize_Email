@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Log in · SummarizeMail</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="assets/common.js"></script>
+</head>
+<body>
+  <div class="auth">
+    <div class="card">
+      <h1>Welcome back</h1>
+      <p class="sub">Log in to SummarizeMail</p>
+      <div id="message" class="message" hidden></div>
+      <form id="login-form">
+        <label>Email
+          <input type="email" name="email" autocomplete="email" required />
+        </label>
+        <label>Password
+          <input type="password" name="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit">Log in</button>
+      </form>
+      <p class="alt">No account? <a href="signup.html">Sign up</a></p>
+    </div>
+  </div>
+
+  <script>
+    redirectIfSignedIn();
+
+    if (new URLSearchParams(location.search).has("confirm")) {
+      showMessage("Check your email to confirm your account, then log in.", "ok");
+    }
+
+    const form = document.getElementById("login-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const { email, password } = Object.fromEntries(new FormData(form));
+      showMessage("");
+      setBusy(form, true);
+      const { error } = await sb.auth.signInWithPassword({ email, password });
+      setBusy(form, false);
+      if (error) return showMessage(error.message, "error");
+      location.replace(pageUrl("dashboard"));
+    });
+  </script>
+</body>
+</html>

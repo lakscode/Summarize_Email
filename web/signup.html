@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign up · SummarizeMail</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="assets/common.js"></script>
+</head>
+<body>
+  <div class="auth">
+    <div class="card">
+      <h1>Create account</h1>
+      <p class="sub">Start using SummarizeMail</p>
+      <div id="message" class="message" hidden></div>
+      <form id="signup-form">
+        <label>Full name
+          <input type="text" name="full_name" autocomplete="name" required />
+        </label>
+        <label>Email
+          <input type="email" name="email" autocomplete="email" required />
+        </label>
+        <label>Password
+          <input type="password" name="password" autocomplete="new-password" minlength="6" required />
+        </label>
+        <button type="submit">Sign up</button>
+      </form>
+      <p class="alt">Already have an account? <a href="login.html">Log in</a></p>
+    </div>
+  </div>
+
+  <script>
+    redirectIfSignedIn();
+
+    const form = document.getElementById("signup-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const { full_name, email, password } = Object.fromEntries(new FormData(form));
+      showMessage("");
+      setBusy(form, true);
+      const { data, error } = await sb.auth.signUp({
+        email,
+        password,
+        options: { data: { full_name }, emailRedirectTo: pageUrl("dashboard") },
+      });
+      setBusy(form, false);
+      if (error) return showMessage(error.message, "error");
+      // With email confirmation on, signUp returns no session until the link is clicked.
+      if (data.session) location.replace(pageUrl("dashboard"));
+      else location.replace(pageUrl("login") + "?confirm=1");
+    });
+  </script>
+</body>
+</html>

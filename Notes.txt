@@ -1,0 +1,1 @@
+npx supabase link --project-ref bnzllbgsbrhiesaqnkcz # asks for the database password

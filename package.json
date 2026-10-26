@@ -1,0 +1,12 @@
+{
+  "name": "summarize-mail",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "config": "node web/build-config.mjs",
+    "dev": "node web/build-config.mjs && npx serve web -l 5500",
+    "db:start": "npx supabase start",
+    "db:link": "npx supabase link",
+    "db:push": "npx supabase db push"
+  }
+}

@@ -1,0 +1,5 @@
+node_modules/
+web/.env
+web/config.js
+supabase/.temp/
+supabase/.branches/
