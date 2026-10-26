@@ -16,18 +16,30 @@
     <main class="content">
       <div id="message" class="message" hidden></div>
       <h1>Logs</h1>
-      <p class="sub">Errors from the web app (UI) and the Supabase Edge Functions (API), newest first.</p>
+      <p class="sub">Errors from the web app (UI) and the Supabase Edge Functions (API), plus a step-by-step trail of every inbox run. Newest first.</p>
 
       <div class="toolbar">
-        <div class="tabs" role="tablist">
-          <button class="tab active" data-source="">All</button>
-          <button class="tab" data-source="ui">UI</button>
-          <button class="tab" data-source="api">API</button>
+        <div class="filters">
+          <div class="tabs" role="tablist" id="kind-tabs">
+            <button class="tab active" data-kind="">Everything</button>
+            <button class="tab" data-kind="problems">Errors</button>
+            <button class="tab" data-kind="steps">Steps</button>
+          </div>
+          <div class="tabs" role="tablist" id="source-tabs">
+            <button class="tab active" data-source="">All</button>
+            <button class="tab" data-source="ui">UI</button>
+            <button class="tab" data-source="api">API</button>
+          </div>
         </div>
         <div class="toolbar-actions">
           <button class="secondary" id="refresh">Refresh</button>
           <button class="secondary" id="clear">Clear</button>
         </div>
+      </div>
+
+      <div class="run-banner" id="run-banner" hidden>
+        <span id="run-label"></span>
+        <button class="link-button" id="run-clear">Show all logs</button>
       </div>
 
       <div class="panel log-panel">
@@ -44,6 +56,8 @@
 
   <script>
     let source = "";
+    let kind = "";
+    let run = "";
 
     (async () => {
       const session = await requireSession();
@@ -54,7 +68,13 @@
     })();
 
     async function loadLogs() {
-      const query = source ? `?source=${source}` : "";
+      const params = new URLSearchParams();
+      if (source) params.set("source", source);
+      if (kind) params.set("kind", kind);
+      if (run) params.set("run", run);
+      document.getElementById("run-banner").hidden = !run;
+      document.getElementById("run-label").textContent = run ? `Showing every step of run ${run}, in order.` : "";
+      const query = params.size ? `?${params}` : "";
       const { data, error } = await callApi(`logs${query}`, { method: "GET" });
       if (error) {
         // Not via showMessage(..., "error"): if the logs API is down, logging that would fail too.
@@ -90,6 +110,16 @@
       const text = document.createElement("div");
       text.textContent = log.message;
       msg.append(text);
+      if (log.context?.run && !run) {
+        const follow = document.createElement("button");
+        follow.className = "link-button run-link";
+        follow.textContent = `Show run ${log.context.run}`;
+        follow.addEventListener("click", () => {
+          run = log.context.run;
+          loadLogs();
+        });
+        msg.append(follow);
+      }
       if (log.context && Object.keys(log.context).length) {
         const details = document.createElement("details");
         const summary = document.createElement("summary");
@@ -112,13 +142,23 @@
       return td;
     }
 
-    for (const tab of document.querySelectorAll(".tab")) {
-      tab.addEventListener("click", () => {
-        document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
-        source = tab.dataset.source;
-        loadLogs();
-      });
+    // Two independent tab groups: what kind of entry (errors / steps) and where it came from (UI / API).
+    for (const group of ["kind-tabs", "source-tabs"]) {
+      const tabs = document.querySelectorAll(`#${group} .tab`);
+      for (const tab of tabs) {
+        tab.addEventListener("click", () => {
+          tabs.forEach((t) => t.classList.toggle("active", t === tab));
+          if (group === "kind-tabs") kind = tab.dataset.kind;
+          else source = tab.dataset.source;
+          loadLogs();
+        });
+      }
     }
+
+    document.getElementById("run-clear").addEventListener("click", () => {
+      run = "";
+      loadLogs();
+    });
 
     document.getElementById("refresh").addEventListener("click", loadLogs);
 

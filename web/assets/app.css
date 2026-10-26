@@ -225,6 +225,11 @@ a.email-subject:hover { color: var(--accent); }
 /* Logs page */
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
 .toolbar-actions { display: flex; gap: 8px; }
+.filters { display: flex; gap: 10px; flex-wrap: wrap; }
+.run-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); font-size: 0.9rem; }
+.run-banner[hidden] { display: none; }
+.run-link { display: inline-block; margin-top: 4px; font-size: 0.82rem; }
+.badge.level-info { color: var(--muted); }
 .tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .tab { border-radius: 0; background: transparent; color: var(--text); font-weight: 500; padding: 8px 14px; }
 .tab.active { background: var(--accent); color: var(--accent-text); }

@@ -204,7 +204,7 @@ async function processMessage(
     return status;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await logApi("inbox/process", err, { userId, context: { mailbox: mailbox.email_address, subject: msg.subject } });
+    await logApi("inbox/process", err, { userId, context: { run: run.id, mailbox: mailbox.email_address, ...email } });
     await db.from("processed_emails").update({ status: "error", error: message, updated_at: new Date().toISOString() }).eq("id", rowId);
     return "error";
   }
@@ -212,7 +212,8 @@ async function processMessage(
 
 // The only automatic action: forward confident invoices to the mailbox's configured Smart AP address.
 // The recipient always comes from settings, never from the email or the model.
-async function takeAction(userId: string, mailbox: Mailbox, token: string, msg: GraphMessage, c: Classification) {
+async function takeAction(run: Run, mailbox: Mailbox, token: string, msg: GraphMessage, c: Classification) {
+  const userId = run.userId;
   if (c.category === "other") return { status: "no_action", action: null };
   if (c.category !== "invoice") return { status: "action_needed", action: null };
 
@@ -224,7 +225,7 @@ async function takeAction(userId: string, mailbox: Mailbox, token: string, msg: 
     await forwardMessage(token, msg.id, mailbox.smart_ap_address, `Forwarded automatically by SummarizeMail: invoice${details ? ` (${details})` : ""}.`);
     return { status: "done", action: `Forwarded to ${mailbox.smart_ap_address}` };
   } catch (err) {
-    await logApi("inbox/forward", err, { userId, level: "warn", context: { mailbox: mailbox.email_address, subject: msg.subject } });
+    await logApi("inbox/forward", err, { userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, subject: msg.subject } });
     const hint = String(err).includes("403") ? " Reconnect the mailbox to allow sending." : "";
     return { status: "action_needed", action: `Forward failed; forward it manually.${hint}` };
   }

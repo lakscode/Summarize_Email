@@ -50,7 +50,7 @@ Deno.serve(async (req) => {
     }, now);
 
     try {
-      const result = await processMailbox(m.owner_user_id, m.id, hours, false);
+      const result = await processMailbox(m.owner_user_id, m.id, hours, false, "schedule");
       const finished = result.remaining === 0;
       await db.from("mailboxes").update({
         // Unfinished batches keep the run due (and last_run_at unchanged) so the next tick continues.
