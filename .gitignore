@@ -3,3 +3,4 @@ web/.env
 web/config.js
 supabase/.temp/
 supabase/.branches/
+supabase/functions/.env

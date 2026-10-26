@@ -418,3 +418,8 @@ enabled = true
 [functions.profile]
 verify_jwt = true
 
+
+# Microsoft redirects to this function without a Supabase JWT; the function checks auth itself.
+[functions.mailboxes]
+verify_jwt = false
+

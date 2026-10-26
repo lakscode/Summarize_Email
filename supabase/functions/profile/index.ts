@@ -1,21 +1,15 @@
 // GET  /functions/v1/profile -> the signed-in user's profile
 // PATCH /functions/v1/profile { full_name } -> update it
 // Queries run as the caller (their JWT is forwarded), so RLS on public.profiles applies.
-import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, json } from "../_shared/cors.ts";
+import { callerUser } from "../_shared/supabase.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
-  const authHeader = req.headers.get("Authorization");
-  if (!authHeader) return json({ error: "Missing Authorization header" }, 401);
-
-  const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, {
-    global: { headers: { Authorization: authHeader } },
-  });
-
-  const { data: { user }, error: userError } = await sb.auth.getUser(authHeader.replace(/^Bearer /i, ""));
-  if (userError || !user) return json({ error: "Not signed in" }, 401);
+  const caller = await callerUser(req);
+  if (!caller) return json({ error: "Not signed in" }, 401);
+  const { user, sb } = caller;
 
   if (req.method === "GET") {
     const { data, error } = await sb

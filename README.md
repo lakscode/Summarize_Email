@@ -8,7 +8,9 @@ vercel.json                           Vercel build: generates web/config.js, ser
 supabase/
   config.toml                         local Supabase settings
   migrations/*_profiles.sql           profiles table + RLS + trigger that creates a row on signup
+  migrations/*_mailboxes.sql          connected mailboxes; OAuth refresh tokens stored in Vault
   functions/profile/index.ts          API: GET / PATCH the signed-in user's profile
+  functions/mailboxes/index.ts        API: list / connect (Microsoft OAuth) / disconnect Azure mailboxes
   functions/_shared/cors.ts           CORS headers (UI and API are on different origins)
 web/
   index.html                          redirects to dashboard or login
@@ -32,6 +34,21 @@ web/
 3. Authentication > URL Configuration:
    - **Site URL**: `https://<your-app>.vercel.app`
    - **Redirect URLs**: `https://<your-app>.vercel.app/**`, `https://*-<team>.vercel.app/**` (previews), `http://localhost:5500/**`
+
+## 1b. Azure mailbox connection
+
+1. Azure portal > Microsoft Entra ID > App registrations > New registration.
+   - Supported account types: pick "any organizational directory and personal accounts" (or single tenant).
+   - Redirect URI (Web): `https://<project-ref>.supabase.co/functions/v1/mailboxes`
+2. Certificates & secrets > New client secret. Copy the **value**.
+3. API permissions > Microsoft Graph > Delegated: `offline_access`, `User.Read`, `Mail.Read`.
+4. Copy `supabase/functions/.env.example` to `supabase/functions/.env`, fill in `MS_CLIENT_ID`,
+   `MS_CLIENT_SECRET`, `MS_TENANT_ID`, `OAUTH_STATE_SECRET` and `APP_URL`, then:
+   ```
+   npm run secrets
+   npm run functions:deploy
+   ```
+On the dashboard, **Add Azure mailbox** sends the user to Microsoft sign-in and back to `/dashboard`.
 
 ## 2. Vercel (UI)
 

@@ -27,6 +27,18 @@
       <div class="tile"><div class="label">Email</div><div class="value" id="profile-email">—</div></div>
       <div class="tile"><div class="label">Member since</div><div class="value" id="profile-since">—</div></div>
     </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Mailboxes</h2>
+          <p class="sub">Connect an Azure / Microsoft 365 (Outlook) mailbox to summarize.</p>
+        </div>
+        <button id="add-azure">Add Azure mailbox</button>
+      </div>
+      <ul class="list" id="mailbox-list"></ul>
+      <p class="empty" id="mailbox-empty" hidden>No mailboxes connected yet.</p>
+    </section>
   </main>
 
   <script>
@@ -49,9 +61,75 @@
       document.getElementById("profile-email").textContent = profile?.email || user.email;
       document.getElementById("profile-since").textContent =
         new Date(profile?.created_at || user.created_at).toLocaleDateString();
+
+      showConnectResult();
+      await loadMailboxes();
     })();
 
     document.getElementById("logout").addEventListener("click", () => sb.auth.signOut());
+
+    // --- Mailboxes (Supabase Edge Function API: supabase/functions/mailboxes) ---
+
+    // The OAuth callback redirects back here with ?connected=<email> or ?connect_error=<message>.
+    function showConnectResult() {
+      const params = new URLSearchParams(location.search);
+      if (params.has("connected")) showMessage(`Connected ${params.get("connected")}.`, "ok");
+      else if (params.has("connect_error")) showMessage(params.get("connect_error"), "error");
+      else return;
+      history.replaceState(null, "", location.pathname);
+    }
+
+    async function loadMailboxes() {
+      const { data, error } = await sb.functions.invoke("mailboxes", { method: "GET" });
+      if (error) return showMessage(`Could not load mailboxes: ${error.message}`, "error");
+      const list = document.getElementById("mailbox-list");
+      list.replaceChildren(...data.mailboxes.map(mailboxRow));
+      document.getElementById("mailbox-empty").hidden = data.mailboxes.length > 0;
+    }
+
+    function mailboxRow(m) {
+      const li = document.createElement("li");
+      const info = document.createElement("div");
+      const email = document.createElement("div");
+      email.className = "value";
+      email.textContent = m.email_address;
+      const meta = document.createElement("div");
+      meta.className = "label";
+      meta.textContent = `${m.display_name ? m.display_name + " · " : ""}Azure · connected ${new Date(m.created_at).toLocaleDateString()}`;
+      info.append(email, meta);
+
+      const remove = document.createElement("button");
+      remove.className = "secondary";
+      remove.textContent = "Disconnect";
+      remove.addEventListener("click", async () => {
+        if (!confirm(`Disconnect ${m.email_address}?`)) return;
+        remove.disabled = true;
+        const { error } = await sb.functions.invoke(`mailboxes?id=${encodeURIComponent(m.id)}`, { method: "DELETE" });
+        if (error) {
+          remove.disabled = false;
+          return showMessage(`Could not disconnect: ${error.message}`, "error");
+        }
+        showMessage(`Disconnected ${m.email_address}.`, "ok");
+        await loadMailboxes();
+      });
+
+      li.append(info, remove);
+      return li;
+    }
+
+    document.getElementById("add-azure").addEventListener("click", async (e) => {
+      const button = e.currentTarget;
+      button.disabled = true;
+      showMessage("");
+      const { data, error } = await sb.functions.invoke("mailboxes", { body: { action: "connect" } });
+      if (error) {
+        button.disabled = false;
+        // Surface the function's own message (e.g. Azure not configured) rather than the generic HTTP error.
+        const detail = await error.context?.json?.().catch(() => null);
+        return showMessage(detail?.error || error.message, "error");
+      }
+      location.href = data.url;
+    });
   </script>
 </body>
 </html>
