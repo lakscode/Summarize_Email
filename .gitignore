@@ -1,0 +1,4 @@
+web/config.js
+supabase/functions/.env
+node_modules/
+readme.txt

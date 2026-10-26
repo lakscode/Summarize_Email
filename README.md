@@ -1,0 +1,126 @@
+# AP Inbox — Supabase app
+
+Reads an accounts-payable mailbox (Microsoft 365 / Azure, Gmail, or any IMAP mailbox), classifies every
+email with Claude, carries out the routine step where one is defined, and tells the employee exactly what
+to do next — in a dashboard and in one summary email per run.
+
+| Category | How it's recognised | What the app does | What the employee is told |
+|---|---|---|---|
+| **Invoice** | Invoice PDF/body with number + amount due | Forwards to the Smart AP inbox (if auto-forward is on), skips duplicates already sent; tags `AI-Processed` | "Confirm invoice 483739 ($1,240.00, due 15 Nov) appears in Smart AP" — or, with auto-forward off, a **Send to Smart AP** button |
+| **Utility / portal bill** | "Your bill is ready", no invoice attached | Keeps the portal link only if it's on the provider's own domain; leaves the email untagged until done | "Log into the Evergy portal, download the bill for account … and send it to Smart AP" |
+| **Vendor info** | W-9, COI, price list, new contact, quote… | Summarises it and the key dates | "Review and keep for later; no invoice to process yet" |
+| **Account statement** | Statement of account / aging listing several invoices | Reads every line, reconciles against the AP ledger, then against invoices received by email | "Request these missing invoices from Cook's Pest Control: …" (with a table) |
+| **Other** | Past-due, disputes, credit memos, remittances, non-AP | Escalates past-due / disputes / unclear ones | Specific next step, or "No AP action" |
+
+**Fraud checks** run on every email (bank/remittance changes, SPF/DKIM/DMARC failures, reply-to mismatch,
+look-alike or free-mail senders, `.zip`/`.html`/macro attachments, portal links to other domains, plus
+Claude's own judgement). A flagged email is **never** forwarded automatically; the employee is told to
+verify with the vendor using a phone number they already have, and must confirm that before forwarding
+it from the dashboard.
+
+## How it fits together
+
+```
+pg_cron ──► process-inbox ──fan-out──► process-inbox (one per mailbox, background)
+                                          │ list new mail (Graph / Gmail API / IMAP)
+                                          │ safety checks  ─┐
+                                          │ Claude classify ├─► decide action ─► forward / label
+                                          │ reconcile stmts ┘
+                                          ├─► emails, statement_lines (Postgres)
+                                          └─► summary report email to the mailbox owner
+web/index.html ──► connect (OAuth / IMAP) · item-action (Send to Smart AP / Mark done) · tables via RLS
+```
+
+- `supabase/migrations/` — schema, RLS, Vault helpers (mailbox credentials are stored in Supabase Vault, never readable by the browser)
+- `supabase/functions/process-inbox` — the run: batching, thread de-duplication, report
+- `supabase/functions/connect` — Microsoft / Google OAuth, shared M365 mailbox, IMAP
+- `supabase/functions/item-action` — dashboard buttons
+- `supabase/functions/_shared` — providers, classifier prompt and schema (`classify.ts`), safety checks, reconciliation, report
+- `web/` — static dashboard (any static host)
+- `supabase/cron.sql` — the schedule
+
+## Setup
+
+### 1. Supabase project
+
+```bash
+npx supabase login
+npx supabase link --project-ref <project-ref>
+npx supabase db push
+```
+
+In **Authentication → URL Configuration**, add where you'll host the dashboard (e.g. `http://localhost:5500`)
+to the redirect URLs. Email sign-in (magic link) is used.
+
+### 2. Mail provider app registrations (only the ones you need)
+
+The OAuth redirect URI for both is `https://<project-ref>.supabase.co/functions/v1/connect`.
+
+**Microsoft 365 / Azure** — Entra ID → App registrations → New registration (Web platform, the redirect URI above).
+- *Signed-in mailbox:* delegated Graph permissions `offline_access`, `User.Read`, `Mail.ReadWrite`, `Mail.Send`.
+- *Shared AP mailbox (no sign-in):* application permissions `Mail.ReadWrite`, `Mail.Send` + admin consent, and set
+  `MS_TENANT_ID` to your tenant. **Scope the app to the AP mailbox only** with Exchange
+  [RBAC for Applications](https://learn.microsoft.com/exchange/permissions-exo/application-rbac) — otherwise it can read every mailbox in the tenant.
+- Create a client secret.
+
+**Gmail / Google Workspace** — Google Cloud console: enable the Gmail API, create an OAuth client (Web
+application, the redirect URI above). Scopes used: `gmail.modify`, `gmail.send`. For a Workspace domain set
+the consent screen to *Internal*; external use of these scopes requires Google verification.
+
+**IMAP** — nothing to register. Use an app password where the provider requires one. SMTP must be on port
+465 (Supabase blocks outbound 25 and 587).
+
+### 3. Secrets and functions
+
+```bash
+cp supabase/functions/.env.example supabase/functions/.env   # fill it in
+npx supabase secrets set --env-file supabase/functions/.env
+npx supabase functions deploy process-inbox connect item-action
+```
+
+`CRON_SECRET` and `OAUTH_STATE_SECRET` are any long random strings (e.g. `openssl rand -hex 32`).
+
+### 4. Dashboard
+
+```bash
+cp web/config.example.js web/config.js   # Supabase URL + anon key
+npx serve web -l 5500                    # or deploy web/ to any static host and set APP_URL to it
+```
+
+Sign in, connect the mailbox, then open **Mailbox settings** and set the Smart AP address. Auto-forward is
+**off** by default: invoices wait for a one-click **Send to Smart AP** confirmation. Turn it on once you trust
+the results. Optionally import an AP ledger CSV (`vendor_name, invoice_number, invoice_date, amount`) so
+statements are reconciled against your AP system and not just the mailbox.
+
+### 5. Schedule
+
+Edit and run `supabase/cron.sql` in the SQL editor (default: weekdays 07:00 UTC). **Process inbox now** in
+the dashboard runs it on demand.
+
+## Behaviour notes
+
+- **What's read:** Inbox mail received within the look-back window (default 24 h) that isn't already in the
+  database or tagged with the processed label. Earlier messages in a thread are skipped in favour of the
+  latest one.
+- **Report:** one email per run to the mailbox owner (or the configured recipient), titled
+  `AP Inbox Action Report – <date> (<N> action items)`, ordered: needs attention → statements → portal bills →
+  review → invoices. Items still open from earlier runs are repeated until marked done. No email is sent
+  when there was nothing new and nothing open.
+- **Labels:** processed mail gets the `AI-Processed` Outlook category / Gmail label / IMAP keyword. Portal
+  bills, flagged mail and invoices waiting for confirmation stay untagged until the employee acts.
+- **Model:** `claude-opus-5-5` with structured JSON output and the server-side refusal fallback; set
+  `CLAUDE_MODEL` to change it. PDFs, images and CSV/text attachments are sent to the model; other types
+  (e.g. `.xlsx`) are listed for the employee to check manually.
+- **Large inboxes:** each invocation handles `MAX_EMAILS_PER_INVOCATION` (12) emails, three at a time, then
+  continues itself in a fresh invocation; the report goes out once the backlog is done.
+- **Email content is untrusted:** the classifier is told never to follow instructions inside emails, and
+  forwarding / flagging decisions are enforced in code, not left to the model.
+
+## Development
+
+```bash
+deno test supabase/functions/tests/      # unit tests for safety checks, portal links, MIME builder
+deno check supabase/functions/*/index.ts
+ANTHROPIC_API_KEY=... deno run -A supabase/functions/tests/classify_smoke.ts   # live classifier check on sample emails
+npx supabase functions serve --env-file supabase/functions/.env   # needs Docker
+```
