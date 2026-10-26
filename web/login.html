@@ -9,11 +9,12 @@
   <script src="config.js"></script>
   <script src="assets/common.js"></script>
 </head>
-<body>
+<body class="with-bg">
   <div class="auth">
     <div class="card">
       <h1>Welcome back</h1>
       <p class="sub">Log in to SummarizeMail</p>
+      <p>Clear the AP inbox before your first coffee.</p>
       <div id="message" class="message" hidden></div>
       <form id="login-form">
         <label>Email
@@ -22,6 +23,7 @@
         <label>Password
           <input type="password" name="password" autocomplete="current-password" required />
         </label>
+        <p class="forgot"><a href="forgot-password.html">Forgot password?</a></p>
         <button type="submit">Log in</button>
       </form>
       <p class="alt">No account? <a href="signup.html">Sign up</a></p>
@@ -31,9 +33,9 @@
   <script>
     redirectIfSignedIn();
 
-    if (new URLSearchParams(location.search).has("confirm")) {
-      showMessage("Check your email to confirm your account, then log in.", "ok");
-    }
+    const params = new URLSearchParams(location.search);
+    if (params.has("confirm")) showMessage("Check your email to confirm your account, then log in.", "ok");
+    if (params.has("reset")) showMessage("Password updated. Log in with your new password.", "ok");
 
     const form = document.getElementById("login-form");
     form.addEventListener("submit", async (e) => {

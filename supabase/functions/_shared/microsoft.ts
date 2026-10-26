@@ -88,12 +88,31 @@ export async function listInbox(token: string, since: Date, top = 50): Promise<G
   return data.value;
 }
 
-export async function attachmentNames(token: string, messageId: string): Promise<string[]> {
-  const data = await graph<{ value: { name: string }[] }>(
+export interface AttachmentMeta {
+  id: string;
+  name: string;
+  contentType?: string;
+  size: number;
+  isInline?: boolean;
+  "@odata.type"?: string;
+}
+
+export async function listAttachments(token: string, messageId: string): Promise<AttachmentMeta[]> {
+  const data = await graph<{ value: AttachmentMeta[] }>(
     token,
-    `/me/messages/${encodeURIComponent(messageId)}/attachments?$select=name`,
+    `/me/messages/${encodeURIComponent(messageId)}/attachments?$select=id,name,contentType,size,isInline`,
   );
-  return data.value.map((a) => a.name);
+  return data.value;
+}
+
+// Raw bytes of a file attachment.
+export async function attachmentBytes(token: string, messageId: string, attachmentId: string): Promise<Uint8Array> {
+  const res = await fetch(
+    `${GRAPH}/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/$value`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw new Error(`Graph GET attachment failed: ${res.status} ${await res.text()}`);
+  return new Uint8Array(await res.arrayBuffer());
 }
 
 export async function forwardMessage(token: string, messageId: string, to: string, comment: string): Promise<void> {

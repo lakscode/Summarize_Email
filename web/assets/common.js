@@ -8,7 +8,20 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   );
 }
 
-const sb = window.supabase.createClient(SUPABASE_URL || "http://invalid", SUPABASE_ANON_KEY || "missing");
+// Login lasts for this browser tab/window only: the session lives in sessionStorage, so a new tab must
+// log in again and closing the tab signs out. Same-tab redirects (e.g. Microsoft sign-in) keep it.
+// Sessions saved in localStorage by earlier versions are removed so they can't sign other tabs in.
+try {
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith("sb-") && key.endsWith("-auth-token")) localStorage.removeItem(key);
+  }
+} catch {
+  // Storage blocked: nothing to clean up.
+}
+
+const sb = window.supabase.createClient(SUPABASE_URL || "http://invalid", SUPABASE_ANON_KEY || "missing", {
+  auth: { storage: window.sessionStorage, persistSession: true },
+});
 
 const pageUrl = (name) => new URL(`${name}.html`, location.href).href;
 

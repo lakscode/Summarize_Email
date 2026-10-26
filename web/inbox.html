@@ -31,6 +31,10 @@
               <option value="336">Last 14 days</option>
             </select>
           </label>
+          <label class="checkbox">
+            <input type="checkbox" name="reprocess" />
+            Re-check emails already processed (never forwards twice)
+          </label>
           <button type="submit" id="process-btn">Process inbox</button>
         </form>
         <p class="empty" id="no-mailboxes" hidden>Connect a mailbox on the <a href="dashboard.html">Dashboard</a> first.</p>
@@ -182,13 +186,13 @@
     document.getElementById("process-form").addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const form = ev.currentTarget;
-      const { mailbox_id, lookback_hours } = Object.fromEntries(new FormData(form));
+      const { mailbox_id, lookback_hours, reprocess } = Object.fromEntries(new FormData(form));
       const button = document.getElementById("process-btn");
       setBusy(form, true);
       button.textContent = "Processing…";
       showMessage("Reading and classifying emails. This can take a minute.", "info");
       const { data, error } = await callApi("inbox", {
-        body: { action: "process", mailbox_id, lookback_hours: Number(lookback_hours) },
+        body: { action: "process", mailbox_id, lookback_hours: Number(lookback_hours), reprocess: reprocess === "on" },
       });
       setBusy(form, false);
       button.textContent = "Process inbox";

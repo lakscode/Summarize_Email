@@ -10,6 +10,7 @@
   --error-text: #a12626;
   --ok-bg: #e8f6ee;
   --ok-text: #1d6b3f;
+  --bg-overlay: linear-gradient(transparent, transparent);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color-scheme: light dark;
 }
@@ -27,6 +28,7 @@
     --error-text: #ffb3b3;
     --ok-bg: #173325;
     --ok-text: #9fe0bb;
+    --bg-overlay: linear-gradient(rgba(18, 21, 27, 0.86), rgba(18, 21, 27, 0.86));
   }
 }
 
@@ -37,6 +39,16 @@ body {
   min-height: 100vh;
   background: var(--bg);
   color: var(--text);
+}
+
+/* Illustrated background for the login and password-reset pages (<body class="with-bg">).
+   Fixed layer, so it doesn't scroll or stretch with the page. */
+body.with-bg::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: var(--bg-overlay), url("../images/bg.png") center / cover no-repeat;
 }
 
 a { color: var(--accent); }
@@ -86,6 +98,7 @@ button {
 button:disabled { opacity: 0.6; cursor: default; }
 button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
 
+.forgot { margin: -4px 0 0; text-align: right; font-size: 0.85rem; }
 .alt { margin: 18px 0 0; text-align: center; color: var(--muted); font-size: 0.9rem; }
 
 .message { padding: 10px 12px; border-radius: 8px; font-size: 0.9rem; margin-bottom: 14px; }
@@ -162,6 +175,8 @@ select {
 .process-form { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .process-form label { min-width: 200px; }
 .process-panel .empty { margin: 0; }
+label.checkbox { display: flex; flex-direction: row; align-items: center; gap: 8px; min-width: 0; font-weight: 400; color: var(--muted); padding-bottom: 10px; }
+label.checkbox input { width: 16px; height: 16px; }
 
 .email-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
 .email { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }

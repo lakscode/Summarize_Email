@@ -1,19 +1,29 @@
 // AP inbox processing for the signed-in user's connected mailboxes.
 //   GET   ?status=&mailbox_id=                          -> { emails: [...] } newest first
-//   POST  {action: "process", mailbox_id, lookback_hours} -> read new inbox mail, classify with Claude,
+//   POST  {action: "process", mailbox_id, lookback_hours, reprocess?} -> read inbox mail, classify with Claude,
 //                                                          forward invoices to the Smart AP address
 //   PATCH {id, status: "done" | "action_needed"}       -> employee marks an item handled / reopens it
-// Each message is processed once per mailbox (unique mailbox_id + message_id), so re-running is safe.
-import { classifyEmail, type Classification } from "../_shared/classify.ts";
+// Each message is processed once per mailbox (unique mailbox_id + message_id). With reprocess, emails already
+// classified are classified again unless they were forwarded or marked done, so nothing is forwarded twice.
+import { encodeBase64 } from "jsr:@std/encoding@1/base64";
+import { type AttachmentFile, classifyEmail, type Classification } from "../_shared/classify.ts";
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
-import { attachmentNames, forwardMessage, type GraphMessage, graphToken, listInbox } from "../_shared/microsoft.ts";
+import { attachmentBytes, forwardMessage, type GraphMessage, graphToken, listAttachments, listInbox } from "../_shared/microsoft.ts";
 import { adminClient, callerUser } from "../_shared/supabase.ts";
 
 // Keeps one run well inside the Edge Function time limit; the UI offers to run again when more remain.
 const MAX_PER_RUN = 15;
 const CONCURRENCY = 4;
 const STATUSES = ["processing", "action_needed", "done", "no_action", "error"];
+const RECHECKABLE = ["no_action", "error", "action_needed"];
+
+// Attachments sent to Claude. Small images are usually logos / signatures and are skipped.
+const MAX_FILES = 4;
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+const MIN_IMAGE_BYTES = 15 * 1024;
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -58,7 +68,7 @@ Deno.serve(async (req) => {
       const body = await req.json().catch(() => ({}));
       if (body.action !== "process" || !body.mailbox_id) return json({ error: "action 'process' and mailbox_id are required" }, 400);
       const hours = Math.min(Math.max(Number(body.lookback_hours) || 24, 1), 24 * 14);
-      return json(await processMailbox(user.id, body.mailbox_id, hours));
+      return json(await processMailbox(user.id, body.mailbox_id, hours, body.reprocess === true));
     }
 
     return json({ error: "Method not allowed" }, 405);
@@ -68,7 +78,7 @@ Deno.serve(async (req) => {
   }
 });
 
-async function processMailbox(userId: string, mailboxId: string, hours: number) {
+async function processMailbox(userId: string, mailboxId: string, hours: number, reprocess: boolean) {
   const db = adminClient();
   await db.rpc("expire_mailbox_access");
   const { data: mailbox, error } = await db.from("mailboxes")
@@ -84,18 +94,24 @@ async function processMailbox(userId: string, mailboxId: string, hours: number) 
   const messages = await listInbox(token, new Date(Date.now() - hours * 3600_000));
 
   const { data: seen, error: seenError } = messages.length
-    ? await db.from("processed_emails").select("message_id").eq("mailbox_id", mailbox.id).in("message_id", messages.map((m) => m.id))
+    ? await db.from("processed_emails").select("id, message_id, status, action_taken")
+      .eq("mailbox_id", mailbox.id).in("message_id", messages.map((m) => m.id))
     : { data: [], error: null };
   if (seenError) throw new Error(seenError.message);
-  const seenIds = new Set((seen ?? []).map((r) => r.message_id));
-  const fresh = messages.filter((m) => !seenIds.has(m.id));
+  const seenById = new Map<string, ExistingRow>((seen as ExistingRow[] ?? []).map((r) => [r.message_id, r]));
+  const recheckable = (row: ExistingRow) =>
+    RECHECKABLE.includes(row.status) && !(row.action_taken ?? "").startsWith("Forwarded");
+  const fresh = messages.filter((m) => {
+    const row = seenById.get(m.id);
+    return !row || (reprocess && recheckable(row));
+  });
   const batch = fresh.slice(0, MAX_PER_RUN);
 
   const counts: Record<string, number> = {};
   const queue = [...batch];
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
     for (let msg = queue.shift(); msg; msg = queue.shift()) {
-      const status = await processMessage(db, userId, mailbox, token, msg);
+      const status = await processMessage(db, userId, mailbox, token, msg, seenById.get(msg.id));
       if (status) counts[status] = (counts[status] ?? 0) + 1;
     }
   }));
@@ -112,11 +128,21 @@ async function processMailbox(userId: string, mailboxId: string, hours: number) 
 
 type Db = ReturnType<typeof adminClient>;
 interface Mailbox { id: string; email_address: string; credentials_secret_id: string | null; smart_ap_address: string | null }
+interface ExistingRow { id: string; message_id: string; status: string; action_taken: string | null }
 
-// Returns the final status, or null if another run already claimed the message.
-async function processMessage(db: Db, userId: string, mailbox: Mailbox, token: string, msg: GraphMessage): Promise<string | null> {
+// Claims the message for this run: inserts a new row, or (re-check) flips an existing row back to processing
+// only if it is still in the status we read, so two runs never work on the same email.
+async function claim(db: Db, userId: string, mailbox: Mailbox, msg: GraphMessage, existing?: ExistingRow): Promise<string | null> {
+  if (existing) {
+    const { data, error } = await db.from("processed_emails")
+      .update({ status: "processing", error: null, updated_at: new Date().toISOString() })
+      .eq("id", existing.id).eq("status", existing.status)
+      .select("id");
+    if (error) throw new Error(error.message);
+    return data?.[0]?.id ?? null;
+  }
   const from = msg.from?.emailAddress ?? {};
-  const { data: claimed, error: claimError } = await db.from("processed_emails").upsert({
+  const { data, error } = await db.from("processed_emails").upsert({
     mailbox_id: mailbox.id,
     owner_user_id: userId,
     message_id: msg.id,
@@ -127,23 +153,62 @@ async function processMessage(db: Db, userId: string, mailbox: Mailbox, token: s
     web_link: msg.webLink ?? null,
     status: "processing",
   }, { onConflict: "mailbox_id,message_id", ignoreDuplicates: true }).select("id");
-  if (claimError) throw new Error(claimError.message);
-  if (!claimed?.length) return null;
-  const rowId = claimed[0].id;
+  if (error) throw new Error(error.message);
+  return data?.[0]?.id ?? null;
+}
+
+// All attachment names, plus the PDFs / images Claude should read (within size limits).
+async function gatherAttachments(token: string, msg: GraphMessage) {
+  if (!msg.hasAttachments) return { names: [] as string[], files: [] as AttachmentFile[], skipped: [] as string[] };
+  const all = await listAttachments(token, msg.id);
+  const files: AttachmentFile[] = [];
+  const skipped: string[] = [];
+  let total = 0;
+
+  for (const a of all) {
+    if (a["@odata.type"] && a["@odata.type"] !== "#microsoft.graph.fileAttachment") continue;
+    const type = (a.contentType ?? "").toLowerCase();
+    const isPdf = type === "application/pdf" || a.name.toLowerCase().endsWith(".pdf");
+    const isImage = IMAGE_TYPES.includes(type) && !a.isInline && a.size >= MIN_IMAGE_BYTES;
+    if (!isPdf && !isImage) continue;
+    if (files.length >= MAX_FILES || a.size > MAX_FILE_BYTES || total + a.size > MAX_TOTAL_BYTES) {
+      skipped.push(a.name);
+      continue;
+    }
+    const bytes = await attachmentBytes(token, msg.id, a.id);
+    total += bytes.length;
+    files.push({
+      name: a.name,
+      mediaType: isPdf ? "application/pdf" : type as AttachmentFile["mediaType"],
+      base64: encodeBase64(bytes),
+    });
+  }
+  return { names: all.map((a) => a.name), files, skipped };
+}
+
+// Returns the final status, or null if another run already claimed the message.
+async function processMessage(
+  db: Db, userId: string, mailbox: Mailbox, token: string, msg: GraphMessage, existing?: ExistingRow,
+): Promise<string | null> {
+  const rowId = await claim(db, userId, mailbox, msg, existing);
+  if (!rowId) return null;
+  const from = msg.from?.emailAddress ?? {};
 
   try {
-    const attachments = msg.hasAttachments ? await attachmentNames(token, msg.id) : [];
+    const attachments = await gatherAttachments(token, msg);
     const c = await classifyEmail({
       from: from.name ? `${from.name} <${from.address}>` : from.address ?? "unknown",
       subject: msg.subject ?? "",
       received: msg.receivedDateTime,
-      attachments,
+      attachmentNames: attachments.names,
+      files: attachments.files,
+      skippedFiles: attachments.skipped,
       body: msg.body?.content ?? "",
     });
     const { status, action } = await takeAction(userId, mailbox, token, msg, c);
 
     const { error } = await db.from("processed_emails").update({
-      attachment_names: attachments,
+      attachment_names: attachments.names,
       category: c.category,
       confidence: c.confidence,
       vendor: c.vendor || null,
