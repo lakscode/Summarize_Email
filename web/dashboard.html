@@ -29,8 +29,19 @@
             <h2>Mailboxes</h2>
             <p class="sub">Connect an Azure / Microsoft 365 (Outlook) mailbox to summarize.</p>
           </div>
-          <button id="add-azure">Add Azure mailbox</button>
+          <div class="connect-controls">
+            <label>Allow access for
+              <select id="access-days">
+                <option value="1">1 day</option>
+                <option value="7">7 days</option>
+                <option value="30" selected>30 days</option>
+                <option value="90">90 days</option>
+              </select>
+            </label>
+            <button id="add-azure">Add Azure mailbox</button>
+          </div>
         </div>
+        <p class="hint">The app keeps an encrypted Microsoft token only for the period you choose, then deletes it. Reconnect to extend.</p>
         <ul class="list" id="mailbox-list"></ul>
         <p class="empty" id="mailbox-empty" hidden>No mailboxes connected yet.</p>
       </section>
@@ -69,7 +80,10 @@
 
     function showConnectResult() {
       const params = new URLSearchParams(location.search);
-      if (params.has("connected")) showMessage(`Connected ${params.get("connected")}.`, "ok");
+      if (params.has("connected")) {
+        const days = Number(params.get("days"));
+        showMessage(`Connected ${params.get("connected")}${days ? ` for ${days} day${days === 1 ? "" : "s"}` : ""}.`, "ok");
+      }
       else if (params.has("connect_error")) showMessage(params.get("connect_error"), "error");
       else return;
       history.replaceState(null, "", location.pathname);
@@ -92,7 +106,24 @@
       const meta = document.createElement("div");
       meta.className = "label";
       meta.textContent = `${m.display_name ? m.display_name + " · " : ""}Azure · connected ${new Date(m.created_at).toLocaleDateString()}`;
-      info.append(email, meta, smartApForm(m));
+
+      // Access window: active until access_expires_at, then the token is deleted and a reconnect is needed.
+      const expired = !m.active || (m.access_expires_at && new Date(m.access_expires_at) <= new Date());
+      const access = document.createElement("div");
+      access.className = expired ? "access expired" : "access";
+      if (expired) {
+        access.textContent = "Access expired. ";
+        const reconnect = document.createElement("button");
+        reconnect.className = "link-button";
+        reconnect.textContent = "Reconnect";
+        reconnect.addEventListener("click", () => startConnect(reconnect));
+        access.append(reconnect);
+      } else {
+        access.textContent = m.access_expires_at
+          ? `Access until ${new Date(m.access_expires_at).toLocaleString()}`
+          : "Access has no expiry (connected before access periods). Reconnect to set one.";
+      }
+      info.append(email, meta, access, smartApForm(m));
 
       const remove = document.createElement("button");
       remove.className = "secondary";
@@ -141,17 +172,20 @@
       return form;
     }
 
-    document.getElementById("add-azure").addEventListener("click", async (e) => {
-      const button = e.currentTarget;
+    // Starts Microsoft sign-in; the chosen access period is carried through to the callback.
+    async function startConnect(button) {
       button.disabled = true;
       showMessage("");
-      const { data, error } = await callApi("mailboxes", { body: { action: "connect" } });
+      const access_days = Number(document.getElementById("access-days").value);
+      const { data, error } = await callApi("mailboxes", { body: { action: "connect", access_days } });
       if (error) {
         button.disabled = false;
         return showMessage(error, "error");
       }
       location.href = data.url;
-    });
+    }
+
+    document.getElementById("add-azure").addEventListener("click", (e) => startConnect(e.currentTarget));
   </script>
 </body>
 </html>

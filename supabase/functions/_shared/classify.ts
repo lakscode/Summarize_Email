@@ -38,7 +38,7 @@ const SCHEMA = {
     invoice_number: { type: "string", description: "Invoice or account number if present, else empty string." },
     amount: { type: "string", description: "Total amount due with currency, e.g. 'USD 1,250.00', else empty string." },
     due_date: { type: "string", description: "Due date as YYYY-MM-DD if present, else empty string." },
-    summary: { type: "string", description: "One or two sentences describing the email." },
+    summary: { type: "string", description: "One-line summary of the email, at most 20 words." },
     next_step: { type: "string", description: "The concrete action the AP employee should take next." },
   },
 };
@@ -51,6 +51,8 @@ Classify each email into exactly one category:
 - vendor_info: informational or compliance paperwork from a vendor (W-9, certificate of insurance, banking/remit-to changes, contracts, price notices).
 - statement: an account statement listing several invoices, payments or balances that AP should reconcile.
 - other: anything else (marketing, internal chatter, receipts needing no action, automated notices).
+
+Write summary as a single line of at most 20 words (who sent what, and the key amount or date if any).
 
 Then write next_step: the specific thing the AP employee should do (e.g. "Pay through the Evergy portal by 2026-11-10", "Update the vendor's remit-to address after verbal verification", "Reconcile the 4 open invoices against the ledger"). For other, say no action is needed and why.
 

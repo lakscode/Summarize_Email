@@ -1,9 +1,10 @@
 // Azure / Microsoft 365 mailboxes for the signed-in user.
-//   GET                         -> { mailboxes: [...] }
-//   POST {action: "connect"}    -> { url } to start Microsoft sign-in (delegated OAuth)
-//   PATCH {id, smart_ap_address} -> set where invoices are forwarded ("" clears it)
-//   DELETE ?id=<mailbox id>     -> disconnect (Vault secret removed by trigger)
-//   GET ?code=...&state=...     -> OAuth callback from Microsoft; stores the refresh token, redirects to the dashboard
+//   GET                                   -> { mailboxes: [...] } (expired access is cleaned up first)
+//   POST {action: "connect", access_days} -> { url } to start Microsoft sign-in (delegated OAuth)
+//   PATCH {id, smart_ap_address}          -> set where invoices are forwarded ("" clears it)
+//   DELETE ?id=<mailbox id>               -> disconnect (Vault secret removed by trigger)
+//   GET ?code=...&state=...               -> OAuth callback from Microsoft; stores the refresh token for the
+//                                            chosen number of days, redirects back to the app's dashboard
 // verify_jwt is off for this function (the Microsoft callback carries no Supabase JWT); every other
 // route checks the caller itself. Failures are written to app_logs (see _shared/log.ts).
 import { decodeBase64Url, encodeBase64Url } from "jsr:@std/encoding@1/base64url";
@@ -12,8 +13,18 @@ import { fail, logApi } from "../_shared/log.ts";
 import { MS_SCOPES, msBase } from "../_shared/microsoft.ts";
 import { adminClient, callerUser, env } from "../_shared/supabase.ts";
 
+const ACCESS_DAYS = [1, 7, 30, 90];
+const DEFAULT_ACCESS_DAYS = 30;
+
 const redirectUri = () => `${env("SUPABASE_URL")}/functions/v1/mailboxes`;
-const dashboardUrl = () => `${env("APP_URL").replace(/\/+$/, "")}/dashboard`;
+
+// The app origin travels in the signed OAuth state (taken from the browser's Origin header when connecting),
+// so the callback returns to whichever deployment started it. APP_URL is only a fallback.
+function appOrigin(req: Request): string | null {
+  const origin = req.headers.get("Origin");
+  if (origin && /^https?:\/\/[^/]+$/.test(origin)) return origin;
+  return Deno.env.get("APP_URL")?.replace(/\/+$/, "") || null;
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -29,9 +40,12 @@ Deno.serve(async (req) => {
 
   try {
     if (req.method === "GET") {
+      const { error: expireError } = await adminClient().rpc("expire_mailbox_access");
+      if (expireError) await logApi("mailboxes/expire", expireError.message, { userId: user.id, level: "warn" });
+
       const { data, error } = await sb
         .from("mailboxes")
-        .select("id, provider, email_address, display_name, active, smart_ap_address, last_processed_at, created_at")
+        .select("id, provider, email_address, display_name, active, smart_ap_address, last_processed_at, access_expires_at, created_at")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
       return json({ mailboxes: data });
@@ -40,10 +54,14 @@ Deno.serve(async (req) => {
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
       if (body.action !== "connect") return json({ error: "Unknown action" }, 400);
-      const missing = ["MS_CLIENT_ID", "MS_CLIENT_SECRET", "OAUTH_STATE_SECRET", "APP_URL"].filter((n) => !Deno.env.get(n));
+      const missing = ["MS_CLIENT_ID", "MS_CLIENT_SECRET", "OAUTH_STATE_SECRET"].filter((n) => !Deno.env.get(n));
       if (missing.length) {
         return await fail("mailboxes/connect", `Azure isn't set up on the server yet (missing ${missing.join(", ")}).`, 400, { userId: user.id });
       }
+      const origin = appOrigin(req);
+      if (!origin) return await fail("mailboxes/connect", "Could not tell which site to return to (no Origin header or APP_URL).", 400, { userId: user.id });
+      const days = ACCESS_DAYS.includes(Number(body.access_days)) ? Number(body.access_days) : DEFAULT_ACCESS_DAYS;
+
       return json({
         url: `${msBase()}/authorize?` + new URLSearchParams({
           client_id: env("MS_CLIENT_ID"),
@@ -52,7 +70,7 @@ Deno.serve(async (req) => {
           response_mode: "query",
           scope: MS_SCOPES,
           prompt: "select_account",
-          state: await signState(user.id),
+          state: await signState({ uid: user.id, days, origin }),
         }),
       });
     }
@@ -90,12 +108,16 @@ Deno.serve(async (req) => {
   }
 });
 
-// Always ends with a redirect to the dashboard; the outcome travels in ?connected= / ?connect_error=.
+// Always ends with a redirect to the app's dashboard; the outcome travels in ?connected= / ?connect_error=.
 async function oauthCallback(url: URL): Promise<Response> {
-  const back = (params: Record<string, string>) =>
-    Response.redirect(`${dashboardUrl()}?${new URLSearchParams(params)}`, 302);
+  const state = await verifyState(url.searchParams.get("state") ?? "").catch(() => null);
+  const userId = state?.uid ?? null;
 
-  const userId = await verifyState(url.searchParams.get("state") ?? "").catch(() => null);
+  const back = (params: Record<string, string>) => {
+    const origin = state?.origin ?? Deno.env.get("APP_URL")?.replace(/\/+$/, "");
+    if (!origin) return json({ error: params.connect_error ?? "Connected. Return to the app." }, 400);
+    return Response.redirect(`${origin}/dashboard?${new URLSearchParams(params)}`, 302);
+  };
   const failed = async (message: string, err: unknown = message, context?: Record<string, unknown>) => {
     await logApi("mailboxes/callback", err, { userId, context });
     return back({ connect_error: message });
@@ -105,7 +127,7 @@ async function oauthCallback(url: URL): Promise<Response> {
     const detail = url.searchParams.get("error_description") ?? url.searchParams.get("error")!;
     return await failed(detail, `Microsoft returned an error: ${detail}`, { error: url.searchParams.get("error") });
   }
-  if (!userId) return await failed("Sign-in expired or was tampered with. Please try again.");
+  if (!state) return await failed("Sign-in expired or was tampered with. Please try again.");
 
   try {
     const tokenRes = await fetch(`${msBase()}/token`, {
@@ -144,13 +166,13 @@ async function oauthCallback(url: URL): Promise<Response> {
 
     const db = adminClient();
     const { data: existing, error: findError } = await db.from("mailboxes").select("id, credentials_secret_id")
-      .eq("owner_user_id", userId).eq("email_address", email).maybeSingle();
+      .eq("owner_user_id", state.uid).eq("email_address", email).maybeSingle();
     if (findError) throw new Error(findError.message);
 
     let id = existing?.id as string | undefined;
     if (!id) {
       const { data, error } = await db.from("mailboxes")
-        .insert({ owner_user_id: userId, provider: "microsoft", email_address: email, display_name: me.displayName ?? null })
+        .insert({ owner_user_id: state.uid, provider: "microsoft", email_address: email, display_name: me.displayName ?? null })
         .select("id").single();
       if (error) throw new Error(error.message);
       id = data.id as string;
@@ -163,15 +185,17 @@ async function oauthCallback(url: URL): Promise<Response> {
     });
     if (secretError) throw new Error(`Could not store mailbox credentials: ${secretError.message}`);
 
+    const expiresAt = new Date(Date.now() + state.days * 86_400_000);
     const { error } = await db.from("mailboxes").update({
       credentials_secret_id: secretId,
       display_name: me.displayName ?? null,
       active: true,
+      access_expires_at: expiresAt.toISOString(),
       updated_at: new Date().toISOString(),
     }).eq("id", id);
     if (error) throw new Error(error.message);
 
-    return back({ connected: email });
+    return back({ connected: email, days: String(state.days) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return await failed(`Could not save the mailbox: ${message}`, err);
@@ -180,6 +204,12 @@ async function oauthCallback(url: URL): Promise<Response> {
 
 // --- signed OAuth state (HMAC-SHA256, 15 minute expiry) ----------------------------------
 
+interface State {
+  uid: string;
+  days: number;
+  origin: string;
+}
+
 const enc = new TextEncoder();
 
 async function hmacKey() {
@@ -187,17 +217,18 @@ async function hmacKey() {
     { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
 }
 
-async function signState(uid: string): Promise<string> {
-  const payload = encodeBase64Url(enc.encode(JSON.stringify({ uid, exp: Date.now() + 15 * 60_000 })));
+async function signState(s: State): Promise<string> {
+  const payload = encodeBase64Url(enc.encode(JSON.stringify({ ...s, exp: Date.now() + 15 * 60_000 })));
   const sig = new Uint8Array(await crypto.subtle.sign("HMAC", await hmacKey(), enc.encode(payload)));
   return `${payload}.${encodeBase64Url(sig)}`;
 }
 
-async function verifyState(token: string): Promise<string | null> {
+async function verifyState(token: string): Promise<State | null> {
   const [payload, sig] = token.split(".");
   if (!payload || !sig) return null;
   const ok = await crypto.subtle.verify("HMAC", await hmacKey(), decodeBase64Url(sig), enc.encode(payload));
   if (!ok) return null;
   const s = JSON.parse(new TextDecoder().decode(decodeBase64Url(payload)));
-  return s.exp > Date.now() && typeof s.uid === "string" ? s.uid : null;
+  if (!(s.exp > Date.now()) || typeof s.uid !== "string" || typeof s.origin !== "string") return null;
+  return { uid: s.uid, days: ACCESS_DAYS.includes(s.days) ? s.days : DEFAULT_ACCESS_DAYS, origin: s.origin };
 }

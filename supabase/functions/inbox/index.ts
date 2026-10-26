@@ -70,11 +70,15 @@ Deno.serve(async (req) => {
 
 async function processMailbox(userId: string, mailboxId: string, hours: number) {
   const db = adminClient();
+  await db.rpc("expire_mailbox_access");
   const { data: mailbox, error } = await db.from("mailboxes")
-    .select("id, email_address, credentials_secret_id, smart_ap_address")
+    .select("id, email_address, credentials_secret_id, smart_ap_address, access_expires_at")
     .eq("id", mailboxId).eq("owner_user_id", userId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!mailbox) throw new Error("Mailbox not found");
+  if (!mailbox.credentials_secret_id) {
+    throw new Error(`Access to ${mailbox.email_address} has expired. Reconnect it on the dashboard.`);
+  }
 
   const token = await graphToken(db, mailbox);
   const messages = await listInbox(token, new Date(Date.now() - hours * 3600_000));

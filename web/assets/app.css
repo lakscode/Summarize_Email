@@ -143,6 +143,14 @@ select {
   color: var(--text);
 }
 
+/* Dashboard: connect controls and access period */
+.connect-controls { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.connect-controls label { font-size: 0.8rem; color: var(--muted); }
+.hint { margin: 10px 0 0; color: var(--muted); font-size: 0.85rem; }
+.access { margin-top: 6px; font-size: 0.85rem; color: var(--ok-text); }
+.access.expired { color: var(--error-text); }
+.link-button { padding: 0; background: none; border: 0; color: var(--accent); font-weight: 600; text-decoration: underline; cursor: pointer; }
+
 /* Dashboard: per-mailbox Smart AP address */
 .inline-form { display: flex; align-items: flex-end; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .inline-form label { font-size: 0.8rem; color: var(--muted); }
@@ -166,7 +174,18 @@ a.email-subject:hover { color: var(--accent); }
 .facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 12px 0 0; font-size: 0.9rem; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; word-break: break-word; }
-.email-summary { margin: 12px 0 0; }
+.email-oneline { margin: 6px 0 0; color: var(--text); }
+.email-details { margin-top: 10px; }
+.email-details summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+.email-details .facts { margin-top: 8px; }
+
+/* Action needed or not: the first thing on every row */
+.pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 700; }
+.pill.action-action_needed { background: var(--accent); color: var(--accent-text); }
+.pill.action-done { background: var(--ok-bg); color: var(--ok-text); }
+.pill.action-no_action, .pill.action-processing { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+.pill.action-error { background: var(--error-bg); color: var(--error-text); }
+.email.status-row-action_needed { border-left: 4px solid var(--accent); }
 .next-step { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--bg); }
 .action-taken { margin-top: 8px; color: var(--muted); font-size: 0.88rem; }
 .email .message { margin: 10px 0 0; }

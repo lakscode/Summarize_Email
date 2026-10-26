@@ -107,13 +107,23 @@
       return node;
     }
 
+    // Whether the employee has to do anything, as shown at the start of each row.
+    const ACTION_LABELS = {
+      action_needed: "Action needed",
+      done: "Done",
+      no_action: "No action needed",
+      processing: "Processing",
+      error: "Error",
+    };
+
+    // One row per email: action needed or not + one-line summary up front; extracted details below.
     function emailItem(e) {
-      const li = el("li", "email");
+      const li = el("li", `email status-row-${e.status}`);
 
       const head = el("div", "email-head");
       const badges = el("div", "badges");
+      badges.append(el("span", `pill action-${e.status}`, ACTION_LABELS[e.status] || e.status));
       if (e.category) badges.append(el("span", `badge cat-${e.category}`, CATEGORY_LABELS[e.category] || e.category));
-      badges.append(el("span", `badge status-${e.status}`, STATUS_LABELS[e.status] || e.status));
       if (e.confidence === "low") badges.append(el("span", "badge", "Low confidence"));
       head.append(badges, el("span", "email-date", e.received_at ? new Date(e.received_at).toLocaleString() : ""));
 
@@ -124,28 +134,31 @@
         subject.target = "_blank";
         subject.rel = "noopener";
       }
-      const from = el("div", "email-from", e.from_name ? `${e.from_name} <${e.from_address}>` : e.from_address || "");
+      const summary = el("p", "email-oneline", e.summary || (e.status === "processing" ? "Classifying…" : "No summary."));
+      li.append(head, subject, summary);
 
-      li.append(head, subject, from);
-
-      const facts = [
-        ["Vendor", e.vendor], ["Invoice #", e.invoice_number], ["Amount", e.amount], ["Due", e.due_date],
-        ["Attachments", e.attachment_names?.join(", ")],
-      ].filter(([, v]) => v);
-      if (facts.length) {
-        const dl = el("dl", "facts");
-        for (const [k, v] of facts) dl.append(el("dt", null, k), el("dd", null, v));
-        li.append(dl);
-      }
-
-      if (e.summary) li.append(el("p", "email-summary", e.summary));
-      if (e.next_step) {
+      if (e.status === "action_needed" && e.next_step) {
         const next = el("div", "next-step");
         next.append(el("strong", null, "Next step: "), document.createTextNode(e.next_step));
         li.append(next);
       }
-      if (e.action_taken) li.append(el("div", "action-taken", `Action taken: ${e.action_taken}`));
       if (e.error) li.append(el("div", "message error", e.error));
+
+      const facts = [
+        ["From", e.from_name ? `${e.from_name} <${e.from_address}>` : e.from_address],
+        ["Vendor", e.vendor], ["Invoice #", e.invoice_number], ["Amount", e.amount], ["Due", e.due_date],
+        ["Attachments", e.attachment_names?.join(", ")],
+        ["Action taken", e.action_taken],
+        ["Next step", e.status !== "action_needed" ? e.next_step : null],
+      ].filter(([, v]) => v);
+      if (facts.length) {
+        const details = el("details", "email-details");
+        details.append(el("summary", null, "Details"));
+        const dl = el("dl", "facts");
+        for (const [k, v] of facts) dl.append(el("dt", null, k), el("dd", null, v));
+        details.append(dl);
+        li.append(details);
+      }
 
       if (e.status === "action_needed" || e.status === "done") {
         const toggle = el("button", "secondary", e.status === "done" ? "Reopen" : "Mark done");
