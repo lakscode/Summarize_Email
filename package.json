@@ -7,6 +7,8 @@
     "dev": "node web/build-config.mjs && npx serve web -l 5500",
     "db:start": "npx supabase start",
     "db:link": "npx supabase link",
-    "db:push": "npx supabase db push"
+    "db:push": "npx supabase db push",
+    "functions:serve": "npx supabase functions serve",
+    "functions:deploy": "npx supabase functions deploy profile"
   }
 }

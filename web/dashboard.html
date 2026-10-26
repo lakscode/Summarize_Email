@@ -38,12 +38,10 @@
       document.getElementById("user-email").textContent = user.email;
       document.querySelector("main").hidden = false;
 
-      const { data: profile, error } = await sb
-        .from("profiles")
-        .select("full_name, email, created_at")
-        .eq("id", user.id)
-        .maybeSingle();
+      // Supabase Edge Function API: supabase/functions/profile
+      const { data, error } = await sb.functions.invoke("profile", { method: "GET" });
       if (error) showMessage(`Could not load profile: ${error.message}`, "error");
+      const profile = data?.profile;
 
       const name = profile?.full_name || user.user_metadata?.full_name || "";
       document.getElementById("greeting").textContent = name ? `Hello, ${name}` : "Dashboard";

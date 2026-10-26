@@ -9,7 +9,14 @@ const config = {
   SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY ?? "",
 };
 const missing = Object.entries(config).filter(([, v]) => !v || v.includes("<")).map(([k]) => k);
-if (missing.length) console.warn(`web/.env: fill in ${missing.join(", ")}`);
+if (missing.length) {
+  // On Vercel these come from Project Settings > Environment Variables; fail rather than ship a blank config.
+  if (process.env.VERCEL) {
+    console.error(`Missing Vercel environment variables: ${missing.join(", ")}`);
+    process.exit(1);
+  }
+  console.warn(`web/.env: fill in ${missing.join(", ")}`);
+}
 
 writeFileSync(
   new URL("config.js", import.meta.url),
