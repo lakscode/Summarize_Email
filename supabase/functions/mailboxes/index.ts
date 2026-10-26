@@ -2,6 +2,7 @@
 //   GET                                   -> { mailboxes: [...] } (expired access is cleaned up first)
 //   POST {action: "connect", access_days} -> { url } to start Microsoft sign-in (delegated OAuth)
 //   PATCH {id, smart_ap_address}          -> set where invoices are forwarded ("" clears it)
+//   PATCH {id, schedule: {enabled, frequency, days, time, timezone}} -> scheduled processing (see _shared/schedule.ts)
 //   DELETE ?id=<mailbox id>               -> disconnect (Vault secret removed by trigger)
 //   GET ?code=...&state=...               -> OAuth callback from Microsoft; stores the refresh token for the
 //                                            chosen number of days, redirects back to the app's dashboard
@@ -11,7 +12,9 @@ import { decodeBase64Url, encodeBase64Url } from "jsr:@std/encoding@1/base64url"
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
 import { MS_SCOPES, msBase } from "../_shared/microsoft.ts";
+import { FREQUENCIES, type Frequency, isValidTimeZone, localDate, nextRun } from "../_shared/schedule.ts";
 import { adminClient, callerUser, env } from "../_shared/supabase.ts";
+import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
 const ACCESS_DAYS = [1, 7, 30, 90];
 const DEFAULT_ACCESS_DAYS = 30;
@@ -45,7 +48,7 @@ Deno.serve(async (req) => {
 
       const { data, error } = await sb
         .from("mailboxes")
-        .select("id, provider, email_address, display_name, active, smart_ap_address, last_processed_at, access_expires_at, created_at")
+        .select("id, provider, email_address, display_name, active, smart_ap_address, last_processed_at, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
       return json({ mailboxes: data });
@@ -77,6 +80,7 @@ Deno.serve(async (req) => {
 
     if (req.method === "PATCH") {
       const body = await req.json().catch(() => ({}));
+      if (body.id && body.schedule) return await saveSchedule(user.id, sb, body.id, body.schedule);
       const address = String(body.smart_ap_address ?? "").trim().toLowerCase();
       if (!body.id) return json({ error: "id is required" }, 400);
       if (address && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
@@ -107,6 +111,43 @@ Deno.serve(async (req) => {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
+
+// Saves a mailbox's processing schedule and computes its next run. Schedule columns are written with the
+// service role (after checking ownership) so users can't set next/last run times directly.
+async function saveSchedule(userId: string, sb: SupabaseClient, id: string, s: Record<string, unknown>): Promise<Response> {
+  const { data: owned, error: ownError } = await sb.from("mailboxes").select("id").eq("id", id).maybeSingle();
+  if (ownError) return await fail("mailboxes/schedule", ownError.message, 500, { userId });
+  if (!owned) return json({ error: "Mailbox not found" }, 404);
+
+  const enabled = s.enabled === true;
+  const frequency = String(s.frequency) as Frequency;
+  const days = Array.isArray(s.days) ? [...new Set(s.days.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort() : [];
+  const time = String(s.time ?? "");
+  const timezone = String(s.timezone ?? "");
+  if (!FREQUENCIES.includes(frequency)) return json({ error: "frequency must be daily, alternate or weekdays" }, 400);
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return json({ error: "time must be HH:MM" }, 400);
+  if (!isValidTimeZone(timezone)) return json({ error: "Unknown time zone" }, 400);
+  if (frequency === "weekdays" && days.length === 0) return json({ error: "Select at least one day" }, 400);
+
+  const now = new Date();
+  const anchor = localDate(now, timezone);
+  const next = enabled ? nextRun({ frequency, days, time, timezone, anchor }, now) : null;
+
+  const { data, error } = await adminClient().from("mailboxes").update({
+    schedule_enabled: enabled,
+    schedule_frequency: frequency,
+    schedule_days: days.length ? days : [1, 2, 3, 4, 5],
+    schedule_time: time,
+    schedule_timezone: timezone,
+    schedule_anchor: anchor,
+    schedule_next_run_at: next?.toISOString() ?? null,
+    // Next scheduled run covers mail since now, not everything since the mailbox was connected.
+    ...(enabled ? { schedule_last_run_at: now.toISOString() } : {}),
+    updated_at: now.toISOString(),
+  }).eq("id", id).select("id, schedule_enabled, schedule_next_run_at").single();
+  if (error) return await fail("mailboxes/schedule", error.message, 500, { userId, context: { id } });
+  return json({ mailbox: data });
+}
 
 // Always ends with a redirect to the app's dashboard; the outcome travels in ?connected= / ?connect_error=.
 async function oauthCallback(url: URL): Promise<Response> {

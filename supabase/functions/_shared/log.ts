@@ -12,7 +12,7 @@ interface LogOptions {
 export async function logApi(location: string, error: unknown, opts: LogOptions = {}): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
   const stack = error instanceof Error ? error.stack?.slice(0, 4000) : undefined;
-  console.error(`[${location}]`, message, opts.context ?? "");
+  (opts.level === "info" ? console.log : console.error)(`[${location}]`, message, opts.context ?? "");
   try {
     const { error: insertError } = await adminClient().from("app_logs").insert({
       user_id: opts.userId ?? null,
@@ -26,6 +26,11 @@ export async function logApi(location: string, error: unknown, opts: LogOptions 
   } catch (err) {
     console.error("Could not write app log:", err);
   }
+}
+
+// Progress step (level 'info'), e.g. one per stage of an inbox run, shown under Logs > Steps.
+export async function logStep(location: string, message: string, userId: string | null, context: Record<string, unknown> = {}) {
+  await logApi(location, message, { userId, level: "info", context });
 }
 
 // Log, then return the JSON error response the UI will show.

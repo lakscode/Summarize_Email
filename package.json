@@ -9,7 +9,7 @@
     "db:link": "npx supabase link",
     "db:push": "npx supabase db push",
     "functions:serve": "npx supabase functions serve",
-    "functions:deploy": "npx supabase functions deploy profile mailboxes logs inbox",
+    "functions:deploy": "npx supabase functions deploy profile mailboxes logs inbox scheduler",
     "secrets": "npx supabase secrets set --env-file supabase/functions/.env"
   }
 }

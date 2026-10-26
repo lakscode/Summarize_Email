@@ -38,6 +38,41 @@
           <button type="submit" id="process-btn">Process inbox</button>
         </form>
         <p class="empty" id="no-mailboxes" hidden>Connect a mailbox on the <a href="dashboard.html">Dashboard</a> first.</p>
+
+        <form id="schedule-form" class="schedule-form" hidden>
+          <h2>Schedule</h2>
+          <p class="sub">Process the selected mailbox automatically. Each run covers mail received since the previous run.</p>
+          <div class="schedule-row">
+            <label class="checkbox">
+              <input type="checkbox" name="enabled" id="schedule-enabled" />
+              Run automatically
+            </label>
+            <label>Repeat
+              <select name="frequency" id="schedule-frequency">
+                <option value="daily">Every day</option>
+                <option value="alternate">Every other day</option>
+                <option value="weekdays">On selected days</option>
+              </select>
+            </label>
+            <label>At
+              <input type="time" name="time" id="schedule-time" value="08:00" step="900" required />
+            </label>
+          </div>
+          <fieldset class="days" id="schedule-days" hidden>
+            <legend>Days</legend>
+            <label class="checkbox"><input type="checkbox" value="1" /> Mon</label>
+            <label class="checkbox"><input type="checkbox" value="2" /> Tue</label>
+            <label class="checkbox"><input type="checkbox" value="3" /> Wed</label>
+            <label class="checkbox"><input type="checkbox" value="4" /> Thu</label>
+            <label class="checkbox"><input type="checkbox" value="5" /> Fri</label>
+            <label class="checkbox"><input type="checkbox" value="6" /> Sat</label>
+            <label class="checkbox"><input type="checkbox" value="0" /> Sun</label>
+          </fieldset>
+          <div class="schedule-foot">
+            <div class="schedule-status" id="schedule-status"></div>
+            <button type="submit" class="secondary">Save schedule</button>
+          </div>
+        </form>
       </section>
 
       <div class="toolbar">
@@ -81,20 +116,86 @@
       await Promise.all([loadMailboxes(), loadEmails()]);
     })();
 
+    let mailboxes = [];
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
     async function loadMailboxes() {
       const { data, error } = await callApi("mailboxes", { method: "GET" });
       if (error) return showMessage(`Could not load mailboxes: ${error}`, "error");
+      mailboxes = data.mailboxes;
       const select = document.getElementById("mailbox-select");
-      select.replaceChildren(...data.mailboxes.map((m) => {
+      const selected = select.value;
+      select.replaceChildren(...mailboxes.map((m) => {
         const opt = document.createElement("option");
         opt.value = m.id;
         opt.textContent = m.smart_ap_address ? m.email_address : `${m.email_address} (no Smart AP address)`;
         return opt;
       }));
-      const none = data.mailboxes.length === 0;
+      if (mailboxes.some((m) => m.id === selected)) select.value = selected;
+      const none = mailboxes.length === 0;
       document.getElementById("process-form").hidden = none;
+      document.getElementById("schedule-form").hidden = none;
       document.getElementById("no-mailboxes").hidden = !none;
+      fillSchedule();
     }
+
+    // --- Schedule for the selected mailbox (saved via PATCH mailboxes {id, schedule}) ---
+
+    function fillSchedule() {
+      const m = mailboxes.find((x) => x.id === document.getElementById("mailbox-select").value);
+      if (!m) return;
+      document.getElementById("schedule-enabled").checked = !!m.schedule_enabled;
+      document.getElementById("schedule-frequency").value = m.schedule_frequency || "daily";
+      document.getElementById("schedule-time").value = String(m.schedule_time || "08:00").slice(0, 5);
+      const days = m.schedule_days || [1, 2, 3, 4, 5];
+      for (const box of document.querySelectorAll("#schedule-days input")) box.checked = days.includes(Number(box.value));
+      toggleDays();
+      renderScheduleStatus(m);
+    }
+
+    function renderScheduleStatus(m) {
+      const status = document.getElementById("schedule-status");
+      const parts = [];
+      if (m.schedule_enabled && m.schedule_next_run_at) parts.push(`Next run: ${new Date(m.schedule_next_run_at).toLocaleString()}`);
+      else parts.push("Not scheduled.");
+      const last = m.schedule_last_result;
+      if (last?.at) {
+        const when = new Date(last.at).toLocaleString();
+        parts.push(last.error
+          ? `Last run ${when} failed: ${last.error}`
+          : `Last run ${when}: ${last.processed} new email${last.processed === 1 ? "" : "s"}${last.remaining ? `, ${last.remaining} continuing` : ""}.`);
+      }
+      if (m.schedule_timezone && m.schedule_timezone !== timezone) parts.push(`Times are in ${m.schedule_timezone}.`);
+      status.replaceChildren(...parts.map((p) => el("div", null, p)));
+    }
+
+    function toggleDays() {
+      document.getElementById("schedule-days").hidden = document.getElementById("schedule-frequency").value !== "weekdays";
+    }
+
+    document.getElementById("mailbox-select").addEventListener("change", fillSchedule);
+    document.getElementById("schedule-frequency").addEventListener("change", toggleDays);
+
+    document.getElementById("schedule-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const form = ev.currentTarget;
+      const id = document.getElementById("mailbox-select").value;
+      const schedule = {
+        enabled: document.getElementById("schedule-enabled").checked,
+        frequency: document.getElementById("schedule-frequency").value,
+        time: document.getElementById("schedule-time").value,
+        days: [...document.querySelectorAll("#schedule-days input:checked")].map((b) => Number(b.value)),
+        timezone,
+      };
+      setBusy(form, true);
+      const { data, error } = await callApi("mailboxes", { method: "PATCH", body: { id, schedule } });
+      setBusy(form, false);
+      if (error) return showMessage(`Could not save schedule: ${error}`, "error");
+      showMessage(data.mailbox.schedule_enabled
+        ? `Scheduled. Next run: ${new Date(data.mailbox.schedule_next_run_at).toLocaleString()}.`
+        : "Schedule turned off.", "ok");
+      await loadMailboxes();
+    });
 
     async function loadEmails() {
       const query = status ? `?status=${status}` : "";

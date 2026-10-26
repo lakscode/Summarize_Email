@@ -175,6 +175,17 @@ select {
 .process-form { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .process-form label { min-width: 200px; }
 .process-panel .empty { margin: 0; }
+.schedule-form { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); display: grid; gap: 12px; }
+.schedule-form h2 { margin: 0; font-size: 1.05rem; }
+.schedule-form .sub { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.schedule-row { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+.schedule-row label:not(.checkbox) { min-width: 160px; }
+.days { display: flex; flex-wrap: wrap; gap: 4px 14px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 0; }
+.days[hidden] { display: none; }
+.days legend { font-size: 0.85rem; color: var(--muted); padding: 0 4px; }
+.days label.checkbox { padding-bottom: 0; color: var(--text); }
+.schedule-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.schedule-status { color: var(--muted); font-size: 0.88rem; display: grid; gap: 2px; }
 label.checkbox { display: flex; flex-direction: row; align-items: center; gap: 8px; min-width: 0; font-weight: 400; color: var(--muted); padding-bottom: 10px; }
 label.checkbox input { width: 16px; height: 16px; }
 
