@@ -92,7 +92,7 @@
       const meta = document.createElement("div");
       meta.className = "label";
       meta.textContent = `${m.display_name ? m.display_name + " · " : ""}Azure · connected ${new Date(m.created_at).toLocaleDateString()}`;
-      info.append(email, meta);
+      info.append(email, meta, smartApForm(m));
 
       const remove = document.createElement("button");
       remove.className = "secondary";
@@ -111,6 +111,34 @@
 
       li.append(info, remove);
       return li;
+    }
+
+    // Where the Inbox processor forwards invoices for this mailbox.
+    function smartApForm(m) {
+      const form = document.createElement("form");
+      form.className = "inline-form";
+      const label = document.createElement("label");
+      label.textContent = "Smart AP address";
+      const input = document.createElement("input");
+      input.type = "email";
+      input.name = "smart_ap_address";
+      input.placeholder = "invoices@your-ap-system.com";
+      input.value = m.smart_ap_address || "";
+      label.append(input);
+      const save = document.createElement("button");
+      save.type = "submit";
+      save.className = "secondary";
+      save.textContent = "Save";
+      form.append(label, save);
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        setBusy(form, true);
+        const { error } = await callApi("mailboxes", { method: "PATCH", body: { id: m.id, smart_ap_address: input.value } });
+        setBusy(form, false);
+        if (error) return showMessage(`Could not save Smart AP address: ${error}`, "error");
+        showMessage(input.value ? `Invoices from ${m.email_address} will be forwarded to ${input.value}.` : "Smart AP address cleared.", "ok");
+      });
+      return form;
     }
 
     document.getElementById("add-azure").addEventListener("click", async (e) => {

@@ -13,12 +13,17 @@ supabase/
   functions/mailboxes/index.ts        API: list / connect (Microsoft OAuth) / disconnect Azure mailboxes
   migrations/*_app_logs.sql           error log for UI and API, shown on the Logs page
   functions/logs/index.ts             API: list / write (UI errors) / clear the caller's logs
+  functions/inbox/index.ts            API: process a mailbox (Claude classification + Smart AP forwarding), list / update results
+  functions/_shared/classify.ts       Claude call that classifies one AP email
+  functions/_shared/microsoft.ts      Microsoft Graph: token refresh, list inbox, forward
+  migrations/*_ap_processing.sql      processed_emails table + Smart AP address on mailboxes
   functions/_shared/log.ts            logApi() / fail(): Edge Function errors -> app_logs
   functions/_shared/cors.ts           CORS headers (UI and API are on different origins)
 web/
   index.html                          redirects to dashboard or login
   login.html / signup.html            auth forms
   dashboard.html                      protected page, loads profile via the Edge Function
+  inbox.html                          processed AP emails, next steps, "Process inbox" button
   logs.html                           UI + API error log (side menu > Logs)
   assets/common.js                    Supabase client + session helpers
   build-config.mjs                    writes web/config.js from env vars (web/.env locally, Vercel env in prod)
@@ -45,9 +50,10 @@ web/
    - Supported account types: pick "any organizational directory and personal accounts" (or single tenant).
    - Redirect URI (Web): `https://<project-ref>.supabase.co/functions/v1/mailboxes`
 2. Certificates & secrets > New client secret. Copy the **value**.
-3. API permissions > Microsoft Graph > Delegated: `offline_access`, `User.Read`, `Mail.Read`.
+3. API permissions > Microsoft Graph > Delegated: `offline_access`, `User.Read`, `Mail.Read`, `Mail.Send`
+   (`Mail.Send` forwards invoices; mailboxes connected before it was added must be reconnected).
 4. Copy `supabase/functions/.env.example` to `supabase/functions/.env`, fill in `MS_CLIENT_ID`,
-   `MS_CLIENT_SECRET`, `MS_TENANT_ID`, `OAUTH_STATE_SECRET` and `APP_URL`, then:
+   `MS_CLIENT_SECRET`, `MS_TENANT_ID`, `ANTHROPIC_API_KEY`, `OAUTH_STATE_SECRET` and `APP_URL`, then:
    ```
    npm run secrets
    npm run functions:deploy

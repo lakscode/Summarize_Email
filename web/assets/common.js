@@ -93,6 +93,7 @@ window.addEventListener("unhandledrejection", (e) => {
 
 const NAV = [
   { page: "dashboard", label: "Dashboard" },
+  { page: "inbox", label: "Inbox" },
   { page: "logs", label: "Logs" },
 ];
 

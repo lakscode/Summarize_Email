@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Inbox · SummarizeMail</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="assets/common.js"></script>
+</head>
+<body>
+  <div class="shell" hidden>
+    <aside id="sidebar" class="sidebar"></aside>
+
+    <main class="content">
+      <div id="message" class="message" hidden></div>
+      <h1>Inbox</h1>
+      <p class="sub">Accounts-payable emails classified by Claude, with what to do next. Invoices are forwarded to the mailbox's Smart AP address.</p>
+
+      <section class="panel process-panel">
+        <form id="process-form" class="process-form">
+          <label>Mailbox
+            <select name="mailbox_id" id="mailbox-select" required></select>
+          </label>
+          <label>Look back
+            <select name="lookback_hours">
+              <option value="24">Last 24 hours</option>
+              <option value="72">Last 3 days</option>
+              <option value="168">Last 7 days</option>
+              <option value="336">Last 14 days</option>
+            </select>
+          </label>
+          <button type="submit" id="process-btn">Process inbox</button>
+        </form>
+        <p class="empty" id="no-mailboxes" hidden>Connect a mailbox on the <a href="dashboard.html">Dashboard</a> first.</p>
+      </section>
+
+      <div class="toolbar">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-status="action_needed">Action needed</button>
+          <button class="tab" data-status="done">Done</button>
+          <button class="tab" data-status="no_action">No action</button>
+          <button class="tab" data-status="error">Errors</button>
+          <button class="tab" data-status="">All</button>
+        </div>
+        <button class="secondary" id="refresh">Refresh</button>
+      </div>
+
+      <ul class="email-list" id="email-list"></ul>
+      <p class="empty" id="email-empty" hidden>Nothing here.</p>
+    </main>
+  </div>
+
+  <script>
+    const CATEGORY_LABELS = {
+      invoice: "Invoice",
+      utility_bill: "Utility bill",
+      vendor_info: "Vendor info",
+      statement: "Statement",
+      other: "Other",
+    };
+    const STATUS_LABELS = {
+      processing: "Processing",
+      action_needed: "Action needed",
+      done: "Done",
+      no_action: "No action",
+      error: "Error",
+    };
+    let status = "action_needed";
+
+    (async () => {
+      const session = await requireSession();
+      if (!session) return;
+      renderSidebar("inbox", session);
+      document.querySelector(".shell").hidden = false;
+      await Promise.all([loadMailboxes(), loadEmails()]);
+    })();
+
+    async function loadMailboxes() {
+      const { data, error } = await callApi("mailboxes", { method: "GET" });
+      if (error) return showMessage(`Could not load mailboxes: ${error}`, "error");
+      const select = document.getElementById("mailbox-select");
+      select.replaceChildren(...data.mailboxes.map((m) => {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.smart_ap_address ? m.email_address : `${m.email_address} (no Smart AP address)`;
+        return opt;
+      }));
+      const none = data.mailboxes.length === 0;
+      document.getElementById("process-form").hidden = none;
+      document.getElementById("no-mailboxes").hidden = !none;
+    }
+
+    async function loadEmails() {
+      const query = status ? `?status=${status}` : "";
+      const { data, error } = await callApi(`inbox${query}`, { method: "GET" });
+      if (error) return showMessage(`Could not load emails: ${error}`, "error");
+      document.getElementById("email-list").replaceChildren(...data.emails.map(emailItem));
+      document.getElementById("email-empty").hidden = data.emails.length > 0;
+    }
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    function emailItem(e) {
+      const li = el("li", "email");
+
+      const head = el("div", "email-head");
+      const badges = el("div", "badges");
+      if (e.category) badges.append(el("span", `badge cat-${e.category}`, CATEGORY_LABELS[e.category] || e.category));
+      badges.append(el("span", `badge status-${e.status}`, STATUS_LABELS[e.status] || e.status));
+      if (e.confidence === "low") badges.append(el("span", "badge", "Low confidence"));
+      head.append(badges, el("span", "email-date", e.received_at ? new Date(e.received_at).toLocaleString() : ""));
+
+      const subject = e.web_link ? el("a", "email-subject") : el("div", "email-subject");
+      subject.textContent = e.subject || "(no subject)";
+      if (e.web_link) {
+        subject.href = e.web_link;
+        subject.target = "_blank";
+        subject.rel = "noopener";
+      }
+      const from = el("div", "email-from", e.from_name ? `${e.from_name} <${e.from_address}>` : e.from_address || "");
+
+      li.append(head, subject, from);
+
+      const facts = [
+        ["Vendor", e.vendor], ["Invoice #", e.invoice_number], ["Amount", e.amount], ["Due", e.due_date],
+        ["Attachments", e.attachment_names?.join(", ")],
+      ].filter(([, v]) => v);
+      if (facts.length) {
+        const dl = el("dl", "facts");
+        for (const [k, v] of facts) dl.append(el("dt", null, k), el("dd", null, v));
+        li.append(dl);
+      }
+
+      if (e.summary) li.append(el("p", "email-summary", e.summary));
+      if (e.next_step) {
+        const next = el("div", "next-step");
+        next.append(el("strong", null, "Next step: "), document.createTextNode(e.next_step));
+        li.append(next);
+      }
+      if (e.action_taken) li.append(el("div", "action-taken", `Action taken: ${e.action_taken}`));
+      if (e.error) li.append(el("div", "message error", e.error));
+
+      if (e.status === "action_needed" || e.status === "done") {
+        const toggle = el("button", "secondary", e.status === "done" ? "Reopen" : "Mark done");
+        toggle.addEventListener("click", async () => {
+          toggle.disabled = true;
+          const next = e.status === "done" ? "action_needed" : "done";
+          const { error } = await callApi("inbox", { method: "PATCH", body: { id: e.id, status: next } });
+          if (error) {
+            toggle.disabled = false;
+            return showMessage(`Could not update: ${error}`, "error");
+          }
+          await loadEmails();
+        });
+        const actions = el("div", "email-actions");
+        actions.append(toggle);
+        li.append(actions);
+      }
+      return li;
+    }
+
+    document.getElementById("process-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const form = ev.currentTarget;
+      const { mailbox_id, lookback_hours } = Object.fromEntries(new FormData(form));
+      const button = document.getElementById("process-btn");
+      setBusy(form, true);
+      button.textContent = "Processing…";
+      showMessage("Reading and classifying emails. This can take a minute.", "info");
+      const { data, error } = await callApi("inbox", {
+        body: { action: "process", mailbox_id, lookback_hours: Number(lookback_hours) },
+      });
+      setBusy(form, false);
+      button.textContent = "Process inbox";
+      if (error) return showMessage(`Processing failed: ${error}`, "error");
+
+      const parts = Object.entries(data.counts).map(([k, n]) => `${n} ${(STATUS_LABELS[k] || k).toLowerCase()}`);
+      let text = data.processed
+        ? `Processed ${data.processed} new email${data.processed === 1 ? "" : "s"} from ${data.mailbox}: ${parts.join(", ")}.`
+        : `No new emails in ${data.mailbox} for that period.`;
+      if (data.remaining) text += ` ${data.remaining} more waiting. Run again to continue.`;
+      showMessage(text, data.counts.error ? "error" : "ok");
+      await loadEmails();
+    });
+
+    for (const tab of document.querySelectorAll(".tab")) {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
+        status = tab.dataset.status;
+        loadEmails();
+      });
+    }
+
+    document.getElementById("refresh").addEventListener("click", loadEmails);
+  </script>
+</body>
+</html>

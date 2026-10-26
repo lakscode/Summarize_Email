@@ -1,6 +1,7 @@
 // Azure / Microsoft 365 mailboxes for the signed-in user.
 //   GET                         -> { mailboxes: [...] }
 //   POST {action: "connect"}    -> { url } to start Microsoft sign-in (delegated OAuth)
+//   PATCH {id, smart_ap_address} -> set where invoices are forwarded ("" clears it)
 //   DELETE ?id=<mailbox id>     -> disconnect (Vault secret removed by trigger)
 //   GET ?code=...&state=...     -> OAuth callback from Microsoft; stores the refresh token, redirects to the dashboard
 // verify_jwt is off for this function (the Microsoft callback carries no Supabase JWT); every other
@@ -8,10 +9,9 @@
 import { decodeBase64Url, encodeBase64Url } from "jsr:@std/encoding@1/base64url";
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
+import { MS_SCOPES, msBase } from "../_shared/microsoft.ts";
 import { adminClient, callerUser, env } from "../_shared/supabase.ts";
 
-const MS_SCOPES = "offline_access User.Read Mail.Read";
-const msBase = () => `https://login.microsoftonline.com/${env("MS_TENANT_ID", "common")}/oauth2/v2.0`;
 const redirectUri = () => `${env("SUPABASE_URL")}/functions/v1/mailboxes`;
 const dashboardUrl = () => `${env("APP_URL").replace(/\/+$/, "")}/dashboard`;
 
@@ -31,7 +31,7 @@ Deno.serve(async (req) => {
     if (req.method === "GET") {
       const { data, error } = await sb
         .from("mailboxes")
-        .select("id, provider, email_address, display_name, active, created_at")
+        .select("id, provider, email_address, display_name, active, smart_ap_address, last_processed_at, created_at")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
       return json({ mailboxes: data });
@@ -55,6 +55,23 @@ Deno.serve(async (req) => {
           state: await signState(user.id),
         }),
       });
+    }
+
+    if (req.method === "PATCH") {
+      const body = await req.json().catch(() => ({}));
+      const address = String(body.smart_ap_address ?? "").trim().toLowerCase();
+      if (!body.id) return json({ error: "id is required" }, 400);
+      if (address && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
+        return json({ error: "Smart AP address must be a valid email address" }, 400);
+      }
+      const { data, error } = await sb.from("mailboxes")
+        .update({ smart_ap_address: address || null, updated_at: new Date().toISOString() })
+        .eq("id", body.id)
+        .select("id, smart_ap_address")
+        .maybeSingle();
+      if (error) return await fail("mailboxes/update", error.message, 500, { userId: user.id, context: { id: body.id } });
+      if (!data) return json({ error: "Mailbox not found" }, 404);
+      return json({ mailbox: data });
     }
 
     if (req.method === "DELETE") {

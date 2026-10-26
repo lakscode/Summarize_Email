@@ -427,3 +427,7 @@ verify_jwt = false
 [functions.logs]
 verify_jwt = true
 
+
+[functions.inbox]
+verify_jwt = true
+
