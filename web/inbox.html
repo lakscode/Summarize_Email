@@ -127,7 +127,8 @@
       if (!session) return;
       renderSidebar("inbox", session);
       document.querySelector(".shell").hidden = false;
-      await Promise.all([loadMailboxes(), loadEmails()]);
+      await loadMailboxes();
+      await loadEmails();
     })();
 
     let mailboxes = [];
@@ -205,7 +206,10 @@
         interval && document.getElementById("schedule-interval-unit").value === "minutes" ? 5 : 1;
     }
 
-    document.getElementById("mailbox-select").addEventListener("change", fillSchedule);
+    document.getElementById("mailbox-select").addEventListener("change", () => {
+      fillSchedule();
+      loadEmails();
+    });
     document.getElementById("schedule-frequency").addEventListener("change", toggleFrequencyFields);
     document.getElementById("schedule-interval-unit").addEventListener("change", toggleFrequencyFields);
 
@@ -233,9 +237,21 @@
       await loadMailboxes();
     });
 
+    // Emails of the selected mailbox only. A reply that arrives after the mailbox or tab has changed again is
+    // dropped, so a slow earlier request can't overwrite the current list.
+    let emailsRequest = 0;
+
     async function loadEmails() {
-      const query = status ? `?status=${status}` : "";
-      const { data, error } = await callApi(`inbox${query}`, { method: "GET" });
+      const mailboxId = document.getElementById("mailbox-select").value;
+      const request = ++emailsRequest;
+      if (!mailboxId) {
+        document.getElementById("email-list").replaceChildren();
+        document.getElementById("email-empty").hidden = false;
+        return;
+      }
+      const query = new URLSearchParams({ mailbox_id: mailboxId, ...(status ? { status } : {}) });
+      const { data, error } = await callApi(`inbox?${query}`, { method: "GET" });
+      if (request !== emailsRequest) return;
       if (error) return showMessage(`Could not load emails: ${error}`, "error");
       document.getElementById("email-list").replaceChildren(...data.emails.map(emailItem));
       document.getElementById("email-empty").hidden = data.emails.length > 0;
