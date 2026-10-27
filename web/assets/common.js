@@ -145,7 +145,10 @@ function renderSidebar(active, session) {
   const aside = document.getElementById("sidebar");
   const brand = document.createElement("div");
   brand.className = "brand";
-  brand.textContent = "SummarizeMail";
+  const logo = document.createElement("img");
+  logo.src = "images/logo-256.png";
+  logo.alt = "";
+  brand.append(logo, "SummarizeMail");
 
   const nav = document.createElement("nav");
   for (const item of NAV) {
@@ -165,7 +168,15 @@ function renderSidebar(active, session) {
   logout.className = "secondary";
   logout.textContent = "Log out";
   logout.addEventListener("click", () => sb.auth.signOut());
-  foot.append(email, logout);
+  const legal = document.createElement("div");
+  legal.className = "side-legal";
+  for (const [page, label] of [["terms", "Terms"], ["privacy", "Privacy"]]) {
+    const a = document.createElement("a");
+    a.href = pageUrl(page);
+    a.textContent = label;
+    legal.append(a);
+  }
+  foot.append(email, logout, legal);
 
   aside.replaceChildren(brand, nav, foot);
 }
