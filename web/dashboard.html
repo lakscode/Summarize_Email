@@ -57,9 +57,9 @@
       renderSidebar("dashboard", session);
       document.querySelector(".shell").hidden = false;
 
-      // The OAuth callback redirects back here with ?connected= / ?connect_error=; show that first so
-      // a later load error doesn't hide it.
-      showConnectResult();
+      // Without a popup, the OAuth callback redirects back here with ?connected= / ?connect_error=; show
+      // that first so a later load error doesn't hide it.
+      if (showConnectResult(new URLSearchParams(location.search))) history.replaceState(null, "", location.pathname);
 
       // Supabase Edge Function API: supabase/functions/profile
       const { data, error } = await callApi("profile", { method: "GET" });
@@ -78,15 +78,15 @@
 
     // --- Mailboxes (Supabase Edge Function API: supabase/functions/mailboxes) ---
 
-    function showConnectResult() {
-      const params = new URLSearchParams(location.search);
+    // Shows the outcome of a Microsoft sign-in; returns false if `params` carries none.
+    function showConnectResult(params) {
       if (params.has("connected")) {
         const days = Number(params.get("days"));
         showMessage(`Connected ${params.get("connected")}${days ? ` for ${days} day${days === 1 ? "" : "s"}` : ""}.`, "ok");
       }
       else if (params.has("connect_error")) showMessage(params.get("connect_error"), "error");
-      else return;
-      history.replaceState(null, "", location.pathname);
+      else return false;
+      return true;
     }
 
     async function loadMailboxes() {
@@ -172,18 +172,44 @@
       return form;
     }
 
-    // Starts Microsoft sign-in; the chosen access period is carried through to the callback.
+    // Starts Microsoft sign-in in a popup; the chosen access period is carried through to the callback.
+    // The popup is opened straight from the click (before the API call) so browsers don't block it; if they
+    // do anyway, sign-in falls back to navigating this page.
     async function startConnect(button) {
       button.disabled = true;
       showMessage("");
+      const popup = openCentered(500, 650);
+      if (popup) popup.document.body.textContent = "Opening Microsoft sign-in…";
       const access_days = Number(document.getElementById("access-days").value);
-      const { data, error } = await callApi("mailboxes", { body: { action: "connect", access_days } });
+      const { data, error } = await callApi("mailboxes", { body: { action: "connect", access_days, popup: !!popup } });
       if (error) {
+        popup?.close();
         button.disabled = false;
         return showMessage(error, "error");
       }
-      location.href = data.url;
+      if (!popup) return (location.href = data.url);
+
+      popup.location.href = data.url;
+      popup.focus();
+      const watch = setInterval(() => {
+        if (!popup.closed) return;
+        clearInterval(watch);
+        button.disabled = false;
+      }, 500);
     }
+
+    function openCentered(width, height) {
+      const left = Math.round(window.screenX + (window.outerWidth - width) / 2);
+      const top = Math.round(window.screenY + (window.outerHeight - height) / 2);
+      return window.open("", "microsoft-sign-in", `popup,width=${width},height=${height},left=${left},top=${top}`);
+    }
+
+    // connect-done.html (loaded in the popup at the end of sign-in) reports the outcome here.
+    new BroadcastChannel("mailbox-connect").addEventListener("message", async (e) => {
+      document.getElementById("add-azure").disabled = false;
+      showConnectResult(new URLSearchParams(e.data));
+      await loadMailboxes();
+    });
 
     document.getElementById("add-azure").addEventListener("click", (e) => startConnect(e.currentTarget));
   </script>

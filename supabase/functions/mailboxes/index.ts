@@ -1,12 +1,14 @@
 // Azure / Microsoft 365 mailboxes for the signed-in user.
 //   GET                                   -> { mailboxes: [...] } (expired access is cleaned up first)
-//   POST {action: "connect", access_days} -> { url } to start Microsoft sign-in (delegated OAuth)
+//   POST {action: "connect", access_days, popup} -> { url } to start Microsoft sign-in (delegated OAuth)
 //   PATCH {id, smart_ap_address}          -> set where invoices are forwarded ("" clears it)
 //   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
 //                                         -> scheduled processing (see _shared/schedule.ts)
 //   DELETE ?id=<mailbox id>               -> disconnect (Vault secret removed by trigger)
 //   GET ?code=...&state=...               -> OAuth callback from Microsoft; stores the refresh token for the
 //                                            chosen number of days, redirects back to the app's dashboard
+//                                            (or to connect-done, which reports to the opener, when signing in
+//                                            in a popup)
 // verify_jwt is off for this function (the Microsoft callback carries no Supabase JWT); every other
 // route checks the caller itself. Failures are written to app_logs (see _shared/log.ts).
 import { decodeBase64Url, encodeBase64Url } from "jsr:@std/encoding@1/base64url";
@@ -76,7 +78,7 @@ Deno.serve(async (req) => {
           response_mode: "query",
           scope: MS_SCOPES,
           prompt: "select_account",
-          state: await signState({ uid: user.id, days, origin }),
+          state: await signState({ uid: user.id, days, origin, popup: body.popup === true }),
         }),
       });
     }
@@ -165,7 +167,8 @@ async function saveSchedule(userId: string, sb: SupabaseClient, id: string, s: R
   return json({ mailbox: data });
 }
 
-// Always ends with a redirect to the app's dashboard; the outcome travels in ?connected= / ?connect_error=.
+// Always ends with a redirect to the app's dashboard (connect-done in a popup); the outcome travels in
+// ?connected= / ?connect_error=.
 async function oauthCallback(url: URL): Promise<Response> {
   const state = await verifyState(url.searchParams.get("state") ?? "").catch(() => null);
   const userId = state?.uid ?? null;
@@ -173,7 +176,7 @@ async function oauthCallback(url: URL): Promise<Response> {
   const back = (params: Record<string, string>) => {
     const origin = state?.origin ?? Deno.env.get("APP_URL")?.replace(/\/+$/, "");
     if (!origin) return json({ error: params.connect_error ?? "Connected. Return to the app." }, 400);
-    return Response.redirect(`${origin}/dashboard?${new URLSearchParams(params)}`, 302);
+    return Response.redirect(`${origin}/${state?.popup ? "connect-done" : "dashboard"}?${new URLSearchParams(params)}`, 302);
   };
   const failed = async (message: string, err: unknown = message, context?: Record<string, unknown>) => {
     await logApi("mailboxes/callback", err, { userId, context });
@@ -265,6 +268,7 @@ interface State {
   uid: string;
   days: number;
   origin: string;
+  popup?: boolean;
 }
 
 const enc = new TextEncoder();
@@ -287,5 +291,5 @@ async function verifyState(token: string): Promise<State | null> {
   if (!ok) return null;
   const s = JSON.parse(new TextDecoder().decode(decodeBase64Url(payload)));
   if (!(s.exp > Date.now()) || typeof s.uid !== "string" || typeof s.origin !== "string") return null;
-  return { uid: s.uid, days: ACCESS_DAYS.includes(s.days) ? s.days : DEFAULT_ACCESS_DAYS, origin: s.origin };
+  return { uid: s.uid, days: ACCESS_DAYS.includes(s.days) ? s.days : DEFAULT_ACCESS_DAYS, origin: s.origin, popup: s.popup === true };
 }

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mailbox connection · SummarizeMail</title>
+  <link rel="stylesheet" href="assets/app.css" />
+</head>
+<body>
+  <div class="auth">
+    <div class="card">
+      <h1 id="title">Finishing up…</h1>
+      <p class="sub" id="detail">You can close this window.</p>
+    </div>
+  </div>
+
+  <script>
+    // End of Microsoft sign-in in a popup (the mailboxes callback redirects here with ?connected= or
+    // ?connect_error=). Hands the outcome to the dashboard over a BroadcastChannel, which works even when
+    // Microsoft's pages cut the popup off from its opener, then closes. If the window can't close (it wasn't
+    // opened as a popup), it continues to the dashboard instead.
+    const params = new URLSearchParams(location.search);
+    const failed = params.has("connect_error");
+    document.getElementById("title").textContent = failed ? "Couldn't connect the mailbox" : "Mailbox connected";
+    document.getElementById("detail").textContent = failed ? params.get("connect_error") : "You can close this window.";
+
+    new BroadcastChannel("mailbox-connect").postMessage(params.toString());
+    window.close();
+    setTimeout(() => location.replace(`dashboard.html?${params}`), 1500);
+  </script>
+</body>
+</html>
