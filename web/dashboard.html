@@ -40,7 +40,8 @@
               </select>
             </label>
             <button class="connect-button" data-provider="microsoft">Add Azure mailbox</button>
-            <button class="connect-button" data-provider="google">Add Gmail mailbox</button>
+            <button style="display:none" class="connect-button" data-provider="google"
+              title="Beta: the Gmail connection is in Google's testing mode. Your Gmail address must first be added as a test user in the app's Google Auth Platform settings (Audience > Test users), or Google will block the sign-in. Testing-mode access expires after 7 days; reconnect to renew it.">Add Gmail inbox <span class="beta">Beta</span></button>
           </div>
         </div>
         <p class="hint">The app keeps an encrypted Microsoft token only for the period you choose, then deletes it. Reconnect to extend.</p>
@@ -174,7 +175,7 @@
       return form;
     }
 
-    const PROVIDER_LABELS = { microsoft: "Azure", google: "Gmail" };
+    const PROVIDER_LABELS = { microsoft: "Azure", google: "Gmail (beta)" };
 
     // Starts Microsoft or Google sign-in in a popup; the chosen access period is carried through to the callback.
     // The popup is opened straight from the click (before the API call) so browsers don't block it; if they

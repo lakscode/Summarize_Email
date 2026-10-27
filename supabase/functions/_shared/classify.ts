@@ -1,5 +1,6 @@
 // Classifies one accounts-payable email with Claude (structured JSON output).
 // PDF and image attachments are sent as documents/images so Claude reads the actual invoice, not just its file name.
+// Attached emails (.eml) and text files are sent as text; an attached email's own PDFs / images go in as files.
 import Anthropic from "npm:@anthropic-ai/sdk@1.3.0";
 import { env } from "./supabase.ts";
 
@@ -23,12 +24,18 @@ export interface AttachmentFile {
   base64: string;
 }
 
+export interface AttachmentText {
+  name: string;
+  text: string;
+}
+
 export interface EmailInput {
   from: string;
   subject: string;
   received: string;
   attachmentNames: string[];
   files: AttachmentFile[];
+  texts: AttachmentText[];
   skippedFiles: string[];
   body: string;
 }
@@ -52,7 +59,7 @@ const SCHEMA = {
   },
 };
 
-const SYSTEM = `You triage emails arriving in an accounts-payable (AP) inbox. Attached PDFs and images are included; read them, since the invoice itself is often only in the attachment.
+const SYSTEM = `You triage emails arriving in an accounts-payable (AP) inbox. Attached PDFs and images are included; read them, since the invoice itself is often only in the attachment. Attached emails (.eml, often a vendor email forwarded as an attachment) and text attachments follow the body inside <attachment> tags, and the PDFs and images inside an attached email are included as files named "<email> › <file>". Classify by the invoice or paperwork wherever it appears, including inside an attached email.
 
 Classify by what the email and its attachments contain:
 - invoice: the email is, or carries, an invoice or bill from a vendor (in the body or as an attachment). This includes invoices that are already auto-charged to a card, subscription invoices, and invoices the sender calls a test or sample. Put those circumstances in next_step instead of changing the category.
@@ -87,12 +94,14 @@ export async function classifyEmail(email: EmailInput): Promise<Classification> 
     `Received: ${email.received}`,
     `Attachments: ${email.attachmentNames.length ? email.attachmentNames.join(", ") : "none"}`,
     email.files.length ? `Included above for you to read: ${email.files.map((f) => f.name).join(", ")}` : "",
+    email.texts.length ? `Included below as text: ${email.texts.map((t) => t.name).join(", ")}` : "",
     email.skippedFiles.length ? `Not included (too large or too many): ${email.skippedFiles.join(", ")}` : "",
     truncated ? `(Body truncated to the first ${MAX_BODY_CHARS} characters.)` : "",
     "",
     "<email_body>",
     body,
     "</email_body>",
+    ...email.texts.flatMap((t) => ["", `<attachment name="${t.name.replace(/[<>"]/g, "")}">`, t.text, "</attachment>"]),
   ].filter((line, i, all) => line !== "" || all[i - 1] !== "").join("\n");
 
   const response = await client().beta.messages.create({

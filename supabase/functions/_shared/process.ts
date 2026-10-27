@@ -3,9 +3,10 @@
 // Each message is processed once per mailbox (unique mailbox_id + message_id). With reprocess, emails already
 // classified are classified again unless they were forwarded or marked done, so nothing is forwarded twice.
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
-import { type AttachmentFile, classifyEmail, type Classification } from "./classify.ts";
+import PostalMime from "npm:postal-mime@3.0.1";
+import { type AttachmentFile, type AttachmentText, classifyEmail, type Classification } from "./classify.ts";
 import { logApi, logStep } from "./log.ts";
-import { type MailClient, mailClient, type MailMessage, type Provider } from "./mail.ts";
+import { htmlToText, isEmailAttachment, type MailClient, mailClient, type MailMessage, type Provider } from "./mail.ts";
 import { buildReport, type ReportItem } from "./report.ts";
 import { adminClient } from "./supabase.ts";
 
@@ -21,6 +22,13 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 const MIN_IMAGE_BYTES = 15 * 1024;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+// Attached emails (.eml / Outlook items) and text attachments are read as text, within these limits.
+const MAX_TEXTS = 6;
+const MAX_TEXT_CHARS = 30_000;
+const MAX_EMAIL_BYTES = 25 * 1024 * 1024;
+const MAX_EMAIL_DEPTH = 2; // an attached email inside an attached email is still read; deeper ones are not
+const TEXT_TYPES = ["text/plain", "text/csv", "text/tab-separated-values", "text/html", "text/xml", "application/xml", "application/json"];
+const TEXT_EXTENSION = /\.(txt|csv|tsv|html?|xml|json)$/i;
 
 // Every step of a run is logged (Logs > Steps) with the same run id, so one run can be followed end to end.
 interface Run { id: string; userId: string; mailbox: string; trigger: string }
@@ -145,34 +153,71 @@ async function claim(db: Db, userId: string, mailbox: Mailbox, msg: MailMessage,
   return data?.[0]?.id ?? null;
 }
 
-// All attachment names, plus the PDFs / images Claude should read (within size limits).
-async function gatherAttachments(client: MailClient, msg: MailMessage) {
-  if (!msg.hasAttachments) return { names: [] as string[], files: [] as AttachmentFile[], skipped: [] as string[] };
-  const all = await client.listAttachments(msg.id);
-  const files: AttachmentFile[] = [];
-  const skipped: string[] = [];
-  let total = 0;
+// What Claude gets from a message's attachments: all names (including files inside attached emails), the PDFs /
+// images to read (within size limits), and text: attached emails (.eml / Outlook items) and text files.
+interface Gathered { names: string[]; files: AttachmentFile[]; texts: AttachmentText[]; skipped: string[]; total: number }
 
-  for (const a of all) {
-    if (!a.isFile) continue;
-    const type = (a.contentType ?? "").toLowerCase();
-    const isPdf = type === "application/pdf" || a.name.toLowerCase().endsWith(".pdf");
-    const isImage = IMAGE_TYPES.includes(type) && !a.isInline && a.size >= MIN_IMAGE_BYTES;
-    if (!isPdf && !isImage) continue;
-    if (files.length >= MAX_FILES || a.size > MAX_FILE_BYTES || total + a.size > MAX_TOTAL_BYTES) {
-      skipped.push(a.name);
-      continue;
-    }
-    const bytes = await client.attachmentBytes(msg.id, a.id);
-    total += bytes.length;
-    files.push({
-      name: a.name,
-      mediaType: isPdf ? "application/pdf" : type as AttachmentFile["mediaType"],
-      base64: encodeBase64(bytes),
-    });
+async function gatherAttachments(client: MailClient, msg: MailMessage) {
+  const g: Gathered = { names: [], files: [], texts: [], skipped: [], total: 0 };
+  if (!msg.hasAttachments) return g;
+  for (const a of await client.listAttachments(msg.id)) {
+    g.names.push(a.name);
+    const load = () => client.attachmentBytes(msg.id, a.id);
+    if (a.isEmail) await addEmail(g, a.name, a.size, load, 1);
+    else if (a.isFile) await addFile(g, a.name, a.contentType, a.size, !!a.isInline, load);
   }
-  return { names: all.map((a) => a.name), files, skipped };
+  return g;
 }
+
+async function addFile(
+  g: Gathered, name: string, contentType: string | undefined, size: number, inline: boolean, load: () => Promise<Uint8Array>,
+) {
+  const type = (contentType ?? "").toLowerCase().split(";")[0].trim();
+  const isPdf = type === "application/pdf" || name.toLowerCase().endsWith(".pdf");
+  const isImage = IMAGE_TYPES.includes(type) && !inline && size >= MIN_IMAGE_BYTES;
+  const isText = TEXT_TYPES.includes(type) || TEXT_EXTENSION.test(name);
+
+  if (isText && !isPdf) {
+    if (g.texts.length >= MAX_TEXTS || size > MAX_FILE_BYTES) return g.skipped.push(name);
+    const text = new TextDecoder().decode(await load());
+    g.texts.push({ name, text: clip(/html?$/.test(type) || /\.html?$/i.test(name) ? htmlToText(text) : text) });
+    return;
+  }
+  if (!isPdf && !isImage) return;
+  if (g.files.length >= MAX_FILES || size > MAX_FILE_BYTES || g.total + size > MAX_TOTAL_BYTES) return g.skipped.push(name);
+  const bytes = await load();
+  g.total += bytes.length;
+  g.files.push({ name, mediaType: isPdf ? "application/pdf" : type as AttachmentFile["mediaType"], base64: encodeBase64(bytes) });
+}
+
+// An attached email: its headers and text go in as text, its own attachments are handled like the message's.
+async function addEmail(g: Gathered, name: string, size: number, load: () => Promise<Uint8Array>, depth: number) {
+  if (depth > MAX_EMAIL_DEPTH || g.texts.length >= MAX_TEXTS || size > MAX_EMAIL_BYTES) return g.skipped.push(name);
+  const email = await PostalMime.parse(await load());
+  const address = (a?: { name: string; address?: string }) => a ? [a.name, a.address && `<${a.address}>`].filter(Boolean).join(" ") : "";
+  g.texts.push({
+    name,
+    text: clip([
+      `From: ${address(email.from)}`,
+      `To: ${(email.to ?? []).map(address).join(", ")}`,
+      `Date: ${email.date ?? ""}`,
+      `Subject: ${email.subject ?? ""}`,
+      "",
+      email.text?.trim() || htmlToText(email.html ?? ""),
+    ].join("\n")),
+  });
+
+  for (const att of email.attachments) {
+    const attName = `${name} › ${att.filename || "attachment"}`;
+    const bytes = typeof att.content === "string" ? new TextEncoder().encode(att.content) : new Uint8Array(att.content);
+    g.names.push(attName);
+    if (isEmailAttachment(att.filename ?? "", att.mimeType)) await addEmail(g, attName, bytes.length, async () => bytes, depth + 1);
+    else await addFile(g, attName, att.mimeType, bytes.length, att.disposition === "inline" || !!att.related, async () => bytes);
+  }
+}
+
+const clip = (text: string) =>
+  text.length > MAX_TEXT_CHARS ? `${text.slice(0, MAX_TEXT_CHARS)}\n(Truncated to the first ${MAX_TEXT_CHARS} characters.)` : text;
 
 // Returns the outcome for the summary email, or null if another run already claimed the message.
 async function processMessage(
@@ -203,9 +248,9 @@ async function processMessage(
     await step(run, "process/email",
       `Reading "${subject}" from ${from.address ?? "unknown"}` +
         (attachments.names.length
-          ? `: ${attachments.names.length} attachment${attachments.names.length === 1 ? "" : "s"}, ${attachments.files.length} sent to Claude`
+          ? `: ${attachments.names.length} attachment${attachments.names.length === 1 ? "" : "s"}, ${attachments.files.length + attachments.texts.length} sent to Claude`
           : ": no attachments"),
-      { ...email, attachments: attachments.names, sent_to_claude: attachments.files.map((f) => f.name), too_large: attachments.skipped });
+      { ...email, attachments: attachments.names, sent_to_claude: [...attachments.files, ...attachments.texts].map((f) => f.name), too_large: attachments.skipped });
 
     const c = await classifyEmail({
       from: from.name ? `${from.name} <${from.address}>` : from.address ?? "unknown",
@@ -213,6 +258,7 @@ async function processMessage(
       received: msg.receivedDateTime,
       attachmentNames: attachments.names,
       files: attachments.files,
+      texts: attachments.texts,
       skippedFiles: attachments.skipped,
       body: msg.body?.content ?? "",
     });

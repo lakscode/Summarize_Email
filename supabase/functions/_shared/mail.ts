@@ -33,6 +33,23 @@ export interface MailAttachment {
   isInline?: boolean;
   // False for things that aren't files, such as Outlook item or reference attachments.
   isFile: boolean;
+  // An attached email (.eml / Outlook item); attachmentBytes returns its raw MIME.
+  isEmail?: boolean;
+}
+
+export const isEmailAttachment = (name: string, contentType?: string) =>
+  (contentType ?? "").toLowerCase() === "message/rfc822" || name.toLowerCase().endsWith(".eml");
+
+// Readable text from an HTML email body or attachment.
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<(style|script)[\s\S]*?<\/\1>/gi, "")
+    .replace(/<br\s*\/?>|<\/(p|div|tr|li|h\d)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export interface MailClient {

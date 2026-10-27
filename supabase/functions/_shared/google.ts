@@ -2,8 +2,11 @@
 // Gmail has no forward call, so forwarding rebuilds the message (text + original attachments) and sends it.
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { decodeBase64Url } from "jsr:@std/encoding@1/base64url";
+import PostalMime from "npm:postal-mime@3.0.1";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
-import { type MailAttachment, type MailboxRow, type MailClient, type MailMessage, readRefreshToken } from "./mail.ts";
+import {
+  htmlToText, isEmailAttachment, type MailAttachment, type MailboxRow, type MailClient, type MailMessage, readRefreshToken,
+} from "./mail.ts";
 import { env } from "./supabase.ts";
 
 const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -43,7 +46,13 @@ export async function googleClient(db: SupabaseClient, mailbox: MailboxRow): Pro
   const bytes = async (messageId: string, attachmentId: string) => {
     if (attachmentId.startsWith("part:")) {
       const part = flatten((await full(messageId)).payload).find((p) => p.partId === attachmentId.slice(5));
-      return decodeBase64Url(part?.body?.data ?? "");
+      if (part?.body?.data) return decodeBase64Url(part.body.data);
+      // An attached email Gmail expanded into sub-parts: take it from the raw message instead.
+      const raw = await gmail<{ raw: string }>(token, `/messages/${encodeURIComponent(messageId)}?format=raw`);
+      const parsed = await PostalMime.parse(decodeBase64Url(raw.raw), { forceRfc822Attachments: true });
+      const match = parsed.attachments.find((a) => a.filename === part?.filename);
+      if (!match) throw new Error(`Attachment ${part?.filename ?? attachmentId} not found in the raw message`);
+      return typeof match.content === "string" ? new TextEncoder().encode(match.content) : new Uint8Array(match.content);
     }
     const data = await gmail<{ data: string }>(
       token, `/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`);
@@ -169,7 +178,9 @@ async function send(token: string, mime: string): Promise<void> {
 
 // --- reading messages -------------------------------------------------------------------------
 
+// The message's parts, not descending into attached emails (their contents are read from the .eml itself).
 function flatten(part: GmailPart): GmailPart[] {
+  if (part.mimeType === "message/rfc822") return [part];
   return [part, ...(part.parts ?? []).flatMap(flatten)];
 }
 
@@ -187,6 +198,7 @@ function attachmentsOf(msg: GmailMessage): MailAttachment[] {
       size: p.body?.size ?? 0,
       isInline: disposition.startsWith("inline") || (!disposition && !!headerValue(p, "Content-ID")),
       isFile: true,
+      isEmail: isEmailAttachment(p.filename!, p.mimeType),
     };
   });
 }
@@ -207,14 +219,7 @@ function bodyText(msg: GmailMessage): string {
   const plain = parts.find((p) => p.mimeType === "text/plain");
   if (plain) return decodeText(plain);
   const html = parts.find((p) => p.mimeType === "text/html");
-  if (!html) return "";
-  return decodeText(html)
-    .replace(/<(style|script)[\s\S]*?<\/\1>/gi, "")
-    .replace(/<br\s*\/?>|<\/(p|div|tr|li|h\d)>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return html ? htmlToText(decodeText(html)) : "";
 }
 
 // "Name <address>" or a bare address.

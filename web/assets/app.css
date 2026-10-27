@@ -219,6 +219,7 @@ select {
 /* Dashboard: connect controls and access period */
 .connect-controls { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .connect-controls label { font-size: 0.8rem; color: var(--muted); }
+.beta { margin-left: 6px; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; vertical-align: 1px; opacity: 0.85; }
 .hint { margin: 10px 0 0; color: var(--muted); font-size: 0.85rem; }
 .access { margin-top: 6px; font-size: 0.85rem; color: var(--ok-text); }
 .access.expired { color: var(--error-text); }

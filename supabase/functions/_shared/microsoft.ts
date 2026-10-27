@@ -1,6 +1,8 @@
 // Microsoft Graph access for connected (delegated OAuth) Outlook / Microsoft 365 mailboxes.
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
-import { type MailAttachment, type MailboxRow, type MailClient, type MailMessage, readRefreshToken, saveRefreshToken } from "./mail.ts";
+import {
+  isEmailAttachment, type MailAttachment, type MailboxRow, type MailClient, type MailMessage, readRefreshToken, saveRefreshToken,
+} from "./mail.ts";
 import { env } from "./supabase.ts";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
@@ -86,17 +88,23 @@ async function listAttachments(token: string, messageId: string): Promise<MailAt
     token,
     `/me/messages/${encodeURIComponent(messageId)}/attachments?$select=id,name,contentType,size,isInline`,
   );
-  return data.value.map((a) => ({
-    id: a.id,
-    name: a.name,
-    contentType: a.contentType,
-    size: a.size,
-    isInline: a.isInline,
-    isFile: !a["@odata.type"] || a["@odata.type"] === "#microsoft.graph.fileAttachment",
-  }));
+  return data.value.map((a) => {
+    const isFile = !a["@odata.type"] || a["@odata.type"] === "#microsoft.graph.fileAttachment";
+    // Outlook items (e.g. "attach as item" forwards) download as MIME through $value, like .eml files.
+    const isItem = a["@odata.type"] === "#microsoft.graph.itemAttachment";
+    return {
+      id: a.id,
+      name: a.name,
+      contentType: a.contentType,
+      size: a.size,
+      isInline: a.isInline,
+      isFile,
+      isEmail: isItem || (isFile && isEmailAttachment(a.name, a.contentType)),
+    };
+  });
 }
 
-// Raw bytes of a file attachment.
+// Raw bytes of a file attachment, or the MIME of an attached Outlook item.
 async function attachmentBytes(token: string, messageId: string, attachmentId: string): Promise<Uint8Array> {
   const res = await fetch(
     `${GRAPH}/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/$value`,
