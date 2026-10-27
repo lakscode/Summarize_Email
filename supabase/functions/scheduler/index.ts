@@ -1,11 +1,11 @@
-// Runs scheduled mailbox processing. Called every 15 minutes by pg_cron (see migration *_schedules.sql) with the
+// Runs scheduled mailbox processing. Called every 5 minutes by pg_cron (see migrations *_schedules.sql, *_schedule_interval.sql) with the
 // shared secret from Vault in the x-cron-secret header; not callable from the browser.
 // For each mailbox whose schedule is due it processes mail received since the previous scheduled run. If a
 // mailbox has more mail than one batch, it stays due and the next tick continues where this one stopped.
 import { json } from "../_shared/cors.ts";
 import { logApi } from "../_shared/log.ts";
 import { processMailbox } from "../_shared/process.ts";
-import { type Frequency, nextRun } from "../_shared/schedule.ts";
+import { type Frequency, type IntervalUnit, nextRun } from "../_shared/schedule.ts";
 import { adminClient } from "../_shared/supabase.ts";
 
 // Stop starting new mailboxes after this long so the invocation finishes inside the Edge Function limit.
@@ -30,7 +30,7 @@ Deno.serve(async (req) => {
   const started = Date.now();
   await db.rpc("expire_mailbox_access");
   const { data: due, error } = await db.from("mailboxes")
-    .select("id, owner_user_id, email_address, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_anchor, schedule_last_run_at, schedule_next_run_at")
+    .select("id, owner_user_id, email_address, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_anchor, schedule_interval, schedule_interval_unit, schedule_last_run_at, schedule_next_run_at")
     .eq("schedule_enabled", true)
     .not("credentials_secret_id", "is", null)
     .lte("schedule_next_run_at", new Date().toISOString())
@@ -53,6 +53,8 @@ Deno.serve(async (req) => {
       time: String(m.schedule_time).slice(0, 5),
       timezone: m.schedule_timezone,
       anchor: m.schedule_anchor,
+      interval: m.schedule_interval,
+      intervalUnit: m.schedule_interval_unit as IntervalUnit,
     }, now);
 
     try {
@@ -67,7 +69,7 @@ Deno.serve(async (req) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await logApi("scheduler/run", err, { userId: m.owner_user_id, context: { mailbox: m.email_address } });
-      // Skip to the next scheduled time rather than retrying a failing mailbox every 15 minutes.
+      // Skip to the next scheduled time rather than retrying a failing mailbox on every tick.
       await db.from("mailboxes").update({
         schedule_next_run_at: following.toISOString(),
         schedule_last_result: { at: now.toISOString(), error: message },

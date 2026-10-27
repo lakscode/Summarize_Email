@@ -2,7 +2,8 @@
 //   GET                                   -> { mailboxes: [...] } (expired access is cleaned up first)
 //   POST {action: "connect", access_days} -> { url } to start Microsoft sign-in (delegated OAuth)
 //   PATCH {id, smart_ap_address}          -> set where invoices are forwarded ("" clears it)
-//   PATCH {id, schedule: {enabled, frequency, days, time, timezone}} -> scheduled processing (see _shared/schedule.ts)
+//   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
+//                                         -> scheduled processing (see _shared/schedule.ts)
 //   DELETE ?id=<mailbox id>               -> disconnect (Vault secret removed by trigger)
 //   GET ?code=...&state=...               -> OAuth callback from Microsoft; stores the refresh token for the
 //                                            chosen number of days, redirects back to the app's dashboard
@@ -12,7 +13,9 @@ import { decodeBase64Url, encodeBase64Url } from "jsr:@std/encoding@1/base64url"
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
 import { MS_SCOPES, msBase } from "../_shared/microsoft.ts";
-import { FREQUENCIES, type Frequency, isValidTimeZone, localDate, nextRun } from "../_shared/schedule.ts";
+import {
+  FREQUENCIES, type Frequency, INTERVAL_UNITS, type IntervalUnit, isValidTimeZone, localDate, MIN_INTERVAL_MINUTES, nextRun,
+} from "../_shared/schedule.ts";
 import { adminClient, callerUser, env } from "../_shared/supabase.ts";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
@@ -48,7 +51,7 @@ Deno.serve(async (req) => {
 
       const { data, error } = await sb
         .from("mailboxes")
-        .select("id, provider, email_address, display_name, active, smart_ap_address, last_processed_at, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
+        .select("id, provider, email_address, display_name, active, smart_ap_address, last_processed_at, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
       return json({ mailboxes: data });
@@ -124,14 +127,26 @@ async function saveSchedule(userId: string, sb: SupabaseClient, id: string, s: R
   const days = Array.isArray(s.days) ? [...new Set(s.days.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort() : [];
   const time = String(s.time ?? "");
   const timezone = String(s.timezone ?? "");
-  if (!FREQUENCIES.includes(frequency)) return json({ error: "frequency must be daily, alternate or weekdays" }, 400);
+  const interval = Number(s.interval ?? 1);
+  const intervalUnit = String(s.interval_unit ?? "hours") as IntervalUnit;
+  if (!FREQUENCIES.includes(frequency)) return json({ error: "frequency must be daily, alternate, weekdays or interval" }, 400);
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return json({ error: "time must be HH:MM" }, 400);
   if (!isValidTimeZone(timezone)) return json({ error: "Unknown time zone" }, 400);
   if (frequency === "weekdays" && days.length === 0) return json({ error: "Select at least one day" }, 400);
+  if (frequency === "interval") {
+    if (!INTERVAL_UNITS.includes(intervalUnit)) return json({ error: "interval_unit must be minutes, hours or days" }, 400);
+    if (!Number.isInteger(interval) || interval < 1 || interval > 1000) return json({ error: "interval must be a whole number from 1 to 1000" }, 400);
+    if (intervalUnit === "minutes" && interval < MIN_INTERVAL_MINUTES) {
+      return json({ error: `Minute intervals must be at least ${MIN_INTERVAL_MINUTES} minutes` }, 400);
+    }
+  }
+  const startDate = String(s.start_date ?? "");
+  if (frequency === "interval" && !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return json({ error: "start_date must be YYYY-MM-DD" }, 400);
 
   const now = new Date();
-  const anchor = localDate(now, timezone);
-  const next = enabled ? nextRun({ frequency, days, time, timezone, anchor }, now) : null;
+  // Interval schedules count from the chosen start date; the others from the day the schedule is saved.
+  const anchor = frequency === "interval" ? startDate : localDate(now, timezone);
+  const next = enabled ? nextRun({ frequency, days, time, timezone, anchor, interval, intervalUnit }, now) : null;
 
   const { data, error } = await adminClient().from("mailboxes").update({
     schedule_enabled: enabled,
@@ -140,6 +155,7 @@ async function saveSchedule(userId: string, sb: SupabaseClient, id: string, s: R
     schedule_time: time,
     schedule_timezone: timezone,
     schedule_anchor: anchor,
+    ...(frequency === "interval" ? { schedule_interval: interval, schedule_interval_unit: intervalUnit } : {}),
     schedule_next_run_at: next?.toISOString() ?? null,
     // Next scheduled run covers mail since now, not everything since the mailbox was connected.
     ...(enabled ? { schedule_last_run_at: now.toISOString() } : {}),

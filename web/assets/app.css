@@ -98,6 +98,49 @@ button {
 button:disabled { opacity: 0.6; cursor: default; }
 button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
 
+/* Loading: spinner, the page-wide "Loading…" pill (added by common.js) and the submit button of a busy form. */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.loading {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  font-size: 0.9rem;
+}
+.loading[hidden] { display: none; }
+form.busy :is(button:not([type]), button[type="submit"])::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  vertical-align: -1px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
 .forgot { margin: -4px 0 0; text-align: right; font-size: 0.85rem; }
 .alt { margin: 18px 0 0; text-align: center; color: var(--muted); font-size: 0.9rem; }
 
@@ -180,6 +223,9 @@ select {
 .schedule-form .sub { margin: 0; color: var(--muted); font-size: 0.9rem; }
 .schedule-row { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
 .schedule-row label:not(.checkbox) { min-width: 160px; }
+.schedule-row label[hidden] { display: none; }
+.interval-input { display: flex; gap: 6px; }
+.interval-input input { width: 80px; }
 .days { display: flex; flex-wrap: wrap; gap: 4px 14px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 0; }
 .days[hidden] { display: none; }
 .days legend { font-size: 0.85rem; color: var(--muted); padding: 0 4px; }

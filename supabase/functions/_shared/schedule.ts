@@ -2,10 +2,16 @@
 //   daily     - every day at `time`
 //   alternate - every other day at `time`, counting from `anchor` (the local date the schedule was saved)
 //   weekdays  - on the selected `days` (0 = Sunday ... 6 = Saturday) at `time`
+//   interval  - every `interval` minutes / hours / days, starting at `anchor` + `time`. Minutes and hours are
+//               fixed spans of real time; days keep the same local time across DST changes.
 // Times are wall-clock in the user's IANA time zone, so DST changes keep the same local time.
 
-export const FREQUENCIES = ["daily", "alternate", "weekdays"] as const;
+export const FREQUENCIES = ["daily", "alternate", "weekdays", "interval"] as const;
 export type Frequency = typeof FREQUENCIES[number];
+export const INTERVAL_UNITS = ["minutes", "hours", "days"] as const;
+export type IntervalUnit = typeof INTERVAL_UNITS[number];
+// Shortest interval allowed; matches the pg_cron tick that calls the scheduler.
+export const MIN_INTERVAL_MINUTES = 5;
 
 export interface Schedule {
   frequency: Frequency;
@@ -13,6 +19,8 @@ export interface Schedule {
   time: string; // "HH:MM"
   timezone: string;
   anchor: string; // "YYYY-MM-DD" in `timezone`
+  interval?: number;
+  intervalUnit?: IntervalUnit;
 }
 
 interface LocalParts { year: number; month: number; day: number; hour: number; minute: number }
@@ -63,6 +71,7 @@ export function nextRun(s: Schedule, after: Date): Date {
   const start = localParts(after, s.timezone);
   const [ay, am, ad] = s.anchor.split("-").map(Number);
   const anchorDay = dayNumber(ay, am, ad);
+  if (s.frequency === "interval") return nextInterval(s, after, ay, am, ad, hh, mm);
 
   for (let i = 0; i <= 15; i++) {
     const cal = new Date(Date.UTC(start.year, start.month - 1, start.day + i));
@@ -76,4 +85,23 @@ export function nextRun(s: Schedule, after: Date): Date {
     if (at.getTime() > after.getTime()) return at;
   }
   throw new Error("Schedule has no upcoming run");
+}
+
+function nextInterval(s: Schedule, after: Date, ay: number, am: number, ad: number, hh: number, mm: number): Date {
+  const n = Math.max(1, s.interval ?? 1);
+  const first = zonedToUtc(ay, am, ad, hh, mm, s.timezone);
+  if (first.getTime() > after.getTime()) return first;
+
+  if (s.intervalUnit === "days") {
+    const start = localParts(after, s.timezone);
+    const elapsedDays = dayNumber(start.year, start.month, start.day) - dayNumber(ay, am, ad);
+    for (let k = Math.max(0, Math.floor(elapsedDays / n)); ; k++) {
+      const at = zonedToUtc(ay, am, ad + k * n, hh, mm, s.timezone);
+      if (at.getTime() > after.getTime()) return at;
+    }
+  }
+
+  const step = n * (s.intervalUnit === "minutes" ? 60_000 : 3_600_000);
+  const k = Math.floor((after.getTime() - first.getTime()) / step) + 1;
+  return new Date(first.getTime() + k * step);
 }

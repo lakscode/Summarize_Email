@@ -60,17 +60,48 @@ function showMessage(text, kind = "info") {
 
 // Calls a Supabase Edge Function and returns { data, error } where error is the function's own
 // message (e.g. "Azure isn't set up...") rather than supabase-js's generic HTTP error text.
+// While it runs, the page's loading indicator is shown.
 async function callApi(name, options) {
-  const { data, error } = await sb.functions.invoke(name, options);
-  if (!error) return { data, error: null };
-  let message = error.message;
+  trackLoading(1);
   try {
-    const body = await error.context.json();
-    if (body?.error) message = body.error;
-  } catch {
-    // Network failure / non-JSON response: keep supabase-js's message.
+    const { data, error } = await sb.functions.invoke(name, options);
+    if (!error) return { data, error: null };
+    let message = error.message;
+    try {
+      const body = await error.context.json();
+      if (body?.error) message = body.error;
+    } catch {
+      // Network failure / non-JSON response: keep supabase-js's message.
+    }
+    return { data: null, error: message };
+  } finally {
+    trackLoading(-1);
   }
-  return { data: null, error: message };
+}
+
+// --- Loading indicator: a "Loading…" pill shown while any callApi request is in flight. It appears only
+// after a short delay so quick requests don't flicker. ---
+
+let pendingRequests = 0;
+let loadingTimer = null;
+
+function trackLoading(delta) {
+  pendingRequests = Math.max(0, pendingRequests + delta);
+  let indicator = document.getElementById("loading");
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.id = "loading";
+    indicator.className = "loading";
+    indicator.setAttribute("role", "status");
+    indicator.hidden = true;
+    const spinner = document.createElement("span");
+    spinner.className = "spinner";
+    indicator.append(spinner, "Loading…");
+    document.body.append(indicator);
+  }
+  clearTimeout(loadingTimer);
+  if (pendingRequests > 0) loadingTimer = setTimeout(() => (indicator.hidden = false), 150);
+  else indicator.hidden = true;
 }
 
 // --- UI logging (stored by the `logs` Edge Function as source 'ui') ---
@@ -139,6 +170,8 @@ function renderSidebar(active, session) {
   aside.replaceChildren(brand, nav, foot);
 }
 
+// Disables the form while it submits; the `busy` class puts a spinner in its submit button.
 function setBusy(form, busy) {
   for (const el of form.elements) el.disabled = busy;
+  form.classList.toggle("busy", busy);
 }

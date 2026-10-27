@@ -52,10 +52,24 @@
                 <option value="daily">Every day</option>
                 <option value="alternate">Every other day</option>
                 <option value="weekdays">On selected days</option>
+                <option value="interval">Every N minutes / hours / days</option>
               </select>
             </label>
-            <label>At
-              <input type="time" name="time" id="schedule-time" value="08:00" step="900" required />
+            <label id="schedule-interval-field" hidden>Every
+              <span class="interval-input">
+                <input type="number" name="interval" id="schedule-interval" min="1" max="1000" step="1" value="1" required />
+                <select name="interval_unit" id="schedule-interval-unit">
+                  <option value="minutes">minutes</option>
+                  <option value="hours" selected>hours</option>
+                  <option value="days">days</option>
+                </select>
+              </span>
+            </label>
+            <label id="schedule-start-field" hidden>Starting
+              <input type="date" name="start_date" id="schedule-start-date" />
+            </label>
+            <label><span id="schedule-time-label">At</span>
+              <input type="time" name="time" id="schedule-time" value="08:00" step="300" required />
             </label>
           </div>
           <fieldset class="days" id="schedule-days" hidden>
@@ -147,9 +161,13 @@
       document.getElementById("schedule-enabled").checked = !!m.schedule_enabled;
       document.getElementById("schedule-frequency").value = m.schedule_frequency || "daily";
       document.getElementById("schedule-time").value = String(m.schedule_time || "08:00").slice(0, 5);
+      document.getElementById("schedule-interval").value = m.schedule_interval || 1;
+      document.getElementById("schedule-interval-unit").value = m.schedule_interval_unit || "hours";
+      document.getElementById("schedule-start-date").value =
+        m.schedule_frequency === "interval" && m.schedule_anchor ? m.schedule_anchor : todayLocal();
       const days = m.schedule_days || [1, 2, 3, 4, 5];
       for (const box of document.querySelectorAll("#schedule-days input")) box.checked = days.includes(Number(box.value));
-      toggleDays();
+      toggleFrequencyFields();
       renderScheduleStatus(m);
     }
 
@@ -169,12 +187,27 @@
       status.replaceChildren(...parts.map((p) => el("div", null, p)));
     }
 
-    function toggleDays() {
-      document.getElementById("schedule-days").hidden = document.getElementById("schedule-frequency").value !== "weekdays";
+    function todayLocal() {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    }
+
+    // Shows the fields the chosen frequency uses; minute intervals are capped at 5 minutes (the scheduler tick).
+    function toggleFrequencyFields() {
+      const frequency = document.getElementById("schedule-frequency").value;
+      const interval = frequency === "interval";
+      document.getElementById("schedule-days").hidden = frequency !== "weekdays";
+      document.getElementById("schedule-interval-field").hidden = !interval;
+      document.getElementById("schedule-start-field").hidden = !interval;
+      document.getElementById("schedule-start-date").required = interval;
+      document.getElementById("schedule-time-label").textContent = interval ? "From" : "At";
+      document.getElementById("schedule-interval").min =
+        interval && document.getElementById("schedule-interval-unit").value === "minutes" ? 5 : 1;
     }
 
     document.getElementById("mailbox-select").addEventListener("change", fillSchedule);
-    document.getElementById("schedule-frequency").addEventListener("change", toggleDays);
+    document.getElementById("schedule-frequency").addEventListener("change", toggleFrequencyFields);
+    document.getElementById("schedule-interval-unit").addEventListener("change", toggleFrequencyFields);
 
     document.getElementById("schedule-form").addEventListener("submit", async (ev) => {
       ev.preventDefault();
@@ -185,6 +218,9 @@
         frequency: document.getElementById("schedule-frequency").value,
         time: document.getElementById("schedule-time").value,
         days: [...document.querySelectorAll("#schedule-days input:checked")].map((b) => Number(b.value)),
+        interval: Number(document.getElementById("schedule-interval").value),
+        interval_unit: document.getElementById("schedule-interval-unit").value,
+        start_date: document.getElementById("schedule-start-date").value,
         timezone,
       };
       setBusy(form, true);
