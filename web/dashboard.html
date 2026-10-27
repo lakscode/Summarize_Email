@@ -27,7 +27,7 @@
         <div class="panel-head">
           <div>
             <h2>Mailboxes</h2>
-            <p class="sub">Connect an Azure / Microsoft 365 (Outlook) mailbox to summarize.</p>
+            <p class="sub">Connect an Azure / Microsoft 365 (Outlook) or Gmail mailbox to summarize.</p>
           </div>
           <div class="connect-controls">
             <label>Allow access for
@@ -38,7 +38,8 @@
                 <option value="90">90 days</option>
               </select>
             </label>
-            <button id="add-azure">Add Azure mailbox</button>
+            <button class="connect-button" data-provider="microsoft">Add Azure mailbox</button>
+            <button class="connect-button" data-provider="google">Add Gmail mailbox</button>
           </div>
         </div>
         <p class="hint">The app keeps an encrypted Microsoft token only for the period you choose, then deletes it. Reconnect to extend.</p>
@@ -105,7 +106,7 @@
       email.textContent = m.email_address;
       const meta = document.createElement("div");
       meta.className = "label";
-      meta.textContent = `${m.display_name ? m.display_name + " · " : ""}Azure · connected ${new Date(m.created_at).toLocaleDateString()}`;
+      meta.textContent = `${m.display_name ? m.display_name + " · " : ""}${PROVIDER_LABELS[m.provider] || "Azure"} · connected ${new Date(m.created_at).toLocaleDateString()}`;
 
       // Access window: active until access_expires_at, then the token is deleted and a reconnect is needed.
       const expired = !m.active || (m.access_expires_at && new Date(m.access_expires_at) <= new Date());
@@ -116,7 +117,7 @@
         const reconnect = document.createElement("button");
         reconnect.className = "link-button";
         reconnect.textContent = "Reconnect";
-        reconnect.addEventListener("click", () => startConnect(reconnect));
+        reconnect.addEventListener("click", () => startConnect(reconnect, m.provider || "microsoft"));
         access.append(reconnect);
       } else {
         access.textContent = m.access_expires_at
@@ -172,16 +173,18 @@
       return form;
     }
 
-    // Starts Microsoft sign-in in a popup; the chosen access period is carried through to the callback.
+    const PROVIDER_LABELS = { microsoft: "Azure", google: "Gmail" };
+
+    // Starts Microsoft or Google sign-in in a popup; the chosen access period is carried through to the callback.
     // The popup is opened straight from the click (before the API call) so browsers don't block it; if they
     // do anyway, sign-in falls back to navigating this page.
-    async function startConnect(button) {
+    async function startConnect(button, provider) {
       button.disabled = true;
       showMessage("");
       const popup = openCentered(500, 650);
-      if (popup) popup.document.body.textContent = "Opening Microsoft sign-in…";
+      if (popup) popup.document.body.textContent = `Opening ${provider === "google" ? "Google" : "Microsoft"} sign-in…`;
       const access_days = Number(document.getElementById("access-days").value);
-      const { data, error } = await callApi("mailboxes", { body: { action: "connect", access_days, popup: !!popup } });
+      const { data, error } = await callApi("mailboxes", { body: { action: "connect", provider, access_days, popup: !!popup } });
       if (error) {
         popup?.close();
         button.disabled = false;
@@ -201,17 +204,19 @@
     function openCentered(width, height) {
       const left = Math.round(window.screenX + (window.outerWidth - width) / 2);
       const top = Math.round(window.screenY + (window.outerHeight - height) / 2);
-      return window.open("", "microsoft-sign-in", `popup,width=${width},height=${height},left=${left},top=${top}`);
+      return window.open("", "mailbox-sign-in", `popup,width=${width},height=${height},left=${left},top=${top}`);
     }
 
     // connect-done.html (loaded in the popup at the end of sign-in) reports the outcome here.
     new BroadcastChannel("mailbox-connect").addEventListener("message", async (e) => {
-      document.getElementById("add-azure").disabled = false;
+      for (const b of document.querySelectorAll(".connect-button")) b.disabled = false;
       showConnectResult(new URLSearchParams(e.data));
       await loadMailboxes();
     });
 
-    document.getElementById("add-azure").addEventListener("click", (e) => startConnect(e.currentTarget));
+    for (const b of document.querySelectorAll(".connect-button")) {
+      b.addEventListener("click", () => startConnect(b, b.dataset.provider));
+    }
   </script>
 </body>
 </html>

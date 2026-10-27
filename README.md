@@ -58,7 +58,22 @@ web/
    npm run secrets
    npm run functions:deploy
    ```
-On the dashboard, **Add Azure mailbox** sends the user to Microsoft sign-in and back to `/dashboard`.
+On the dashboard, **Add Azure mailbox** opens Microsoft sign-in in a popup (or, if popups are blocked, sends the
+user there and back to `/dashboard`).
+
+## 1c. Gmail mailbox connection (optional)
+
+1. Google Cloud console > create or pick a project > APIs & Services > Library > enable **Gmail API**.
+2. OAuth consent screen: External (or Internal for a Google Workspace org), add the scopes
+   `https://www.googleapis.com/auth/gmail.readonly` and `https://www.googleapis.com/auth/gmail.send`.
+   - While the app is in **Testing**, only the listed test users can connect, and Google expires their access
+     after 7 days (reconnect from the dashboard). `gmail.readonly` is a restricted scope, so publishing the app
+     for everyone needs Google's verification and a security assessment. An **Internal** app in a Workspace
+     org avoids both.
+3. Credentials > Create credentials > OAuth client ID > Web application. Authorized redirect URI:
+   `https://<project-ref>.supabase.co/functions/v1/mailboxes`
+4. Put the client ID and secret in `supabase/functions/.env` as `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, then
+   `npm run secrets`, `npm run db:push` and `npm run functions:deploy`.
 
 ## 2. Vercel (UI)
 

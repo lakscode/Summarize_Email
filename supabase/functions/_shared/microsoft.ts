@@ -1,5 +1,6 @@
-// Microsoft Graph access for connected (delegated OAuth) mailboxes.
+// Microsoft Graph access for connected (delegated OAuth) Outlook / Microsoft 365 mailboxes.
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { type MailAttachment, type MailboxRow, type MailClient, type MailMessage, readRefreshToken, saveRefreshToken } from "./mail.ts";
 import { env } from "./supabase.ts";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
@@ -10,51 +11,34 @@ export const MS_SCOPES = "offline_access User.Read Mail.Read Mail.Send";
 
 export const msBase = () => `https://login.microsoftonline.com/${env("MS_TENANT_ID", "common")}/oauth2/v2.0`;
 
-export interface MailboxRow {
-  id: string;
-  email_address: string;
-  credentials_secret_id: string | null;
-}
-
-export interface GraphMessage {
-  id: string;
-  internetMessageId?: string;
-  subject?: string;
-  receivedDateTime: string;
-  from?: { emailAddress?: { name?: string; address?: string } };
-  body?: { content?: string };
-  hasAttachments?: boolean;
-  webLink?: string;
+export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): Promise<MailClient> {
+  const token = await graphToken(db, mailbox);
+  return {
+    listInbox: (since, top) => listInbox(token, since, top),
+    listAttachments: (messageId) => listAttachments(token, messageId),
+    attachmentBytes: (messageId, attachmentId) => attachmentBytes(token, messageId, attachmentId),
+    sendMail: (to, subject, html) => sendMail(token, to, subject, html),
+    forwardMessage: (messageId, to, comment) => forwardMessage(token, messageId, to, comment),
+  };
 }
 
 // Exchanges the stored refresh token for an access token, saving a rotated refresh token if Microsoft returns one.
-export async function graphToken(db: SupabaseClient, mailbox: MailboxRow): Promise<string> {
-  if (!mailbox.credentials_secret_id) throw new Error("Mailbox has no stored credentials; reconnect it.");
-  const { data: refreshToken, error } = await db.rpc("mailbox_secret_get", { p_secret_id: mailbox.credentials_secret_id });
-  if (error || !refreshToken) throw new Error(`Could not read mailbox credentials: ${error?.message ?? "missing"}`);
-
+async function graphToken(db: SupabaseClient, mailbox: MailboxRow): Promise<string> {
+  const refreshToken = await readRefreshToken(db, mailbox);
   const res = await fetch(`${msBase()}/token`, {
     method: "POST",
     body: new URLSearchParams({
       client_id: env("MS_CLIENT_ID"),
       client_secret: env("MS_CLIENT_SECRET"),
       grant_type: "refresh_token",
-      refresh_token: refreshToken as string,
+      refresh_token: refreshToken,
       // .default = whatever this mailbox consented to, so older connections without Mail.Send still refresh.
       scope: "offline_access https://graph.microsoft.com/.default",
     }),
   });
   if (!res.ok) throw new Error(`Microsoft token refresh failed (${res.status}); reconnect the mailbox. ${await res.text()}`);
   const tok = await res.json();
-
-  if (tok.refresh_token && tok.refresh_token !== refreshToken) {
-    const { error: putError } = await db.rpc("mailbox_secret_put", {
-      p_secret_id: mailbox.credentials_secret_id,
-      p_secret: tok.refresh_token,
-      p_name: `mailbox:${mailbox.id}`,
-    });
-    if (putError) console.error("Could not save rotated refresh token:", putError.message);
-  }
+  if (tok.refresh_token && tok.refresh_token !== refreshToken) await saveRefreshToken(db, mailbox, tok.refresh_token);
   return tok.access_token as string;
 }
 
@@ -75,20 +59,20 @@ async function graph<T>(token: string, path: string, init: RequestInit = {}, ext
 }
 
 // Inbox messages received since `since`, newest first, bodies as plain text.
-export async function listInbox(token: string, since: Date, top = 50): Promise<GraphMessage[]> {
+async function listInbox(token: string, since: Date, top = 50): Promise<MailMessage[]> {
   const params = new URLSearchParams({
     $filter: `receivedDateTime ge ${since.toISOString()}`,
     $orderby: "receivedDateTime desc",
     $top: String(top),
     $select: "id,internetMessageId,subject,receivedDateTime,from,body,hasAttachments,webLink",
   });
-  const data = await graph<{ value: GraphMessage[] }>(token, `/me/mailFolders/inbox/messages?${params}`, {}, {
+  const data = await graph<{ value: MailMessage[] }>(token, `/me/mailFolders/inbox/messages?${params}`, {}, {
     Prefer: 'outlook.body-content-type="text"',
   });
   return data.value;
 }
 
-export interface AttachmentMeta {
+interface GraphAttachment {
   id: string;
   name: string;
   contentType?: string;
@@ -97,16 +81,23 @@ export interface AttachmentMeta {
   "@odata.type"?: string;
 }
 
-export async function listAttachments(token: string, messageId: string): Promise<AttachmentMeta[]> {
-  const data = await graph<{ value: AttachmentMeta[] }>(
+async function listAttachments(token: string, messageId: string): Promise<MailAttachment[]> {
+  const data = await graph<{ value: GraphAttachment[] }>(
     token,
     `/me/messages/${encodeURIComponent(messageId)}/attachments?$select=id,name,contentType,size,isInline`,
   );
-  return data.value;
+  return data.value.map((a) => ({
+    id: a.id,
+    name: a.name,
+    contentType: a.contentType,
+    size: a.size,
+    isInline: a.isInline,
+    isFile: !a["@odata.type"] || a["@odata.type"] === "#microsoft.graph.fileAttachment",
+  }));
 }
 
 // Raw bytes of a file attachment.
-export async function attachmentBytes(token: string, messageId: string, attachmentId: string): Promise<Uint8Array> {
+async function attachmentBytes(token: string, messageId: string, attachmentId: string): Promise<Uint8Array> {
   const res = await fetch(
     `${GRAPH}/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/$value`,
     { headers: { Authorization: `Bearer ${token}` } },
@@ -116,7 +107,7 @@ export async function attachmentBytes(token: string, messageId: string, attachme
 }
 
 // Sends an HTML email from the connected mailbox (saved to its Sent Items).
-export async function sendMail(token: string, to: string, subject: string, html: string): Promise<void> {
+async function sendMail(token: string, to: string, subject: string, html: string): Promise<void> {
   await graph<void>(token, "/me/sendMail", {
     method: "POST",
     body: JSON.stringify({
@@ -126,7 +117,7 @@ export async function sendMail(token: string, to: string, subject: string, html:
   });
 }
 
-export async function forwardMessage(token: string, messageId: string, to: string, comment: string): Promise<void> {
+async function forwardMessage(token: string, messageId: string, to: string, comment: string): Promise<void> {
   await graph<void>(token, `/me/messages/${encodeURIComponent(messageId)}/forward`, {
     method: "POST",
     body: JSON.stringify({ comment, toRecipients: [{ emailAddress: { address: to } }] }),

@@ -66,7 +66,7 @@ export function buildReport(mailbox: string, items: ReportItem[], remaining: num
   const date = new Date().toISOString().slice(0, 10);
   const s = (n: number) => (n === 1 ? "" : "s");
 
-  const subject = `AP inbox summary – ${date} – ${needed.length} action${s(needed.length)} needed`;
+  const subject = `Inbox summary – ${date} – ${needed.length} action${s(needed.length)} needed`;
 
   const stats = `
     <table role="presentation" width="100%" cellspacing="6" cellpadding="0" style="margin:0 0 8px;"><tr>
@@ -105,7 +105,7 @@ export function buildReport(mailbox: string, items: ReportItem[], remaining: num
   const html = renderEmail({
     title: subject,
     preheader: `${needed.length} action${s(needed.length)} needed, ${done.length} done, ${noAction.length} no action in ${mailbox}.`,
-    heading: needed.length ? `${needed.length} email${s(needed.length)} need${needed.length === 1 ? "s" : ""} your attention` : "Your AP inbox is up to date",
+    heading: needed.length ? `${needed.length} email${s(needed.length)} need${needed.length === 1 ? "s" : ""} your attention` : "Your Inbox is up to date",
     intro: `${trigger === "schedule" ? "Scheduled" : "Manual"} run for <strong>${esc(mailbox)}</strong> on ${esc(date)}: ` +
       `${items.length} email${s(items.length)} processed.`,
     button: appUrl ? { url: `${appUrl}/inbox`, label: "Open the Inbox" } : null,

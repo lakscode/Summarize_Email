@@ -1,11 +1,11 @@
 // Shared AP inbox processing: used by the `inbox` function (Process inbox button) and the `scheduler` function.
-// Reads Outlook inbox mail, classifies it with Claude and forwards confident invoices to the Smart AP address.
+// Reads Outlook or Gmail inbox mail (see mail.ts), classifies it with Claude and forwards confident invoices to the Smart AP address.
 // Each message is processed once per mailbox (unique mailbox_id + message_id). With reprocess, emails already
 // classified are classified again unless they were forwarded or marked done, so nothing is forwarded twice.
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { type AttachmentFile, classifyEmail, type Classification } from "./classify.ts";
 import { logApi, logStep } from "./log.ts";
-import { attachmentBytes, forwardMessage, type GraphMessage, graphToken, listAttachments, listInbox, sendMail } from "./microsoft.ts";
+import { type MailClient, mailClient, type MailMessage, type Provider } from "./mail.ts";
 import { buildReport, type ReportItem } from "./report.ts";
 import { adminClient } from "./supabase.ts";
 
@@ -35,7 +35,7 @@ export async function processMailbox(
   const db = adminClient();
   await db.rpc("expire_mailbox_access");
   const { data: mailbox, error } = await db.from("mailboxes")
-    .select("id, email_address, credentials_secret_id, smart_ap_address, access_expires_at")
+    .select("id, provider, email_address, credentials_secret_id, smart_ap_address, access_expires_at")
     .eq("id", mailboxId).eq("owner_user_id", userId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!mailbox) throw new Error("Mailbox not found");
@@ -48,8 +48,8 @@ export async function processMailbox(
   await step(run, "process/start",
     `Run started (${trigger === "schedule" ? "scheduled" : "manual"}) for ${mailbox.email_address}: last ${hours}h${reprocess ? ", re-checking processed emails" : ""}`);
 
-  const token = await graphToken(db, mailbox);
-  const messages = await listInbox(token, new Date(Date.now() - hours * 3600_000));
+  const client = await mailClient(db, mailbox);
+  const messages = await client.listInbox(new Date(Date.now() - hours * 3600_000));
 
   const { data: seen, error: seenError } = messages.length
     ? await db.from("processed_emails").select("id, message_id, status, action_taken")
@@ -74,7 +74,7 @@ export async function processMailbox(
   const queue = [...batch];
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
     for (let msg = queue.shift(); msg; msg = queue.shift()) {
-      const item = await processMessage(db, run, mailbox, token, msg, seenById.get(msg.id));
+      const item = await processMessage(db, run, mailbox, client, msg, seenById.get(msg.id));
       if (!item) continue;
       items.push(item);
       counts[item.status] = (counts[item.status] ?? 0) + 1;
@@ -83,7 +83,7 @@ export async function processMailbox(
 
   await db.from("mailboxes").update({ last_processed_at: new Date().toISOString() }).eq("id", mailbox.id);
   const remaining = fresh.length - batch.length;
-  const report = items.length ? await sendReport(run, mailbox, token, items, remaining, appUrl) : "skipped";
+  const report = items.length ? await sendReport(run, mailbox, client, items, remaining, appUrl) : "skipped";
   const result = {
     mailbox: mailbox.email_address,
     scanned: messages.length,
@@ -99,13 +99,13 @@ export async function processMailbox(
 
 // Emails the run summary from the mailbox to itself (the mailbox owner). Needs Mail.Send, like forwarding.
 async function sendReport(
-  run: Run, mailbox: Mailbox, token: string, items: ReportItem[], remaining: number, appUrl: string | null,
+  run: Run, mailbox: Mailbox, client: MailClient, items: ReportItem[], remaining: number, appUrl: string | null,
 ): Promise<"sent" | "failed"> {
   const order = ["action_needed", "error", "done", "no_action"];
   items.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   const { subject, html } = buildReport(mailbox.email_address, items, remaining, run.trigger, appUrl);
   try {
-    await sendMail(token, mailbox.email_address, subject, html);
+    await client.sendMail(mailbox.email_address, subject, html);
     await step(run, "process/report", `Summary email sent to ${mailbox.email_address}: "${subject}"`);
     return "sent";
   } catch (err) {
@@ -115,12 +115,12 @@ async function sendReport(
 }
 
 type Db = ReturnType<typeof adminClient>;
-interface Mailbox { id: string; email_address: string; credentials_secret_id: string | null; smart_ap_address: string | null }
+interface Mailbox { id: string; provider: Provider; email_address: string; credentials_secret_id: string | null; smart_ap_address: string | null }
 interface ExistingRow { id: string; message_id: string; status: string; action_taken: string | null }
 
 // Claims the message for this run: inserts a new row, or (re-check) flips an existing row back to processing
 // only if it is still in the status we read, so two runs never work on the same email.
-async function claim(db: Db, userId: string, mailbox: Mailbox, msg: GraphMessage, existing?: ExistingRow): Promise<string | null> {
+async function claim(db: Db, userId: string, mailbox: Mailbox, msg: MailMessage, existing?: ExistingRow): Promise<string | null> {
   if (existing) {
     const { data, error } = await db.from("processed_emails")
       .update({ status: "processing", error: null, updated_at: new Date().toISOString() })
@@ -146,15 +146,15 @@ async function claim(db: Db, userId: string, mailbox: Mailbox, msg: GraphMessage
 }
 
 // All attachment names, plus the PDFs / images Claude should read (within size limits).
-async function gatherAttachments(token: string, msg: GraphMessage) {
+async function gatherAttachments(client: MailClient, msg: MailMessage) {
   if (!msg.hasAttachments) return { names: [] as string[], files: [] as AttachmentFile[], skipped: [] as string[] };
-  const all = await listAttachments(token, msg.id);
+  const all = await client.listAttachments(msg.id);
   const files: AttachmentFile[] = [];
   const skipped: string[] = [];
   let total = 0;
 
   for (const a of all) {
-    if (a["@odata.type"] && a["@odata.type"] !== "#microsoft.graph.fileAttachment") continue;
+    if (!a.isFile) continue;
     const type = (a.contentType ?? "").toLowerCase();
     const isPdf = type === "application/pdf" || a.name.toLowerCase().endsWith(".pdf");
     const isImage = IMAGE_TYPES.includes(type) && !a.isInline && a.size >= MIN_IMAGE_BYTES;
@@ -163,7 +163,7 @@ async function gatherAttachments(token: string, msg: GraphMessage) {
       skipped.push(a.name);
       continue;
     }
-    const bytes = await attachmentBytes(token, msg.id, a.id);
+    const bytes = await client.attachmentBytes(msg.id, a.id);
     total += bytes.length;
     files.push({
       name: a.name,
@@ -176,7 +176,7 @@ async function gatherAttachments(token: string, msg: GraphMessage) {
 
 // Returns the outcome for the summary email, or null if another run already claimed the message.
 async function processMessage(
-  db: Db, run: Run, mailbox: Mailbox, token: string, msg: GraphMessage, existing?: ExistingRow,
+  db: Db, run: Run, mailbox: Mailbox, client: MailClient, msg: MailMessage, existing?: ExistingRow,
 ): Promise<ReportItem | null> {
   const userId = run.userId;
   const subject = msg.subject || "(no subject)";
@@ -199,7 +199,7 @@ async function processMessage(
   };
 
   try {
-    const attachments = await gatherAttachments(token, msg);
+    const attachments = await gatherAttachments(client, msg);
     await step(run, "process/email",
       `Reading "${subject}" from ${from.address ?? "unknown"}` +
         (attachments.names.length
@@ -219,7 +219,7 @@ async function processMessage(
     await step(run, "process/classify", `Classified "${subject}" as ${c.category} (${c.confidence} confidence): ${c.summary}`,
       { ...email, category: c.category, confidence: c.confidence, vendor: c.vendor, amount: c.amount, next_step: c.next_step });
 
-    const { status, action } = await takeAction(run, mailbox, token, msg, c);
+    const { status, action } = await takeAction(run, mailbox, client, msg, c);
     await step(run, "process/action", `"${subject}" → ${status.replace("_", " ")}${action ? `: ${action}` : ""}`, { ...email, status });
 
     const { error } = await db.from("processed_emails").update({
@@ -248,7 +248,7 @@ async function processMessage(
 
 // The only automatic action: forward confident invoices to the mailbox's configured Smart AP address.
 // The recipient always comes from settings, never from the email or the model.
-async function takeAction(run: Run, mailbox: Mailbox, token: string, msg: GraphMessage, c: Classification) {
+async function takeAction(run: Run, mailbox: Mailbox, client: MailClient, msg: MailMessage, c: Classification) {
   const userId = run.userId;
   if (c.category === "other") return { status: "no_action", action: null };
   if (c.category !== "invoice") return { status: "action_needed", action: null };
@@ -258,7 +258,7 @@ async function takeAction(run: Run, mailbox: Mailbox, token: string, msg: GraphM
 
   try {
     const details = [c.vendor, c.invoice_number && `#${c.invoice_number}`, c.amount, c.due_date && `due ${c.due_date}`].filter(Boolean).join(", ");
-    await forwardMessage(token, msg.id, mailbox.smart_ap_address, `Forwarded automatically by SummarizeMail: invoice${details ? ` (${details})` : ""}.`);
+    await client.forwardMessage(msg.id, mailbox.smart_ap_address, `Forwarded automatically by SummarizeMail: invoice${details ? ` (${details})` : ""}.`);
     return { status: "done", action: `Forwarded to ${mailbox.smart_ap_address}` };
   } catch (err) {
     await logApi("inbox/forward", err, { userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, subject: msg.subject } });

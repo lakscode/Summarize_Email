@@ -1,19 +1,22 @@
-// Azure / Microsoft 365 mailboxes for the signed-in user.
+// Connected mailboxes (Azure / Microsoft 365 or Gmail) for the signed-in user.
 //   GET                                   -> { mailboxes: [...] } (expired access is cleaned up first)
-//   POST {action: "connect", access_days, popup} -> { url } to start Microsoft sign-in (delegated OAuth)
+//   POST {action: "connect", provider: "microsoft" | "google", access_days, popup}
+//                                         -> { url } to start Microsoft or Google sign-in (OAuth)
 //   PATCH {id, smart_ap_address}          -> set where invoices are forwarded ("" clears it)
 //   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
 //                                         -> scheduled processing (see _shared/schedule.ts)
 //   DELETE ?id=<mailbox id>               -> disconnect (Vault secret removed by trigger)
-//   GET ?code=...&state=...               -> OAuth callback from Microsoft; stores the refresh token for the
+//   GET ?code=...&state=...               -> OAuth callback (either provider); stores the refresh token for the
 //                                            chosen number of days, redirects back to the app's dashboard
 //                                            (or to connect-done, which reports to the opener, when signing in
 //                                            in a popup)
-// verify_jwt is off for this function (the Microsoft callback carries no Supabase JWT); every other
+// verify_jwt is off for this function (the OAuth callback carries no Supabase JWT); every other
 // route checks the caller itself. Failures are written to app_logs (see _shared/log.ts).
 import { decodeBase64Url, encodeBase64Url } from "jsr:@std/encoding@1/base64url";
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
+import { GOOGLE_AUTH_URL, GOOGLE_SCOPES, GOOGLE_TOKEN_URL } from "../_shared/google.ts";
+import { type Provider, PROVIDER_LABELS, PROVIDERS } from "../_shared/mail.ts";
 import { MS_SCOPES, msBase } from "../_shared/microsoft.ts";
 import {
   FREQUENCIES, type Frequency, INTERVAL_UNITS, type IntervalUnit, isValidTimeZone, localDate, MIN_INTERVAL_MINUTES, nextRun,
@@ -62,25 +65,18 @@ Deno.serve(async (req) => {
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
       if (body.action !== "connect") return json({ error: "Unknown action" }, 400);
-      const missing = ["MS_CLIENT_ID", "MS_CLIENT_SECRET", "OAUTH_STATE_SECRET"].filter((n) => !Deno.env.get(n));
+      const provider: Provider = body.provider ?? "microsoft";
+      if (!PROVIDERS.includes(provider)) return json({ error: "provider must be microsoft or google" }, 400);
+      const missing = [...OAUTH[provider].settings, "OAUTH_STATE_SECRET"].filter((n) => !Deno.env.get(n));
       if (missing.length) {
-        return await fail("mailboxes/connect", `Azure isn't set up on the server yet (missing ${missing.join(", ")}).`, 400, { userId: user.id });
+        const name = provider === "google" ? "Gmail" : "Azure";
+        return await fail("mailboxes/connect", `${name} isn't set up on the server yet (missing ${missing.join(", ")}).`, 400, { userId: user.id });
       }
       const origin = appOrigin(req);
       if (!origin) return await fail("mailboxes/connect", "Could not tell which site to return to (no Origin header or APP_URL).", 400, { userId: user.id });
       const days = ACCESS_DAYS.includes(Number(body.access_days)) ? Number(body.access_days) : DEFAULT_ACCESS_DAYS;
-
-      return json({
-        url: `${msBase()}/authorize?` + new URLSearchParams({
-          client_id: env("MS_CLIENT_ID"),
-          response_type: "code",
-          redirect_uri: redirectUri(),
-          response_mode: "query",
-          scope: MS_SCOPES,
-          prompt: "select_account",
-          state: await signState({ uid: user.id, days, origin, popup: body.popup === true }),
-        }),
-      });
+      const state = await signState({ uid: user.id, days, origin, popup: body.popup === true, provider });
+      return json({ url: OAUTH[provider].authorizeUrl(state) });
     }
 
     if (req.method === "PATCH") {
@@ -183,46 +179,15 @@ async function oauthCallback(url: URL): Promise<Response> {
     return back({ connect_error: message });
   };
 
+  const label = PROVIDER_LABELS[state?.provider ?? "microsoft"];
   if (url.searchParams.get("error")) {
     const detail = url.searchParams.get("error_description") ?? url.searchParams.get("error")!;
-    return await failed(detail, `Microsoft returned an error: ${detail}`, { error: url.searchParams.get("error") });
+    return await failed(detail, `${label} returned an error: ${detail}`, { error: url.searchParams.get("error") });
   }
   if (!state) return await failed("Sign-in expired or was tampered with. Please try again.");
 
   try {
-    const tokenRes = await fetch(`${msBase()}/token`, {
-      method: "POST",
-      body: new URLSearchParams({
-        client_id: env("MS_CLIENT_ID"),
-        client_secret: env("MS_CLIENT_SECRET"),
-        grant_type: "authorization_code",
-        code: url.searchParams.get("code")!,
-        redirect_uri: redirectUri(),
-        scope: MS_SCOPES,
-      }),
-    });
-    if (!tokenRes.ok) {
-      const body = await tokenRes.text();
-      return await failed("Microsoft sign-in failed. Please try again.", `Token exchange failed: ${tokenRes.status}`, {
-        response: body.slice(0, 2000),
-      });
-    }
-    const tok = await tokenRes.json();
-    if (!tok.refresh_token) {
-      return await failed("Microsoft didn't return a refresh token. Remove the app's access and connect again.");
-    }
-
-    const meRes = await fetch("https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName,displayName", {
-      headers: { Authorization: `Bearer ${tok.access_token}` },
-    });
-    if (!meRes.ok) {
-      return await failed("Could not read the mailbox address.", `Graph /me failed: ${meRes.status}`, {
-        response: (await meRes.text()).slice(0, 2000),
-      });
-    }
-    const me = await meRes.json();
-    const email = String(me.mail ?? me.userPrincipalName ?? "").toLowerCase();
-    if (!email) return await failed("Could not read the mailbox address.");
+    const { refreshToken, email, displayName } = await OAUTH[state.provider].exchange(url.searchParams.get("code")!);
 
     const db = adminClient();
     const { data: existing, error: findError } = await db.from("mailboxes").select("id, credentials_secret_id")
@@ -232,7 +197,7 @@ async function oauthCallback(url: URL): Promise<Response> {
     let id = existing?.id as string | undefined;
     if (!id) {
       const { data, error } = await db.from("mailboxes")
-        .insert({ owner_user_id: state.uid, provider: "microsoft", email_address: email, display_name: me.displayName ?? null })
+        .insert({ owner_user_id: state.uid, provider: state.provider, email_address: email, display_name: displayName })
         .select("id").single();
       if (error) throw new Error(error.message);
       id = data.id as string;
@@ -240,7 +205,7 @@ async function oauthCallback(url: URL): Promise<Response> {
 
     const { data: secretId, error: secretError } = await db.rpc("mailbox_secret_put", {
       p_secret_id: existing?.credentials_secret_id ?? null,
-      p_secret: tok.refresh_token,
+      p_secret: refreshToken,
       p_name: `mailbox:${id}`,
     });
     if (secretError) throw new Error(`Could not store mailbox credentials: ${secretError.message}`);
@@ -248,7 +213,8 @@ async function oauthCallback(url: URL): Promise<Response> {
     const expiresAt = new Date(Date.now() + state.days * 86_400_000);
     const { error } = await db.from("mailboxes").update({
       credentials_secret_id: secretId,
-      display_name: me.displayName ?? null,
+      provider: state.provider,
+      display_name: displayName,
       active: true,
       access_expires_at: expiresAt.toISOString(),
       updated_at: new Date().toISOString(),
@@ -257,10 +223,125 @@ async function oauthCallback(url: URL): Promise<Response> {
 
     return back({ connected: email, days: String(state.days) });
   } catch (err) {
+    if (err instanceof ConnectError) return await failed(err.message, err.detail, err.context);
     const message = err instanceof Error ? err.message : String(err);
     return await failed(`Could not save the mailbox: ${message}`, err);
   }
 }
+
+// --- per-provider OAuth: where sign-in starts, and how the callback's code becomes a refresh token ----------
+
+interface Identity { refreshToken: string; email: string; displayName: string | null }
+
+// Thrown during the code exchange with the message shown to the user; `detail` and `context` go to the logs.
+class ConnectError extends Error {
+  constructor(message: string, readonly detail: unknown = message, readonly context?: Record<string, unknown>) {
+    super(message);
+  }
+}
+
+const OAUTH: Record<Provider, { settings: string[]; authorizeUrl(state: string): string; exchange(code: string): Promise<Identity> }> = {
+  microsoft: {
+    settings: ["MS_CLIENT_ID", "MS_CLIENT_SECRET"],
+    authorizeUrl: (state) => `${msBase()}/authorize?` + new URLSearchParams({
+      client_id: env("MS_CLIENT_ID"),
+      response_type: "code",
+      redirect_uri: redirectUri(),
+      response_mode: "query",
+      scope: MS_SCOPES,
+      prompt: "select_account",
+      state,
+    }),
+    async exchange(code) {
+      const tokenRes = await fetch(`${msBase()}/token`, {
+        method: "POST",
+        body: new URLSearchParams({
+          client_id: env("MS_CLIENT_ID"),
+          client_secret: env("MS_CLIENT_SECRET"),
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: redirectUri(),
+          scope: MS_SCOPES,
+        }),
+      });
+      if (!tokenRes.ok) {
+        throw new ConnectError("Microsoft sign-in failed. Please try again.", `Token exchange failed: ${tokenRes.status}`, {
+          response: (await tokenRes.text()).slice(0, 2000),
+        });
+      }
+      const tok = await tokenRes.json();
+      if (!tok.refresh_token) {
+        throw new ConnectError("Microsoft didn't return a refresh token. Remove the app's access and connect again.");
+      }
+
+      const meRes = await fetch("https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName,displayName", {
+        headers: { Authorization: `Bearer ${tok.access_token}` },
+      });
+      if (!meRes.ok) {
+        throw new ConnectError("Could not read the mailbox address.", `Graph /me failed: ${meRes.status}`, {
+          response: (await meRes.text()).slice(0, 2000),
+        });
+      }
+      const me = await meRes.json();
+      const email = String(me.mail ?? me.userPrincipalName ?? "").toLowerCase();
+      if (!email) throw new ConnectError("Could not read the mailbox address.");
+      return { refreshToken: tok.refresh_token, email, displayName: me.displayName ?? null };
+    },
+  },
+
+  google: {
+    settings: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
+    // access_type=offline + prompt=consent so Google returns a refresh token on every connect.
+    authorizeUrl: (state) => `${GOOGLE_AUTH_URL}?` + new URLSearchParams({
+      client_id: env("GOOGLE_CLIENT_ID"),
+      response_type: "code",
+      redirect_uri: redirectUri(),
+      scope: GOOGLE_SCOPES,
+      access_type: "offline",
+      prompt: "consent select_account",
+      state,
+    }),
+    async exchange(code) {
+      const tokenRes = await fetch(GOOGLE_TOKEN_URL, {
+        method: "POST",
+        body: new URLSearchParams({
+          client_id: env("GOOGLE_CLIENT_ID"),
+          client_secret: env("GOOGLE_CLIENT_SECRET"),
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: redirectUri(),
+        }),
+      });
+      if (!tokenRes.ok) {
+        throw new ConnectError("Google sign-in failed. Please try again.", `Token exchange failed: ${tokenRes.status}`, {
+          response: (await tokenRes.text()).slice(0, 2000),
+        });
+      }
+      const tok = await tokenRes.json();
+      if (!tok.refresh_token) {
+        throw new ConnectError("Google didn't return a refresh token. Remove the app's access in your Google account and connect again.");
+      }
+      // Google lets people untick individual permissions on the consent screen.
+      const granted = String(tok.scope ?? "").split(" ");
+      if (!GOOGLE_SCOPES.split(" ").every((sc) => granted.includes(sc))) {
+        throw new ConnectError("Allow SummarizeMail to read and send Gmail on Google's consent screen, then try again.",
+          "Google consent missing Gmail scopes", { granted });
+      }
+
+      const profileRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
+        headers: { Authorization: `Bearer ${tok.access_token}` },
+      });
+      if (!profileRes.ok) {
+        throw new ConnectError("Could not read the mailbox address.", `Gmail profile failed: ${profileRes.status}`, {
+          response: (await profileRes.text()).slice(0, 2000),
+        });
+      }
+      const email = String((await profileRes.json()).emailAddress ?? "").toLowerCase();
+      if (!email) throw new ConnectError("Could not read the mailbox address.");
+      return { refreshToken: tok.refresh_token, email, displayName: null };
+    },
+  },
+};
 
 // --- signed OAuth state (HMAC-SHA256, 15 minute expiry) ----------------------------------
 
@@ -269,6 +350,7 @@ interface State {
   days: number;
   origin: string;
   popup?: boolean;
+  provider: Provider;
 }
 
 const enc = new TextEncoder();
@@ -291,5 +373,6 @@ async function verifyState(token: string): Promise<State | null> {
   if (!ok) return null;
   const s = JSON.parse(new TextDecoder().decode(decodeBase64Url(payload)));
   if (!(s.exp > Date.now()) || typeof s.uid !== "string" || typeof s.origin !== "string") return null;
-  return { uid: s.uid, days: ACCESS_DAYS.includes(s.days) ? s.days : DEFAULT_ACCESS_DAYS, origin: s.origin, popup: s.popup === true };
+  return { uid: s.uid, days: ACCESS_DAYS.includes(s.days) ? s.days : DEFAULT_ACCESS_DAYS, origin: s.origin, popup: s.popup === true,
+    provider: PROVIDERS.includes(s.provider) ? s.provider : "microsoft" };
 }
