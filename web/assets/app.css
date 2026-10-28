@@ -98,6 +98,11 @@ button {
 }
 button:disabled { opacity: 0.6; cursor: default; }
 button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+/* A toggle button whose panel is open. */
+button.secondary[aria-expanded="true"] {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
 
 /* Loading: spinner, the page-wide "Loading…" pill (added by common.js) and the submit button of a busy form. */
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -227,6 +232,10 @@ select {
 
 /* Dashboard: per-mailbox Smart AP address */
 .inline-form { display: flex; align-items: flex-end; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.inline-form[hidden] { display: none; }
+.inline-form .hint { flex-basis: 100%; margin-top: 0; }
+.connect-form { padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
+.connect-form h3 { flex-basis: 100%; margin: 0; font-size: 0.95rem; }
 .inline-form label { font-size: 0.8rem; color: var(--muted); }
 .inline-form input { min-width: 240px; padding: 7px 10px; }
 .inline-form button { padding: 7px 12px; }
