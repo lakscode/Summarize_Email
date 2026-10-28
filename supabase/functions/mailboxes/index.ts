@@ -1,7 +1,14 @@
 // Connected mailboxes (Azure / Microsoft 365 or Gmail) for the signed-in user.
 //   GET                                   -> { mailboxes: [...] } (expired access is cleaned up first)
-//   POST {action: "connect", provider: "microsoft" | "google", access_days, popup}
-//                                         -> { url } to start Microsoft or Google sign-in (OAuth)
+//   POST {action: "connect", provider: "microsoft" | "google", access_days, popup, shared_mailbox?}
+//                                         -> { url } to start Microsoft or Google sign-in (OAuth). With
+//                                            shared_mailbox (Microsoft only), the user signs in with their own
+//                                            account and the app reads that shared mailbox through it.
+//   POST {action: "connect_app", email_address, tenant_id, client_id, client_secret, access_days}
+//                                         -> { mailbox } connect a Microsoft mailbox (usually shared) with API
+//                                            keys: the customer's own Azure app registration with application
+//                                            permissions Mail.Read and Mail.Send. Checked before saving; the keys
+//                                            are kept in Vault and never returned.
 //   PATCH {id, smart_ap_address}          -> set where invoices are forwarded ("" clears it)
 //   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
 //                                         -> scheduled processing (see _shared/schedule.ts)
@@ -17,7 +24,7 @@ import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
 import { GOOGLE_AUTH_URL, GOOGLE_SCOPES, GOOGLE_TOKEN_URL } from "../_shared/google.ts";
 import { type Provider, PROVIDER_LABELS, PROVIDERS } from "../_shared/mail.ts";
-import { MS_SCOPES, msBase } from "../_shared/microsoft.ts";
+import { type AppCredentials, appToken, mailboxPath, MS_SCOPES, MS_SHARED_SCOPES, msBase } from "../_shared/microsoft.ts";
 import {
   FREQUENCIES, type Frequency, INTERVAL_UNITS, type IntervalUnit, isValidTimeZone, localDate, MIN_INTERVAL_MINUTES, nextRun,
 } from "../_shared/schedule.ts";
@@ -56,7 +63,7 @@ Deno.serve(async (req) => {
 
       const { data, error } = await sb
         .from("mailboxes")
-        .select("id, provider, email_address, display_name, active, smart_ap_address, last_processed_at, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
+        .select("id, provider, auth_type, email_address, delegate_address, display_name, active, smart_ap_address, last_processed_at, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
       return json({ mailboxes: data });
@@ -64,6 +71,7 @@ Deno.serve(async (req) => {
 
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
+      if (body.action === "connect_app") return await connectApp(user.id, body);
       if (body.action !== "connect") return json({ error: "Unknown action" }, 400);
       const provider: Provider = body.provider ?? "microsoft";
       if (!PROVIDERS.includes(provider)) return json({ error: "provider must be microsoft or google" }, 400);
@@ -75,8 +83,11 @@ Deno.serve(async (req) => {
       const origin = appOrigin(req);
       if (!origin) return await fail("mailboxes/connect", "Could not tell which site to return to (no Origin header or APP_URL).", 400, { userId: user.id });
       const days = ACCESS_DAYS.includes(Number(body.access_days)) ? Number(body.access_days) : DEFAULT_ACCESS_DAYS;
-      const state = await signState({ uid: user.id, days, origin, popup: body.popup === true, provider });
-      return json({ url: OAUTH[provider].authorizeUrl(state) });
+      const shared = String(body.shared_mailbox ?? "").trim().toLowerCase() || undefined;
+      if (shared && provider !== "microsoft") return json({ error: "Shared mailboxes are only supported for Azure / Microsoft 365" }, 400);
+      if (shared && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(shared)) return json({ error: "Shared mailbox must be a valid email address" }, 400);
+      const s: State = { uid: user.id, days, origin, popup: body.popup === true, provider, shared };
+      return json({ url: OAUTH[provider].authorizeUrl(await signState(s), s) });
     }
 
     if (req.method === "PATCH") {
@@ -187,40 +198,11 @@ async function oauthCallback(url: URL): Promise<Response> {
   if (!state) return await failed("Sign-in expired or was tampered with. Please try again.");
 
   try {
-    const { refreshToken, email, displayName } = await OAUTH[state.provider].exchange(url.searchParams.get("code")!);
+    const { refreshToken, email, displayName, delegate } = await OAUTH[state.provider].exchange(url.searchParams.get("code")!, state);
 
-    const db = adminClient();
-    const { data: existing, error: findError } = await db.from("mailboxes").select("id, credentials_secret_id")
-      .eq("owner_user_id", state.uid).eq("email_address", email).maybeSingle();
-    if (findError) throw new Error(findError.message);
-
-    let id = existing?.id as string | undefined;
-    if (!id) {
-      const { data, error } = await db.from("mailboxes")
-        .insert({ owner_user_id: state.uid, provider: state.provider, email_address: email, display_name: displayName })
-        .select("id").single();
-      if (error) throw new Error(error.message);
-      id = data.id as string;
-    }
-
-    const { data: secretId, error: secretError } = await db.rpc("mailbox_secret_put", {
-      p_secret_id: existing?.credentials_secret_id ?? null,
-      p_secret: refreshToken,
-      p_name: `mailbox:${id}`,
-    });
-    if (secretError) throw new Error(`Could not store mailbox credentials: ${secretError.message}`);
-
-    const expiresAt = new Date(Date.now() + state.days * 86_400_000);
-    const { error } = await db.from("mailboxes").update({
-      credentials_secret_id: secretId,
-      provider: state.provider,
-      display_name: displayName,
-      active: true,
-      access_expires_at: expiresAt.toISOString(),
-      updated_at: new Date().toISOString(),
-    }).eq("id", id);
-    if (error) throw new Error(error.message);
-
+    await saveMailbox(state.uid, {
+      provider: state.provider, auth_type: "oauth", email_address: email, delegate_address: delegate, display_name: displayName,
+    }, refreshToken, state.days);
     return back({ connected: email, days: String(state.days) });
   } catch (err) {
     if (err instanceof ConnectError) return await failed(err.message, err.detail, err.context);
@@ -229,9 +211,87 @@ async function oauthCallback(url: URL): Promise<Response> {
   }
 }
 
+// Creates or updates the user's mailbox row and stores its credential (refresh token or API keys) in Vault for
+// `days` days.
+async function saveMailbox(
+  uid: string,
+  fields: { provider: Provider; auth_type: "oauth" | "app"; email_address: string; delegate_address: string | null; display_name: string | null },
+  secret: string,
+  days: number,
+): Promise<string> {
+  const db = adminClient();
+  const { data: existing, error: findError } = await db.from("mailboxes").select("id, credentials_secret_id")
+    .eq("owner_user_id", uid).eq("email_address", fields.email_address).maybeSingle();
+  if (findError) throw new Error(findError.message);
+
+  let id = existing?.id as string | undefined;
+  if (!id) {
+    const { data, error } = await db.from("mailboxes").insert({ owner_user_id: uid, ...fields }).select("id").single();
+    if (error) throw new Error(error.message);
+    id = data.id as string;
+  }
+
+  const { data: secretId, error: secretError } = await db.rpc("mailbox_secret_put", {
+    p_secret_id: existing?.credentials_secret_id ?? null,
+    p_secret: secret,
+    p_name: `mailbox:${id}`,
+  });
+  if (secretError) throw new Error(`Could not store mailbox credentials: ${secretError.message}`);
+
+  const { error } = await db.from("mailboxes").update({
+    ...fields,
+    credentials_secret_id: secretId,
+    active: true,
+    access_expires_at: new Date(Date.now() + days * 86_400_000).toISOString(),
+    updated_at: new Date().toISOString(),
+  }).eq("id", id);
+  if (error) throw new Error(error.message);
+  return id;
+}
+
+// Connects a Microsoft mailbox with API keys after checking they work: a token, then reading the inbox. Sending
+// is not checked here; without Mail.Send, forwarding and the summary email fail and are logged.
+async function connectApp(userId: string, body: Record<string, unknown>): Promise<Response> {
+  const email = String(body.email_address ?? "").trim().toLowerCase();
+  const creds: AppCredentials = {
+    tenant_id: String(body.tenant_id ?? "").trim(),
+    client_id: String(body.client_id ?? "").trim(),
+    client_secret: String(body.client_secret ?? "").trim(),
+  };
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: "Mailbox must be a valid email address" }, 400);
+  if (!creds.tenant_id || !creds.client_id || !creds.client_secret) {
+    return json({ error: "Tenant ID, client ID and client secret are required" }, 400);
+  }
+  const days = ACCESS_DAYS.includes(Number(body.access_days)) ? Number(body.access_days) : DEFAULT_ACCESS_DAYS;
+  // Never log the secret.
+  const context = { mailbox: email, tenant_id: creds.tenant_id, client_id: creds.client_id };
+
+  let token: string;
+  try {
+    token = await appToken(creds);
+  } catch (err) {
+    return await fail("mailboxes/connect_app", err instanceof Error ? err.message : String(err), 400, { userId, context });
+  }
+  const res = await fetch(`https://graph.microsoft.com/v1.0${mailboxPath(email)}/mailFolders/inbox?$select=id`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const message = res.status === 403 || res.status === 401
+      ? `The app can't read ${email}. Grant it the Mail.Read application permission with admin consent (and check any Exchange access policy that limits which mailboxes it may open).`
+      : res.status === 404 ? `No mailbox ${email} was found in that tenant.` : `Could not open ${email} (Graph ${res.status}).`;
+    return await fail("mailboxes/connect_app", message, 400, { userId, context: { ...context, response: (await res.text()).slice(0, 2000) } });
+  }
+
+  const id = await saveMailbox(userId, {
+    provider: "microsoft", auth_type: "app", email_address: email, delegate_address: null, display_name: null,
+  }, JSON.stringify(creds), days);
+  return json({ mailbox: { id, email_address: email }, days });
+}
+
 // --- per-provider OAuth: where sign-in starts, and how the callback's code becomes a refresh token ----------
 
-interface Identity { refreshToken: string; email: string; displayName: string | null }
+// email is the mailbox to read; delegate is the signed-in account when that is a shared mailbox.
+interface Identity { refreshToken: string; email: string; displayName: string | null; delegate: string | null }
 
 // Thrown during the code exchange with the message shown to the user; `detail` and `context` go to the logs.
 class ConnectError extends Error {
@@ -240,19 +300,19 @@ class ConnectError extends Error {
   }
 }
 
-const OAUTH: Record<Provider, { settings: string[]; authorizeUrl(state: string): string; exchange(code: string): Promise<Identity> }> = {
+const OAUTH: Record<Provider, { settings: string[]; authorizeUrl(token: string, s: State): string; exchange(code: string, s: State): Promise<Identity> }> = {
   microsoft: {
     settings: ["MS_CLIENT_ID", "MS_CLIENT_SECRET"],
-    authorizeUrl: (state) => `${msBase()}/authorize?` + new URLSearchParams({
+    authorizeUrl: (state, s) => `${msBase()}/authorize?` + new URLSearchParams({
       client_id: env("MS_CLIENT_ID"),
       response_type: "code",
       redirect_uri: redirectUri(),
       response_mode: "query",
-      scope: MS_SCOPES,
+      scope: s.shared ? MS_SHARED_SCOPES : MS_SCOPES,
       prompt: "select_account",
       state,
     }),
-    async exchange(code) {
+    async exchange(code, s) {
       const tokenRes = await fetch(`${msBase()}/token`, {
         method: "POST",
         body: new URLSearchParams({
@@ -261,7 +321,7 @@ const OAUTH: Record<Provider, { settings: string[]; authorizeUrl(state: string):
           grant_type: "authorization_code",
           code,
           redirect_uri: redirectUri(),
-          scope: MS_SCOPES,
+          scope: s.shared ? MS_SHARED_SCOPES : MS_SCOPES,
         }),
       });
       if (!tokenRes.ok) {
@@ -285,7 +345,19 @@ const OAUTH: Record<Provider, { settings: string[]; authorizeUrl(state: string):
       const me = await meRes.json();
       const email = String(me.mail ?? me.userPrincipalName ?? "").toLowerCase();
       if (!email) throw new ConnectError("Could not read the mailbox address.");
-      return { refreshToken: tok.refresh_token, email, displayName: me.displayName ?? null };
+      if (!s.shared || s.shared === email) return { refreshToken: tok.refresh_token, email, displayName: me.displayName ?? null, delegate: null };
+
+      // Check the signed-in account can actually open the shared mailbox before saving it.
+      const boxRes = await fetch(`https://graph.microsoft.com/v1.0${mailboxPath(s.shared)}/mailFolders/inbox?$select=id`, {
+        headers: { Authorization: `Bearer ${tok.access_token}` },
+      });
+      if (!boxRes.ok) {
+        throw new ConnectError(
+          `${email} can't open the shared mailbox ${s.shared}. Ask your Microsoft 365 admin for Full Access to it, or check the address.`,
+          `Graph shared mailbox check failed: ${boxRes.status}`, { shared: s.shared, response: (await boxRes.text()).slice(0, 2000) },
+        );
+      }
+      return { refreshToken: tok.refresh_token, email: s.shared, displayName: null, delegate: email };
     },
   },
 
@@ -338,7 +410,7 @@ const OAUTH: Record<Provider, { settings: string[]; authorizeUrl(state: string):
       }
       const email = String((await profileRes.json()).emailAddress ?? "").toLowerCase();
       if (!email) throw new ConnectError("Could not read the mailbox address.");
-      return { refreshToken: tok.refresh_token, email, displayName: null };
+      return { refreshToken: tok.refresh_token, email, displayName: null, delegate: null };
     },
   },
 };
@@ -351,6 +423,8 @@ interface State {
   origin: string;
   popup?: boolean;
   provider: Provider;
+  // Microsoft shared mailbox address to read through the signed-in account.
+  shared?: string;
 }
 
 const enc = new TextEncoder();
@@ -374,5 +448,5 @@ async function verifyState(token: string): Promise<State | null> {
   const s = JSON.parse(new TextDecoder().decode(decodeBase64Url(payload)));
   if (!(s.exp > Date.now()) || typeof s.uid !== "string" || typeof s.origin !== "string") return null;
   return { uid: s.uid, days: ACCESS_DAYS.includes(s.days) ? s.days : DEFAULT_ACCESS_DAYS, origin: s.origin, popup: s.popup === true,
-    provider: PROVIDERS.includes(s.provider) ? s.provider : "microsoft" };
+    provider: PROVIDERS.includes(s.provider) ? s.provider : "microsoft", shared: typeof s.shared === "string" ? s.shared : undefined };
 }

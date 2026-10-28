@@ -52,6 +52,7 @@ web/
 2. Certificates & secrets > New client secret. Copy the **value**.
 3. API permissions > Microsoft Graph > Delegated: `offline_access`, `User.Read`, `Mail.Read`, `Mail.Send`
    (`Mail.Send` forwards invoices; mailboxes connected before it was added must be reconnected).
+   For shared mailboxes also add `Mail.Read.Shared` and `Mail.Send.Shared`.
 4. Copy `supabase/functions/.env.example` to `supabase/functions/.env`, fill in `MS_CLIENT_ID`,
    `MS_CLIENT_SECRET`, `MS_TENANT_ID`, `ANTHROPIC_API_KEY`, `OAUTH_STATE_SECRET` and `APP_URL`, then:
    ```
@@ -60,6 +61,24 @@ web/
    ```
 On the dashboard, **Add Azure mailbox** opens Microsoft sign-in in a popup (or, if popups are blocked, sends the
 user there and back to `/dashboard`).
+
+**Add shared mailbox** asks for a Microsoft 365 shared mailbox address (e.g. `ap@company.com`); the user then signs
+in with their own account, which needs Full Access to that mailbox in Exchange. The app reads the shared inbox
+through that account. Invoices are forwarded from the shared mailbox (the account also needs Send As or Send on
+Behalf rights on it); the summary email is sent from the user's own mailbox to the shared one.
+
+**Add with API keys** connects a Microsoft 365 mailbox (typically a shared AP inbox) without anyone signing in,
+using the customer's own Azure app registration (app-only / client credentials):
+
+1. In the customer's tenant: App registrations > New registration (single tenant, no redirect URI).
+2. API permissions > Microsoft Graph > **Application**: `Mail.Read` and `Mail.Send`, then **Grant admin consent**.
+3. Certificates & secrets > New client secret.
+4. Recommended: restrict the app to the shared mailbox only (Exchange Online
+   `New-ApplicationAccessPolicy -AccessRight RestrictAccess -PolicyScopeGroupId <mail-enabled group with the mailbox>`,
+   or RBAC for Applications); otherwise these permissions cover every mailbox in the tenant.
+5. On the dashboard enter the mailbox address, tenant ID, client ID and secret. The app checks it can read the inbox
+   before saving; the keys are stored in Vault for the chosen access period. Invoices are forwarded and the summary is
+   sent from the mailbox itself.
 
 ## 1c. Gmail mailbox connection (optional)
 

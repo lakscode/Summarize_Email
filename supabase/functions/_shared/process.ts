@@ -43,7 +43,7 @@ export async function processMailbox(
   const db = adminClient();
   await db.rpc("expire_mailbox_access");
   const { data: mailbox, error } = await db.from("mailboxes")
-    .select("id, provider, email_address, credentials_secret_id, smart_ap_address, access_expires_at")
+    .select("id, provider, auth_type, email_address, delegate_address, credentials_secret_id, smart_ap_address, access_expires_at")
     .eq("id", mailboxId).eq("owner_user_id", userId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!mailbox) throw new Error("Mailbox not found");
@@ -106,6 +106,7 @@ export async function processMailbox(
 }
 
 // Emails the run summary from the mailbox to itself (the mailbox owner). Needs Mail.Send, like forwarding.
+// For a shared mailbox connected by sign-in it is sent from the signed-in user's own mailbox to the shared one.
 async function sendReport(
   run: Run, mailbox: Mailbox, client: MailClient, items: ReportItem[], remaining: number, appUrl: string | null,
 ): Promise<"sent" | "failed"> {
@@ -123,7 +124,10 @@ async function sendReport(
 }
 
 type Db = ReturnType<typeof adminClient>;
-interface Mailbox { id: string; provider: Provider; email_address: string; credentials_secret_id: string | null; smart_ap_address: string | null }
+interface Mailbox {
+  id: string; provider: Provider; auth_type: "oauth" | "app"; email_address: string; delegate_address: string | null; credentials_secret_id: string | null;
+  smart_ap_address: string | null;
+}
 interface ExistingRow { id: string; message_id: string; status: string; action_taken: string | null }
 
 // Claims the message for this run: inserts a new row, or (re-check) flips an existing row back to processing

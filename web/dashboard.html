@@ -40,11 +40,24 @@
               </select>
             </label>
             <button class="connect-button" data-provider="microsoft">Add Azure mailbox</button>
+            <button class="connect-button secondary" data-provider="microsoft" data-shared
+              title="Sign in with your own Microsoft 365 account and read a shared mailbox you have Full Access to.">Add shared mailbox</button>
+            <button id="api-keys-toggle" class="secondary" type="button"
+              title="Connect a Microsoft 365 mailbox (e.g. a shared AP inbox) with your own Azure app registration, without signing in.">Add with API keys</button>
             <button style="display:none" class="connect-button" data-provider="google"
               title="Beta: the Gmail connection is in Google's testing mode. Your Gmail address must first be added as a test user in the app's Google Auth Platform settings (Audience > Test users), or Google will block the sign-in. Testing-mode access expires after 7 days; reconnect to renew it.">Add Gmail inbox <span class="beta">Beta</span></button>
           </div>
         </div>
         <p class="hint">The app keeps an encrypted Microsoft token only for the period you choose, then deletes it. Reconnect to extend.</p>
+        <form id="api-keys-form" class="inline-form" hidden autocomplete="off">
+          <label>Mailbox address <input type="email" name="email_address" placeholder="ap@yourcompany.com" required /></label>
+          <label>Tenant ID <input name="tenant_id" placeholder="00000000-0000-0000-0000-000000000000" required /></label>
+          <label>Client ID <input name="client_id" placeholder="00000000-0000-0000-0000-000000000000" required /></label>
+          <label>Client secret <input type="password" name="client_secret" autocomplete="new-password" required /></label>
+          <button type="submit">Connect</button>
+          <p class="hint" style="flex-basis: 100%">Uses an Azure app registration in your tenant with Microsoft Graph <em>application</em> permissions
+            <code>Mail.Read</code> and <code>Mail.Send</code>, admin-consented. The keys are stored encrypted for the access period above and never shown again.</p>
+        </form>
         <ul class="list" id="mailbox-list"></ul>
         <p class="empty" id="mailbox-empty" hidden>No mailboxes connected yet.</p>
       </section>
@@ -108,7 +121,8 @@
       email.textContent = m.email_address;
       const meta = document.createElement("div");
       meta.className = "label";
-      meta.textContent = `${m.display_name ? m.display_name + " · " : ""}${PROVIDER_LABELS[m.provider] || "Azure"} · connected ${new Date(m.created_at).toLocaleDateString()}`;
+      meta.textContent = `${m.display_name ? m.display_name + " · " : ""}${PROVIDER_LABELS[m.provider] || "Azure"}` +
+        `${m.delegate_address ? ` shared mailbox, via ${m.delegate_address}` : ""}${m.auth_type === "app" ? " · API keys" : ""} · connected ${new Date(m.created_at).toLocaleDateString()}`;
 
       // Access window: active until access_expires_at, then the token is deleted and a reconnect is needed.
       const expired = !m.active || (m.access_expires_at && new Date(m.access_expires_at) <= new Date());
@@ -119,7 +133,9 @@
         const reconnect = document.createElement("button");
         reconnect.className = "link-button";
         reconnect.textContent = "Reconnect";
-        reconnect.addEventListener("click", () => startConnect(reconnect, m.provider || "microsoft"));
+        reconnect.addEventListener("click", () => m.auth_type === "app"
+          ? showApiKeysForm(m.email_address)
+          : startConnect(reconnect, m.provider || "microsoft", m.delegate_address ? m.email_address : null));
         access.append(reconnect);
       } else {
         access.textContent = m.access_expires_at
@@ -180,13 +196,16 @@
     // Starts Microsoft or Google sign-in in a popup; the chosen access period is carried through to the callback.
     // The popup is opened straight from the click (before the API call) so browsers don't block it; if they
     // do anyway, sign-in falls back to navigating this page.
-    async function startConnect(button, provider) {
+    // `shared_mailbox`: a Microsoft 365 shared mailbox read through the account that signs in.
+    async function startConnect(button, provider, shared_mailbox = null) {
       button.disabled = true;
       showMessage("");
       const popup = openCentered(500, 650);
       if (popup) popup.document.body.textContent = `Opening ${provider === "google" ? "Google" : "Microsoft"} sign-in…`;
       const access_days = Number(document.getElementById("access-days").value);
-      const { data, error } = await callApi("mailboxes", { body: { action: "connect", provider, access_days, popup: !!popup } });
+      const { data, error } = await callApi("mailboxes", {
+        body: { action: "connect", provider, access_days, popup: !!popup, ...(shared_mailbox ? { shared_mailbox } : {}) },
+      });
       if (error) {
         popup?.close();
         button.disabled = false;
@@ -216,8 +235,40 @@
       await loadMailboxes();
     });
 
+    // --- API keys (app-only) connection: POST mailboxes {action: "connect_app", ...} ---
+
+    const apiKeysForm = document.getElementById("api-keys-form");
+
+    function showApiKeysForm(address = "") {
+      apiKeysForm.hidden = false;
+      if (address) apiKeysForm.elements.email_address.value = address;
+      apiKeysForm.elements[address ? "tenant_id" : "email_address"].focus();
+    }
+
+    document.getElementById("api-keys-toggle").addEventListener("click", () =>
+      apiKeysForm.hidden ? showApiKeysForm() : (apiKeysForm.hidden = true));
+
+    apiKeysForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fields = Object.fromEntries(new FormData(apiKeysForm));
+      const access_days = Number(document.getElementById("access-days").value);
+      setBusy(apiKeysForm, true);
+      const { data, error } = await callApi("mailboxes", { body: { action: "connect_app", ...fields, access_days } });
+      setBusy(apiKeysForm, false);
+      if (error) return showMessage(error, "error");
+      apiKeysForm.reset();
+      apiKeysForm.hidden = true;
+      showMessage(`Connected ${data.mailbox.email_address} with API keys for ${data.days} day${data.days === 1 ? "" : "s"}.`, "ok");
+      await loadMailboxes();
+    });
+
     for (const b of document.querySelectorAll(".connect-button")) {
-      b.addEventListener("click", () => startConnect(b, b.dataset.provider));
+      b.addEventListener("click", () => {
+        if (!("shared" in b.dataset)) return startConnect(b, b.dataset.provider);
+        // If the prompt uses up the click's popup allowance, sign-in falls back to navigating this page.
+        const shared = prompt("Shared mailbox address (e.g. ap@yourcompany.com). You'll sign in with your own Microsoft 365 account, which needs Full Access to it.");
+        if (shared?.trim()) startConnect(b, b.dataset.provider, shared.trim());
+      });
     }
   </script>
 </body>

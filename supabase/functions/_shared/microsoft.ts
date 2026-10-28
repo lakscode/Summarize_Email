@@ -1,4 +1,5 @@
-// Microsoft Graph access for connected (delegated OAuth) Outlook / Microsoft 365 mailboxes.
+// Microsoft Graph access for connected Outlook / Microsoft 365 mailboxes: delegated OAuth (a user signed in), or
+// API keys (app-only client credentials from the customer's own Azure app registration).
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import {
   isEmailAttachment, type MailAttachment, type MailboxRow, type MailClient, type MailMessage, readRefreshToken, saveRefreshToken,
@@ -10,17 +11,31 @@ const GRAPH = "https://graph.microsoft.com/v1.0";
 // Requested at connect time. Mail.Send is needed to forward invoices to the Smart AP address;
 // mailboxes connected before it was added must be reconnected to grant it.
 export const MS_SCOPES = "offline_access User.Read Mail.Read Mail.Send";
+// Added when connecting a shared mailbox: read it, and forward from it (which also needs Send As or
+// Send on Behalf rights on the shared mailbox in Exchange).
+export const MS_SHARED_SCOPES = `${MS_SCOPES} Mail.Read.Shared Mail.Send.Shared`;
+
+// Graph path of a mailbox: the signed-in user's own, or a shared mailbox they have access to.
+export const mailboxPath = (shared?: string | null) => shared ? `/users/${encodeURIComponent(shared)}` : "/me";
 
 export const msBase = () => `https://login.microsoftonline.com/${env("MS_TENANT_ID", "common")}/oauth2/v2.0`;
 
+// Customer's Azure app registration for API-key mailboxes; needs application permissions Mail.Read and Mail.Send
+// (admin-consented). Stored as JSON in Vault.
+export interface AppCredentials { tenant_id: string; client_id: string; client_secret: string }
+
 export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): Promise<MailClient> {
-  const token = await graphToken(db, mailbox);
+  const app = mailbox.auth_type === "app";
+  const token = app ? await appToken(JSON.parse(await readRefreshToken(db, mailbox))) : await graphToken(db, mailbox);
+  // App-only tokens have no "me"; they address the mailbox by its address.
+  const box = mailboxPath(app || mailbox.delegate_address ? mailbox.email_address : null);
   return {
-    listInbox: (since, top) => listInbox(token, since, top),
-    listAttachments: (messageId) => listAttachments(token, messageId),
-    attachmentBytes: (messageId, attachmentId) => attachmentBytes(token, messageId, attachmentId),
-    sendMail: (to, subject, html) => sendMail(token, to, subject, html),
-    forwardMessage: (messageId, to, comment) => forwardMessage(token, messageId, to, comment),
+    listInbox: (since, top) => listInbox(token, box, since, top),
+    listAttachments: (messageId) => listAttachments(token, box, messageId),
+    attachmentBytes: (messageId, attachmentId) => attachmentBytes(token, box, messageId, attachmentId),
+    // Delegated: always from the signed-in user's own mailbox, so a shared mailbox's summary needs no Send As rights.
+    sendMail: (to, subject, html) => sendMail(token, app ? box : "/me", to, subject, html),
+    forwardMessage: (messageId, to, comment) => forwardMessage(token, box, messageId, to, comment),
   };
 }
 
@@ -44,6 +59,24 @@ async function graphToken(db: SupabaseClient, mailbox: MailboxRow): Promise<stri
   return tok.access_token as string;
 }
 
+// Client-credentials access token for an API-key mailbox.
+export async function appToken(c: AppCredentials): Promise<string> {
+  const res = await fetch(`https://login.microsoftonline.com/${encodeURIComponent(c.tenant_id)}/oauth2/v2.0/token`, {
+    method: "POST",
+    body: new URLSearchParams({
+      client_id: c.client_id,
+      client_secret: c.client_secret,
+      grant_type: "client_credentials",
+      scope: "https://graph.microsoft.com/.default",
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(`Microsoft rejected the API keys (${res.status}${detail.error ? `: ${detail.error}` : ""}); check the tenant ID, client ID and secret.`);
+  }
+  return (await res.json()).access_token as string;
+}
+
 async function graph<T>(token: string, path: string, init: RequestInit = {}, extraHeaders: Record<string, string> = {}): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(path.startsWith("http") ? path : `${GRAPH}${path}`, {
@@ -61,14 +94,14 @@ async function graph<T>(token: string, path: string, init: RequestInit = {}, ext
 }
 
 // Inbox messages received since `since`, newest first, bodies as plain text.
-async function listInbox(token: string, since: Date, top = 50): Promise<MailMessage[]> {
+async function listInbox(token: string, box: string, since: Date, top = 50): Promise<MailMessage[]> {
   const params = new URLSearchParams({
     $filter: `receivedDateTime ge ${since.toISOString()}`,
     $orderby: "receivedDateTime desc",
     $top: String(top),
     $select: "id,internetMessageId,subject,receivedDateTime,from,body,hasAttachments,webLink",
   });
-  const data = await graph<{ value: MailMessage[] }>(token, `/me/mailFolders/inbox/messages?${params}`, {}, {
+  const data = await graph<{ value: MailMessage[] }>(token, `${box}/mailFolders/inbox/messages?${params}`, {}, {
     Prefer: 'outlook.body-content-type="text"',
   });
   return data.value;
@@ -83,10 +116,10 @@ interface GraphAttachment {
   "@odata.type"?: string;
 }
 
-async function listAttachments(token: string, messageId: string): Promise<MailAttachment[]> {
+async function listAttachments(token: string, box: string, messageId: string): Promise<MailAttachment[]> {
   const data = await graph<{ value: GraphAttachment[] }>(
     token,
-    `/me/messages/${encodeURIComponent(messageId)}/attachments?$select=id,name,contentType,size,isInline`,
+    `${box}/messages/${encodeURIComponent(messageId)}/attachments?$select=id,name,contentType,size,isInline`,
   );
   return data.value.map((a) => {
     const isFile = !a["@odata.type"] || a["@odata.type"] === "#microsoft.graph.fileAttachment";
@@ -105,9 +138,9 @@ async function listAttachments(token: string, messageId: string): Promise<MailAt
 }
 
 // Raw bytes of a file attachment, or the MIME of an attached Outlook item.
-async function attachmentBytes(token: string, messageId: string, attachmentId: string): Promise<Uint8Array> {
+async function attachmentBytes(token: string, box: string, messageId: string, attachmentId: string): Promise<Uint8Array> {
   const res = await fetch(
-    `${GRAPH}/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/$value`,
+    `${GRAPH}${box}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/$value`,
     { headers: { Authorization: `Bearer ${token}` } },
   );
   if (!res.ok) throw new Error(`Graph GET attachment failed: ${res.status} ${await res.text()}`);
@@ -115,8 +148,8 @@ async function attachmentBytes(token: string, messageId: string, attachmentId: s
 }
 
 // Sends an HTML email from the connected mailbox (saved to its Sent Items).
-async function sendMail(token: string, to: string, subject: string, html: string): Promise<void> {
-  await graph<void>(token, "/me/sendMail", {
+async function sendMail(token: string, box: string, to: string, subject: string, html: string): Promise<void> {
+  await graph<void>(token, `${box}/sendMail`, {
     method: "POST",
     body: JSON.stringify({
       message: { subject, body: { contentType: "HTML", content: html }, toRecipients: [{ emailAddress: { address: to } }] },
@@ -125,8 +158,8 @@ async function sendMail(token: string, to: string, subject: string, html: string
   });
 }
 
-async function forwardMessage(token: string, messageId: string, to: string, comment: string): Promise<void> {
-  await graph<void>(token, `/me/messages/${encodeURIComponent(messageId)}/forward`, {
+async function forwardMessage(token: string, box: string, messageId: string, to: string, comment: string): Promise<void> {
+  await graph<void>(token, `${box}/messages/${encodeURIComponent(messageId)}/forward`, {
     method: "POST",
     body: JSON.stringify({ comment, toRecipients: [{ emailAddress: { address: to } }] }),
   });
