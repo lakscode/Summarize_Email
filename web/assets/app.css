@@ -261,6 +261,9 @@ select {
 .inline-form label { font-size: 0.8rem; color: var(--muted); }
 .inline-form input { min-width: 240px; padding: 7px 10px; }
 .inline-form button { padding: 7px 12px; }
+.save-status { align-self: center; font-size: 0.85rem; color: var(--muted); }
+.save-status.ok { color: var(--ok-text); }
+.save-status.error { color: var(--error-text); }
 
 /* Inbox page */
 .process-panel { margin: 0 0 20px; }

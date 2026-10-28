@@ -467,15 +467,45 @@
       typeSelect.addEventListener("change", () =>
         renderForwardChoices(forward, typeSelect.value, typeSelect.value === m.mailbox_type ? m.forward_categories : null));
 
-      form.append(typeLabel, destLabel, forward, button("Save", "secondary", "submit"));
+      // Save is only enabled (and highlighted) when something changed; the result shows next to it.
+      const save = button("Save", "secondary", "submit");
+      const status = document.createElement("span");
+      status.className = "save-status";
+      status.setAttribute("role", "status");
+      const current = () => JSON.stringify([typeSelect.value, dest.value.trim(), checkedForward(form)]);
+      let saved = null;
+      const refresh = () => {
+        const dirty = current() !== saved;
+        save.disabled = !dirty;
+        save.classList.toggle("secondary", !dirty);
+        if (dirty) status.textContent = "";
+      };
+      form.addEventListener("input", refresh);
+      form.addEventListener("change", refresh);
+
+      form.append(typeLabel, destLabel, forward, save, status);
+      saved = current();
+      refresh();
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
         const body = { id: m.id, mailbox_type: typeSelect.value, forward_categories: checkedForward(form), smart_ap_address: dest.value };
+        status.className = "save-status";
+        status.textContent = "Saving…";
         setBusy(form, true);
         const { data, error } = await callApi("mailboxes", { method: "PATCH", body });
         setBusy(form, false);
-        if (error) return showMessage(`Could not save settings: ${error}`, "error");
+        if (error) {
+          refresh();
+          status.className = "save-status error";
+          status.textContent = "Not saved";
+          return showMessage(`Could not save settings: ${error}`, "error");
+        }
         Object.assign(m, data.mailbox);
+        dest.value = m.smart_ap_address || "";
+        saved = current();
+        refresh();
+        status.className = "save-status ok";
+        status.textContent = "✓ Saved";
         typeBadge.className = `badge type-${m.mailbox_type}`;
         typeBadge.textContent = TYPE_LABELS[m.mailbox_type];
         form.closest("li").dataset.type = m.mailbox_type;
