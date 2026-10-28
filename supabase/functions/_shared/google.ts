@@ -1,7 +1,6 @@
 // Gmail API access for connected (OAuth) Google mailboxes, mapped onto the shared MailClient shape.
 // Gmail has no forward call, so forwarding rebuilds the message (text + original attachments) and sends it.
-import { encodeBase64 } from "jsr:@std/encoding@1/base64";
-import { decodeBase64Url } from "jsr:@std/encoding@1/base64url";
+import { decodeBase64Url, encodeBase64 } from "./base64.ts";
 import PostalMime from "npm:postal-mime@3.0.1";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import {

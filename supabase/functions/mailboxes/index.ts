@@ -28,7 +28,7 @@
 //                                            in a popup)
 // verify_jwt is off for this function (the OAuth callback carries no Supabase JWT); every other
 // route checks the caller itself. Failures are written to app_logs (see _shared/log.ts).
-import { decodeBase64Url, encodeBase64Url } from "jsr:@std/encoding@1/base64url";
+import { decodeBase64Url, encodeBase64Url } from "../_shared/base64.ts";
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
 import { GOOGLE_AUTH_URL, GOOGLE_SCOPES, GOOGLE_TOKEN_URL } from "../_shared/google.ts";

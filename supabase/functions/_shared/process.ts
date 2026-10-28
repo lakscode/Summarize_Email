@@ -3,7 +3,7 @@
 // forwards confident emails in the mailbox's forward_categories to its destination address (smart_ap_address).
 // Each message is processed once per mailbox (unique mailbox_id + message_id). With reprocess, emails already
 // classified are classified again unless they were forwarded or marked done, so nothing is forwarded twice.
-import { encodeBase64 } from "jsr:@std/encoding@1/base64";
+import { encodeBase64 } from "./base64.ts";
 import PostalMime from "npm:postal-mime@3.0.1";
 import { type AttachmentFile, type AttachmentText, classifyEmail, type Classification, type MailboxType } from "./classify.ts";
 import { logApi, logStep } from "./log.ts";
