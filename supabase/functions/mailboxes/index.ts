@@ -1,15 +1,21 @@
 // Connected mailboxes (Azure / Microsoft 365 or Gmail) for the signed-in user.
-//   GET                                   -> { mailboxes: [...] } (expired access is cleaned up first)
+//   GET                                   -> { mailboxes, connections, categories } (expired access is cleaned up
+//                                            first; categories: the AP and AR categories per mailbox type)
 //   POST {action: "connect", provider: "microsoft" | "google", access_days, popup, shared_mailbox?}
 //                                         -> { url } to start Microsoft or Google sign-in (OAuth). With
 //                                            shared_mailbox (Microsoft only), the user signs in with their own
 //                                            account and the app reads that shared mailbox through it.
-//   POST {action: "connect_app", email_address, tenant_id, client_id, client_secret, access_days}
-//                                         -> { mailbox } connect a Microsoft mailbox (usually shared) with API
-//                                            keys: the customer's own Azure app registration with application
-//                                            permissions Mail.Read and Mail.Send. Checked before saving; the keys
-//                                            are kept in Vault and never returned.
-//   PATCH {id, smart_ap_address}          -> set where invoices are forwarded ("" clears it)
+//   Organization connections (API keys): one Microsoft 365 tenant's Azure app registration (application permissions
+//   Mail.Read and Mail.Send, admin-consented), entered once; its shared mailboxes are then added by address. Keys are
+//   checked before saving, kept in Vault and never returned.
+//   POST {action: "add_connection", name, tenant_id, client_id, client_secret}       -> { connection, warning? }
+//   POST {action: "update_connection", connection_id, client_secret}                 -> { connection } (new secret)
+//   POST {action: "add_mailboxes", connection_id, addresses, mailbox_type, smart_ap_address?, forward_categories?}
+//                                         -> { results: [{address, ok, error?}] } each checked for inbox access
+//   DELETE ?connection_id=<id>            -> remove the connection, its mailboxes and their processed emails
+//   PATCH {id, mailbox_type?, forward_categories?, smart_ap_address?}
+//                                         -> per-mailbox settings: AP or AR, which categories are forwarded, and the
+//                                            destination address they go to ("" clears it)
 //   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
 //                                         -> scheduled processing (see _shared/schedule.ts)
 //   DELETE ?id=<mailbox id>               -> disconnect (Vault secret removed by trigger)
@@ -24,7 +30,8 @@ import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
 import { GOOGLE_AUTH_URL, GOOGLE_SCOPES, GOOGLE_TOKEN_URL } from "../_shared/google.ts";
 import { type Provider, PROVIDER_LABELS, PROVIDERS } from "../_shared/mail.ts";
-import { type AppCredentials, appToken, mailboxPath, MS_SCOPES, MS_SHARED_SCOPES, msBase } from "../_shared/microsoft.ts";
+import { CATEGORIES, DEFAULT_FORWARD, MAILBOX_TYPES, type MailboxType } from "../_shared/classify.ts";
+import { type AppCredentials, appToken, connectionCredentials, mailboxPath, MS_SCOPES, MS_SHARED_SCOPES, msBase } from "../_shared/microsoft.ts";
 import {
   FREQUENCIES, type Frequency, INTERVAL_UNITS, type IntervalUnit, isValidTimeZone, localDate, MIN_INTERVAL_MINUTES, nextRun,
 } from "../_shared/schedule.ts";
@@ -33,6 +40,11 @@ import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
 const ACCESS_DAYS = [1, 7, 30, 90];
 const DEFAULT_ACCESS_DAYS = 30;
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Mailboxes per add_mailboxes call, and how many are checked against Graph at once.
+const MAX_BULK = 100;
+const CHECK_CONCURRENCY = 5;
 
 const redirectUri = () => `${env("SUPABASE_URL")}/functions/v1/mailboxes`;
 
@@ -63,15 +75,20 @@ Deno.serve(async (req) => {
 
       const { data, error } = await sb
         .from("mailboxes")
-        .select("id, provider, auth_type, email_address, delegate_address, display_name, active, smart_ap_address, last_processed_at, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
+        .select("id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, last_processed_at, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
-      return json({ mailboxes: data });
+      const { data: connections, error: connError } = await sb.from("ms_connections")
+        .select("id, name, tenant_id, client_id, created_at").order("created_at");
+      if (connError) return await fail("mailboxes/list", connError.message, 500, { userId: user.id });
+      return json({ mailboxes: data, connections, categories: CATEGORIES });
     }
 
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
-      if (body.action === "connect_app") return await connectApp(user.id, body);
+      if (body.action === "add_connection") return await addConnection(user.id, body);
+      if (body.action === "update_connection") return await updateConnection(user.id, sb, body);
+      if (body.action === "add_mailboxes") return await addMailboxes(user.id, sb, body);
       if (body.action !== "connect") return json({ error: "Unknown action" }, 400);
       const provider: Provider = body.provider ?? "microsoft";
       if (!PROVIDERS.includes(provider)) return json({ error: "provider must be microsoft or google" }, 400);
@@ -85,7 +102,7 @@ Deno.serve(async (req) => {
       const days = ACCESS_DAYS.includes(Number(body.access_days)) ? Number(body.access_days) : DEFAULT_ACCESS_DAYS;
       const shared = String(body.shared_mailbox ?? "").trim().toLowerCase() || undefined;
       if (shared && provider !== "microsoft") return json({ error: "Shared mailboxes are only supported for Azure / Microsoft 365" }, 400);
-      if (shared && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(shared)) return json({ error: "Shared mailbox must be a valid email address" }, 400);
+      if (shared && !EMAIL.test(shared)) return json({ error: "Shared mailbox must be a valid email address" }, 400);
       const s: State = { uid: user.id, days, origin, popup: body.popup === true, provider, shared };
       return json({ url: OAUTH[provider].authorizeUrl(await signState(s), s) });
     }
@@ -93,19 +110,16 @@ Deno.serve(async (req) => {
     if (req.method === "PATCH") {
       const body = await req.json().catch(() => ({}));
       if (body.id && body.schedule) return await saveSchedule(user.id, sb, body.id, body.schedule);
-      const address = String(body.smart_ap_address ?? "").trim().toLowerCase();
       if (!body.id) return json({ error: "id is required" }, 400);
-      if (address && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
-        return json({ error: "Smart AP address must be a valid email address" }, 400);
-      }
-      const { data, error } = await sb.from("mailboxes")
-        .update({ smart_ap_address: address || null, updated_at: new Date().toISOString() })
-        .eq("id", body.id)
-        .select("id, smart_ap_address")
-        .maybeSingle();
-      if (error) return await fail("mailboxes/update", error.message, 500, { userId: user.id, context: { id: body.id } });
-      if (!data) return json({ error: "Mailbox not found" }, 404);
-      return json({ mailbox: data });
+      return await saveSettings(user.id, sb, body);
+    }
+
+    if (req.method === "DELETE" && url.searchParams.has("connection_id")) {
+      const id = url.searchParams.get("connection_id")!;
+      const { error, count } = await sb.from("ms_connections").delete({ count: "exact" }).eq("id", id);
+      if (error) return await fail("mailboxes/delete_connection", error.message, 500, { userId: user.id, context: { id } });
+      if (!count) return json({ error: "Connection not found" }, 404);
+      return json({ deleted: id });
     }
 
     if (req.method === "DELETE") {
@@ -201,7 +215,8 @@ async function oauthCallback(url: URL): Promise<Response> {
     const { refreshToken, email, displayName, delegate } = await OAUTH[state.provider].exchange(url.searchParams.get("code")!, state);
 
     await saveMailbox(state.uid, {
-      provider: state.provider, auth_type: "oauth", email_address: email, delegate_address: delegate, display_name: displayName,
+      provider: state.provider, auth_type: "oauth", connection_id: null, email_address: email, delegate_address: delegate,
+      display_name: displayName,
     }, refreshToken, state.days);
     return back({ connected: email, days: String(state.days) });
   } catch (err) {
@@ -211,11 +226,13 @@ async function oauthCallback(url: URL): Promise<Response> {
   }
 }
 
-// Creates or updates the user's mailbox row and stores its credential (refresh token or API keys) in Vault for
-// `days` days.
+// Creates or updates the user's signed-in mailbox row and stores its refresh token in Vault for `days` days.
 async function saveMailbox(
   uid: string,
-  fields: { provider: Provider; auth_type: "oauth" | "app"; email_address: string; delegate_address: string | null; display_name: string | null },
+  fields: {
+    provider: Provider; auth_type: "oauth"; connection_id: null; email_address: string; delegate_address: string | null;
+    display_name: string | null;
+  },
   secret: string,
   days: number,
 ): Promise<string> {
@@ -249,43 +266,204 @@ async function saveMailbox(
   return id;
 }
 
-// Connects a Microsoft mailbox with API keys after checking they work: a token, then reading the inbox. Sending
-// is not checked here; without Mail.Send, forwarding and the summary email fail and are logged.
-async function connectApp(userId: string, body: Record<string, unknown>): Promise<Response> {
-  const email = String(body.email_address ?? "").trim().toLowerCase();
-  const creds: AppCredentials = {
+// Per-mailbox settings. forward_categories must be categories of the mailbox's type; changing the type without
+// sending forward_categories resets them to that type's default.
+async function saveSettings(userId: string, sb: SupabaseClient, body: Record<string, unknown>): Promise<Response> {
+  const { data: current, error: readError } = await sb.from("mailboxes").select("id, mailbox_type").eq("id", body.id).maybeSingle();
+  if (readError) return await fail("mailboxes/update", readError.message, 500, { userId, context: { id: body.id } });
+  if (!current) return json({ error: "Mailbox not found" }, 404);
+
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (body.smart_ap_address !== undefined) {
+    const address = String(body.smart_ap_address ?? "").trim().toLowerCase();
+    if (address && !EMAIL.test(address)) return json({ error: "Destination must be a valid email address" }, 400);
+    update.smart_ap_address = address || null;
+  }
+  let type = current.mailbox_type as MailboxType;
+  if (body.mailbox_type !== undefined) {
+    if (!MAILBOX_TYPES.includes(body.mailbox_type as MailboxType)) return json({ error: "mailbox_type must be ap or ar" }, 400);
+    if (body.mailbox_type !== type && body.forward_categories === undefined) update.forward_categories = DEFAULT_FORWARD[body.mailbox_type as MailboxType];
+    type = body.mailbox_type as MailboxType;
+    update.mailbox_type = type;
+  }
+  if (body.forward_categories !== undefined) {
+    const cats = forwardCategories(body.forward_categories, type);
+    if (!cats) return json({ error: `forward_categories must be from: ${forwardable(type).join(", ")}` }, 400);
+    update.forward_categories = cats;
+  }
+
+  const { data, error } = await sb.from("mailboxes").update(update).eq("id", body.id)
+    .select("id, mailbox_type, forward_categories, smart_ap_address").maybeSingle();
+  if (error) return await fail("mailboxes/update", error.message, 500, { userId, context: { id: body.id } });
+  if (!data) return json({ error: "Mailbox not found" }, 404);
+  return json({ mailbox: data });
+}
+
+const forwardable = (type: MailboxType) => CATEGORIES[type].filter((c) => c !== "other");
+
+// Validated, de-duplicated forward categories for `type`, or null if any is not forwardable for that type.
+function forwardCategories(value: unknown, type: MailboxType): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const cats = [...new Set(value.map(String))];
+  return cats.every((c) => forwardable(type).includes(c)) ? cats : null;
+}
+
+// --- organization connections (API keys) ------------------------------------------------------------------
+
+// Gets a token with the keys and reads the application permissions it carries (the "roles" claim), so a missing
+// admin consent is reported now rather than on the first run.
+async function checkKeys(creds: AppCredentials): Promise<{ token: string; roles: string[] }> {
+  const token = await appToken(creds);
+  let roles: string[] = [];
+  try {
+    roles = JSON.parse(new TextDecoder().decode(decodeBase64Url(token.split(".")[1]))).roles ?? [];
+  } catch {
+    // Not a readable JWT; the mailbox checks still catch missing permissions.
+  }
+  return { token, roles };
+}
+
+function credsFrom(body: Record<string, unknown>): AppCredentials {
+  return {
     tenant_id: String(body.tenant_id ?? "").trim(),
     client_id: String(body.client_id ?? "").trim(),
     client_secret: String(body.client_secret ?? "").trim(),
   };
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: "Mailbox must be a valid email address" }, 400);
+}
+
+const MISSING_READ = "The Azure app has no Mail.Read application permission with admin consent. In Azure: API permissions > " +
+  "Add > Microsoft Graph > Application permissions > Mail.Read (and Mail.Send), then Grant admin consent.";
+
+async function addConnection(userId: string, body: Record<string, unknown>): Promise<Response> {
+  const creds = credsFrom(body);
+  const name = String(body.name ?? "").trim() || creds.tenant_id;
   if (!creds.tenant_id || !creds.client_id || !creds.client_secret) {
     return json({ error: "Tenant ID, client ID and client secret are required" }, 400);
   }
-  const days = ACCESS_DAYS.includes(Number(body.access_days)) ? Number(body.access_days) : DEFAULT_ACCESS_DAYS;
   // Never log the secret.
-  const context = { mailbox: email, tenant_id: creds.tenant_id, client_id: creds.client_id };
+  const context = { tenant_id: creds.tenant_id, client_id: creds.client_id };
+  let roles: string[];
+  try {
+    ({ roles } = await checkKeys(creds));
+  } catch (err) {
+    return await fail("mailboxes/add_connection", err instanceof Error ? err.message : String(err), 400, { userId, context });
+  }
+  if (!roles.some((r) => r === "Mail.Read" || r === "Mail.ReadWrite")) {
+    return await fail("mailboxes/add_connection", MISSING_READ, 400, { userId, context: { ...context, roles } });
+  }
 
+  const db = adminClient();
+  const { data: row, error } = await db.from("ms_connections")
+    .insert({ owner_user_id: userId, name, tenant_id: creds.tenant_id, client_id: creds.client_id })
+    .select("id, name, tenant_id, client_id, created_at").single();
+  if (error) return await fail("mailboxes/add_connection", error.message, 500, { userId, context });
+  const { data: secretId, error: secretError } = await db.rpc("mailbox_secret_put", {
+    p_secret_id: null, p_secret: JSON.stringify(creds), p_name: `ms_connection:${row.id}`,
+  });
+  if (secretError) {
+    await db.from("ms_connections").delete().eq("id", row.id);
+    return await fail("mailboxes/add_connection", `Could not store the API keys: ${secretError.message}`, 500, { userId, context });
+  }
+  await db.from("ms_connections").update({ credentials_secret_id: secretId }).eq("id", row.id);
+
+  const warning = roles.includes("Mail.Send") ? undefined
+    : "Connected, but the app has no Mail.Send application permission, so forwarding and summary emails will fail until it is granted.";
+  return json({ connection: row, warning });
+}
+
+// Replaces a connection's client secret (Azure client secrets expire), after checking the new one works.
+async function updateConnection(userId: string, sb: SupabaseClient, body: Record<string, unknown>): Promise<Response> {
+  const { data: conn, error } = await sb.from("ms_connections").select("id, tenant_id, client_id").eq("id", body.connection_id).maybeSingle();
+  if (error) return await fail("mailboxes/update_connection", error.message, 500, { userId });
+  if (!conn) return json({ error: "Connection not found" }, 404);
+  const creds = credsFrom({ ...conn, client_secret: body.client_secret });
+  if (!creds.client_secret) return json({ error: "client_secret is required" }, 400);
+  try {
+    const { roles } = await checkKeys(creds);
+    if (!roles.some((r) => r === "Mail.Read" || r === "Mail.ReadWrite")) throw new Error(MISSING_READ);
+  } catch (err) {
+    return await fail("mailboxes/update_connection", err instanceof Error ? err.message : String(err), 400,
+      { userId, context: { id: conn.id, tenant_id: conn.tenant_id, client_id: conn.client_id } });
+  }
+
+  const db = adminClient();
+  const { data: row } = await db.from("ms_connections").select("credentials_secret_id").eq("id", conn.id).single();
+  const { data: secretId, error: secretError } = await db.rpc("mailbox_secret_put", {
+    p_secret_id: row?.credentials_secret_id ?? null, p_secret: JSON.stringify(creds), p_name: `ms_connection:${conn.id}`,
+  });
+  if (secretError) return await fail("mailboxes/update_connection", `Could not store the API keys: ${secretError.message}`, 500, { userId });
+  await db.from("ms_connections").update({ credentials_secret_id: secretId, updated_at: new Date().toISOString() }).eq("id", conn.id);
+  return json({ connection: { id: conn.id } });
+}
+
+// Adds shared mailboxes under a connection, checking each can be read. `addresses` is an array or text with one
+// address per line / comma / semicolon. A mailbox already connected another way is switched to the connection,
+// keeping its history and settings unless new ones are given.
+async function addMailboxes(userId: string, sb: SupabaseClient, body: Record<string, unknown>): Promise<Response> {
+  const { data: conn, error } = await sb.from("ms_connections").select("id").eq("id", body.connection_id).maybeSingle();
+  if (error) return await fail("mailboxes/add_mailboxes", error.message, 500, { userId });
+  if (!conn) return json({ error: "Connection not found" }, 404);
+
+  const raw = Array.isArray(body.addresses) ? body.addresses.join("\n") : String(body.addresses ?? "");
+  const addresses = [...new Set(raw.split(/[\s,;]+/).map((a) => a.trim().toLowerCase()).filter(Boolean))];
+  if (!addresses.length) return json({ error: "Enter at least one mailbox address" }, 400);
+  if (addresses.length > MAX_BULK) return json({ error: `Add at most ${MAX_BULK} mailboxes at a time` }, 400);
+
+  const type = (body.mailbox_type ?? "ap") as MailboxType;
+  if (!MAILBOX_TYPES.includes(type)) return json({ error: "mailbox_type must be ap or ar" }, 400);
+  const destination = String(body.smart_ap_address ?? "").trim().toLowerCase();
+  if (destination && !EMAIL.test(destination)) return json({ error: "Destination must be a valid email address" }, 400);
+  const forward = body.forward_categories === undefined ? DEFAULT_FORWARD[type] : forwardCategories(body.forward_categories, type);
+  if (!forward) return json({ error: `forward_categories must be from: ${forwardable(type).join(", ")}` }, 400);
+
+  const db = adminClient();
   let token: string;
   try {
-    token = await appToken(creds);
+    ({ token } = await checkKeys(await connectionCredentials(db, conn.id)));
   } catch (err) {
-    return await fail("mailboxes/connect_app", err instanceof Error ? err.message : String(err), 400, { userId, context });
-  }
-  const res = await fetch(`https://graph.microsoft.com/v1.0${mailboxPath(email)}/mailFolders/inbox?$select=id`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) {
-    const message = res.status === 403 || res.status === 401
-      ? `The app can't read ${email}. Grant it the Mail.Read application permission with admin consent (and check any Exchange access policy that limits which mailboxes it may open).`
-      : res.status === 404 ? `No mailbox ${email} was found in that tenant.` : `Could not open ${email} (Graph ${res.status}).`;
-    return await fail("mailboxes/connect_app", message, 400, { userId, context: { ...context, response: (await res.text()).slice(0, 2000) } });
+    return await fail("mailboxes/add_mailboxes", err instanceof Error ? err.message : String(err), 400, { userId, context: { connection: conn.id } });
   }
 
-  const id = await saveMailbox(userId, {
-    provider: "microsoft", auth_type: "app", email_address: email, delegate_address: null, display_name: null,
-  }, JSON.stringify(creds), days);
-  return json({ mailbox: { id, email_address: email }, days });
+  const addOne = async (address: string): Promise<{ address: string; ok: boolean; error?: string }> => {
+    if (!EMAIL.test(address)) return { address, ok: false, error: "Not a valid email address" };
+    const res = await fetch(`https://graph.microsoft.com/v1.0${mailboxPath(address)}/mailFolders/inbox?$select=id`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 1000);
+      await logApi("mailboxes/add_mailboxes", `Graph ${res.status} for ${address}`, { userId, level: "warn", context: { connection: conn.id, response: detail } });
+      return {
+        address, ok: false,
+        error: res.status === 404 ? "No such mailbox in this tenant"
+          : res.status === 401 || res.status === 403 ? "The app may not read this mailbox (Mail.Read consent, or an Exchange access policy excludes it)"
+          : `Graph error ${res.status}`,
+      };
+    }
+
+    const { data: existing, error: findError } = await db.from("mailboxes").select("id, credentials_secret_id")
+      .eq("owner_user_id", userId).eq("email_address", address).maybeSingle();
+    if (findError) return { address, ok: false, error: findError.message };
+    const fields = {
+      provider: "microsoft", auth_type: "app", connection_id: conn.id, delegate_address: null, active: true,
+      credentials_secret_id: null, access_expires_at: null, mailbox_type: type, forward_categories: forward,
+      ...(destination ? { smart_ap_address: destination } : {}), updated_at: new Date().toISOString(),
+    };
+    const { error: saveError } = existing
+      ? await db.from("mailboxes").update(fields).eq("id", existing.id)
+      : await db.from("mailboxes").insert({ owner_user_id: userId, email_address: address, ...fields });
+    if (saveError) return { address, ok: false, error: saveError.message };
+    // Its own sign-in token is no longer used.
+    if (existing?.credentials_secret_id) await db.rpc("mailbox_secret_delete", { p_secret_id: existing.credentials_secret_id });
+    return { address, ok: true };
+  };
+
+  const results: { address: string; ok: boolean; error?: string }[] = [];
+  const queue = [...addresses];
+  await Promise.all(Array.from({ length: Math.min(CHECK_CONCURRENCY, queue.length) }, async () => {
+    for (let a = queue.shift(); a; a = queue.shift()) results.push(await addOne(a));
+  }));
+  results.sort((a, b) => addresses.indexOf(a.address) - addresses.indexOf(b.address));
+  return json({ results });
 }
 
 // --- per-provider OAuth: where sign-in starts, and how the callback's code becomes a refresh token ----------

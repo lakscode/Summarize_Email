@@ -15,8 +15,10 @@ export interface MailboxRow {
   credentials_secret_id: string | null;
   // Microsoft shared mailbox: the signed-in account whose token reads `email_address`. Null for an own mailbox.
   delegate_address?: string | null;
-  // "app": Microsoft API keys (client credentials); the Vault secret is AppCredentials JSON, not a refresh token.
+  // "app": Microsoft API keys (client credentials) of the organization connection `connection_id`; the mailbox has
+  // no credentials of its own.
   auth_type?: "oauth" | "app";
+  connection_id?: string | null;
 }
 
 export interface MailMessage {

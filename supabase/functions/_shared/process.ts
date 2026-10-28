@@ -1,10 +1,11 @@
-// Shared AP inbox processing: used by the `inbox` function (Process inbox button) and the `scheduler` function.
-// Reads Outlook or Gmail inbox mail (see mail.ts), classifies it with Claude and forwards confident invoices to the Smart AP address.
+// Shared AP / AR inbox processing: used by the `inbox` function (Process inbox button) and the `scheduler` function.
+// Reads Outlook or Gmail inbox mail (see mail.ts), classifies it with Claude for the mailbox's type (AP or AR) and
+// forwards confident emails in the mailbox's forward_categories to its destination address (smart_ap_address).
 // Each message is processed once per mailbox (unique mailbox_id + message_id). With reprocess, emails already
 // classified are classified again unless they were forwarded or marked done, so nothing is forwarded twice.
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import PostalMime from "npm:postal-mime@3.0.1";
-import { type AttachmentFile, type AttachmentText, classifyEmail, type Classification } from "./classify.ts";
+import { type AttachmentFile, type AttachmentText, classifyEmail, type Classification, type MailboxType } from "./classify.ts";
 import { logApi, logStep } from "./log.ts";
 import { htmlToText, isEmailAttachment, type MailClient, mailClient, type MailMessage, type Provider } from "./mail.ts";
 import { buildReport, type ReportItem } from "./report.ts";
@@ -43,11 +44,11 @@ export async function processMailbox(
   const db = adminClient();
   await db.rpc("expire_mailbox_access");
   const { data: mailbox, error } = await db.from("mailboxes")
-    .select("id, provider, auth_type, email_address, delegate_address, credentials_secret_id, smart_ap_address, access_expires_at")
+    .select("id, provider, auth_type, connection_id, email_address, delegate_address, credentials_secret_id, smart_ap_address, access_expires_at, mailbox_type, forward_categories")
     .eq("id", mailboxId).eq("owner_user_id", userId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!mailbox) throw new Error("Mailbox not found");
-  if (!mailbox.credentials_secret_id) {
+  if (!mailbox.credentials_secret_id && !mailbox.connection_id) {
     throw new Error(`Access to ${mailbox.email_address} has expired. Reconnect it on the dashboard.`);
   }
 
@@ -125,8 +126,9 @@ async function sendReport(
 
 type Db = ReturnType<typeof adminClient>;
 interface Mailbox {
-  id: string; provider: Provider; auth_type: "oauth" | "app"; email_address: string; delegate_address: string | null; credentials_secret_id: string | null;
-  smart_ap_address: string | null;
+  id: string; provider: Provider; auth_type: "oauth" | "app"; connection_id: string | null; email_address: string;
+  delegate_address: string | null; credentials_secret_id: string | null; smart_ap_address: string | null;
+  mailbox_type: MailboxType; forward_categories: string[];
 }
 interface ExistingRow { id: string; message_id: string; status: string; action_taken: string | null }
 
@@ -265,7 +267,7 @@ async function processMessage(
       texts: attachments.texts,
       skippedFiles: attachments.skipped,
       body: msg.body?.content ?? "",
-    });
+    }, mailbox.mailbox_type);
     await step(run, "process/classify", `Classified "${subject}" as ${c.category} (${c.confidence} confidence): ${c.summary}`,
       { ...email, category: c.category, confidence: c.confidence, vendor: c.vendor, amount: c.amount, next_step: c.next_step });
 
@@ -296,23 +298,25 @@ async function processMessage(
   }
 }
 
-// The only automatic action: forward confident invoices to the mailbox's configured Smart AP address.
+// The only automatic action: forward confident emails in the mailbox's forward_categories to its destination address.
 // The recipient always comes from settings, never from the email or the model.
 async function takeAction(run: Run, mailbox: Mailbox, client: MailClient, msg: MailMessage, c: Classification) {
   const userId = run.userId;
+  const label = c.category.replace("_", " ");
   if (c.category === "other") return { status: "no_action", action: null };
-  if (c.category !== "invoice") return { status: "action_needed", action: null };
+  if (!(mailbox.forward_categories ?? []).includes(c.category)) return { status: "action_needed", action: null };
 
-  if (c.confidence === "low") return { status: "action_needed", action: "Not forwarded: unsure this is an invoice. Check it, then forward to AP." };
-  if (!mailbox.smart_ap_address) return { status: "action_needed", action: "Not forwarded: no Smart AP address set for this mailbox." };
+  if (c.confidence === "low") return { status: "action_needed", action: `Not forwarded: not sure this is a ${label} email. Check it, then forward it.` };
+  if (!mailbox.smart_ap_address) return { status: "action_needed", action: "Not forwarded: no destination address set for this mailbox." };
 
   try {
     const details = [c.vendor, c.invoice_number && `#${c.invoice_number}`, c.amount, c.due_date && `due ${c.due_date}`].filter(Boolean).join(", ");
-    await client.forwardMessage(msg.id, mailbox.smart_ap_address, `Forwarded automatically by SummarizeMail: invoice${details ? ` (${details})` : ""}.`);
+    await client.forwardMessage(msg.id, mailbox.smart_ap_address, `Forwarded automatically by SummarizeMail: ${label}${details ? ` (${details})` : ""}.`);
     return { status: "done", action: `Forwarded to ${mailbox.smart_ap_address}` };
   } catch (err) {
     await logApi("inbox/forward", err, { userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, subject: msg.subject } });
-    const hint = String(err).includes("403") ? " Reconnect the mailbox to allow sending." : "";
+    const hint = !String(err).includes("403") ? ""
+      : mailbox.auth_type === "app" ? " Give the organization's Azure app the Mail.Send application permission." : " Reconnect the mailbox to allow sending.";
     return { status: "action_needed", action: `Forward failed; forward it manually.${hint}` };
   }
 }

@@ -17,7 +17,7 @@
     <main class="content">
       <div id="message" class="message" hidden></div>
       <h1>Inbox</h1>
-      <p class="sub">Accounts-payable emails classified by Claude, with what to do next. Invoices are forwarded to the mailbox's Smart AP address.</p>
+      <p class="sub">AP and AR emails classified by Claude, with what to do next. Categories chosen on the Dashboard are forwarded to the mailbox's destination email.</p>
 
       <section class="panel process-panel">
         <form id="process-form" class="process-form">
@@ -112,6 +112,9 @@
       utility_bill: "Utility bill",
       vendor_info: "Vendor info",
       statement: "Statement",
+      remittance: "Remittance",
+      purchase_order: "Purchase order",
+      customer_inquiry: "Customer inquiry",
       other: "Other",
     };
     const STATUS_LABELS = {
@@ -144,7 +147,7 @@
       select.replaceChildren(...mailboxes.map((m) => {
         const opt = document.createElement("option");
         opt.value = m.id;
-        opt.textContent = m.smart_ap_address ? m.email_address : `${m.email_address} (no Smart AP address)`;
+        opt.textContent = `${m.email_address} · ${m.mailbox_type === "ar" ? "AR" : "AP"}${m.smart_ap_address ? "" : " (no destination email)"}`;
         return opt;
       }));
       if (mailboxes.some((m) => m.id === selected)) select.value = selected;

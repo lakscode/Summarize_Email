@@ -27,8 +27,53 @@
       <section class="panel">
         <div class="panel-head">
           <div>
+            <h2>Organizations</h2>
+            <p class="sub">Connect a Microsoft 365 organization once with its API keys, then add its shared AP / AR mailboxes.</p>
+          </div>
+          <div class="connect-controls">
+            <button class="secondary" type="button" data-toggle="org-form">Add organization</button>
+          </div>
+        </div>
+        <form id="org-form" class="inline-form connect-form" hidden autocomplete="off">
+          <h3>Add an organization</h3>
+          <label>Name <input name="name" placeholder="Contoso AP" /></label>
+          <label>Tenant ID <input name="tenant_id" placeholder="00000000-0000-0000-0000-000000000000" required /></label>
+          <label>Client ID <input name="client_id" placeholder="00000000-0000-0000-0000-000000000000" required /></label>
+          <label>Client secret <input type="password" name="client_secret" autocomplete="new-password" required /></label>
+          <button type="submit">Connect</button>
+          <button type="button" class="secondary" data-cancel>Cancel</button>
+          <p class="hint">An Azure app registration in that tenant with Microsoft Graph <em>application</em> permissions
+            <code>Mail.Read</code> and <code>Mail.Send</code>, admin-consented. Limit it to the AP/AR mailboxes with an Exchange
+            application access policy. The keys are stored encrypted and never shown again.</p>
+        </form>
+        <form id="bulk-form" class="inline-form connect-form" hidden autocomplete="off">
+          <h3 id="bulk-title">Add mailboxes</h3>
+          <label class="wide">Shared mailbox addresses (one per line, or separated by commas)
+            <textarea name="addresses" rows="5" placeholder="ap-east@contoso.com&#10;ap-west@contoso.com" required></textarea>
+          </label>
+          <label>Type
+            <select name="mailbox_type">
+              <option value="ap">Accounts payable (AP)</option>
+              <option value="ar">Accounts receivable (AR)</option>
+            </select>
+          </label>
+          <label>Destination email <input type="email" name="smart_ap_address" placeholder="invoices@your-ap-system.com" /></label>
+          <fieldset class="days" data-forward></fieldset>
+          <button type="submit">Add mailboxes</button>
+          <button type="button" class="secondary" data-cancel>Cancel</button>
+          <p class="hint">Each address is checked before it is added. Type, destination and forwarded categories apply to every
+            mailbox in this batch and can be changed per mailbox afterwards.</p>
+          <ul class="results" id="bulk-results" hidden></ul>
+        </form>
+        <ul class="list" id="connection-list"></ul>
+        <p class="empty" id="connection-empty" hidden>No organizations connected yet.</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
             <h2>Mailboxes</h2>
-            <p class="sub">Connect an Azure / Microsoft 365 (Outlook) or Gmail mailbox to summarize.</p>
+            <p class="sub">Each mailbox has its own type (AP or AR), forwarded categories and destination email.</p>
           </div>
           <div class="connect-controls">
             <label>Allow access for
@@ -42,32 +87,31 @@
             <button class="connect-button" data-provider="microsoft">Add Azure mailbox</button>
             <button class="secondary" type="button" data-toggle="shared-form"
               title="Sign in with your own Microsoft 365 account and read a shared mailbox you have Full Access to.">Add shared mailbox</button>
-            <button class="secondary" type="button" data-toggle="api-keys-form"
-              title="Connect a Microsoft 365 mailbox (e.g. a shared AP inbox) with your own Azure app registration, without signing in.">Add with API keys</button>
             <button style="display:none" class="connect-button" data-provider="google"
               title="Beta: the Gmail connection is in Google's testing mode. Your Gmail address must first be added as a test user in the app's Google Auth Platform settings (Audience > Test users), or Google will block the sign-in. Testing-mode access expires after 7 days; reconnect to renew it.">Add Gmail inbox <span class="beta">Beta</span></button>
           </div>
         </div>
-        <p class="hint">The app keeps an encrypted Microsoft token only for the period you choose, then deletes it. Reconnect to extend.</p>
+        <p class="hint">Mailboxes connected by sign-in keep an encrypted Microsoft token only for the period you choose, then delete it. Reconnect to extend.</p>
         <form id="shared-form" class="inline-form connect-form" hidden autocomplete="off">
           <h3>Add a shared mailbox</h3>
           <label>Shared mailbox address <input type="email" name="shared_mailbox" placeholder="ap@yourcompany.com" required /></label>
           <button type="submit">Sign in with Microsoft</button>
           <button type="button" class="secondary" data-cancel>Cancel</button>
           <p class="hint">You'll sign in with your own Microsoft 365 account, which needs Full Access to this mailbox (and Send As
-            or Send on Behalf to forward invoices from it). Ask your Microsoft 365 admin if you don't have it.</p>
+            or Send on Behalf to forward emails from it). Ask your Microsoft 365 admin if you don't have it. For many
+            mailboxes, add an organization above instead.</p>
         </form>
-        <form id="api-keys-form" class="inline-form connect-form" hidden autocomplete="off">
-          <h3>Add a mailbox with API keys</h3>
-          <label>Mailbox address <input type="email" name="email_address" placeholder="ap@yourcompany.com" required /></label>
-          <label>Tenant ID <input name="tenant_id" placeholder="00000000-0000-0000-0000-000000000000" required /></label>
-          <label>Client ID <input name="client_id" placeholder="00000000-0000-0000-0000-000000000000" required /></label>
-          <label>Client secret <input type="password" name="client_secret" autocomplete="new-password" required /></label>
-          <button type="submit">Connect</button>
-          <button type="button" class="secondary" data-cancel>Cancel</button>
-          <p class="hint">Uses an Azure app registration in your tenant with Microsoft Graph <em>application</em> permissions
-            <code>Mail.Read</code> and <code>Mail.Send</code>, admin-consented. The keys are stored encrypted for the access period above and never shown again.</p>
-        </form>
+        <div class="inline-form list-filter" id="mailbox-filter" hidden>
+          <label>Filter <input type="search" id="filter-text" placeholder="Address or organization" /></label>
+          <label>Type
+            <select id="filter-type">
+              <option value="">All</option>
+              <option value="ap">AP</option>
+              <option value="ar">AR</option>
+            </select>
+          </label>
+          <span class="label" id="filter-count"></span>
+        </div>
         <ul class="list" id="mailbox-list"></ul>
         <p class="empty" id="mailbox-empty" hidden>No mailboxes connected yet.</p>
       </section>
@@ -102,7 +146,22 @@
       await loadMailboxes();
     })();
 
-    // --- Mailboxes (Supabase Edge Function API: supabase/functions/mailboxes) ---
+    // --- Mailboxes and organizations (Supabase Edge Function API: supabase/functions/mailboxes) ---
+
+    const PROVIDER_LABELS = { microsoft: "Azure", google: "Gmail (beta)" };
+    const TYPE_LABELS = { ap: "AP", ar: "AR" };
+    const CATEGORY_LABELS = {
+      invoice: "Invoice",
+      utility_bill: "Utility bill",
+      vendor_info: "Vendor info",
+      statement: "Statement",
+      remittance: "Remittance",
+      purchase_order: "Purchase order",
+      customer_inquiry: "Customer inquiry",
+    };
+    // Filled from GET mailboxes: categories per mailbox type, and the organization connections by id.
+    let categories = { ap: [], ar: [] };
+    let connections = new Map();
 
     // Shows the outcome of a Microsoft sign-in; returns false if `params` carries none.
     function showConnectResult(params) {
@@ -118,45 +177,204 @@
     async function loadMailboxes() {
       const { data, error } = await callApi("mailboxes", { method: "GET" });
       if (error) return showMessage(`Could not load mailboxes: ${error}`, "error");
-      const list = document.getElementById("mailbox-list");
-      list.replaceChildren(...data.mailboxes.map(mailboxRow));
+      // Defaults keep the mailbox list working against an older API that returns only `mailboxes`.
+      categories = data.categories ?? { ap: ["invoice", "utility_bill", "vendor_info", "statement", "other"], ar: [] };
+      const orgs = data.connections ?? [];
+      connections = new Map(orgs.map((c) => [c.id, c]));
+
+      const counts = {};
+      for (const m of data.mailboxes) if (m.connection_id) counts[m.connection_id] = (counts[m.connection_id] ?? 0) + 1;
+      document.getElementById("connection-list").replaceChildren(...orgs.map((c) => connectionRow(c, counts[c.id] ?? 0)));
+      document.getElementById("connection-empty").hidden = orgs.length > 0;
+
+      document.getElementById("mailbox-list").replaceChildren(...data.mailboxes.map(mailboxRow));
       document.getElementById("mailbox-empty").hidden = data.mailboxes.length > 0;
+      document.getElementById("mailbox-filter").hidden = data.mailboxes.length < 2;
+      applyFilter();
+      syncToggles();
     }
 
-    function mailboxRow(m) {
+    // --- Organization connections ---
+
+    function connectionRow(c, mailboxCount) {
       const li = document.createElement("li");
+      li.className = "stacked";
+      const head = document.createElement("div");
+      head.className = "row";
+      const info = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "value";
+      name.textContent = c.name;
+      const meta = document.createElement("div");
+      meta.className = "label";
+      meta.textContent = `Tenant ${c.tenant_id} · Client ${c.client_id} · ${mailboxCount} mailbox${mailboxCount === 1 ? "" : "es"}`;
+      info.append(name, meta);
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      const add = button("Add mailboxes", "secondary");
+      add.dataset.toggle = "bulk-form";
+      add.dataset.connection = c.id;
+      add.addEventListener("click", () => bulkForm.hidden || bulkForm.dataset.connection !== c.id ? showBulkForm(c) : hideForm(bulkForm));
+      const rotate = button("Update secret", "secondary");
+      const remove = button("Remove", "secondary");
+      actions.append(add, rotate, remove);
+      head.append(info, actions);
+
+      // Azure client secrets expire; this replaces the stored one after checking it works.
+      const secretForm = document.createElement("form");
+      secretForm.className = "inline-form";
+      secretForm.hidden = true;
+      secretForm.autocomplete = "off";
+      const secretLabel = document.createElement("label");
+      secretLabel.textContent = "New client secret";
+      const secretInput = document.createElement("input");
+      secretInput.type = "password";
+      secretInput.autocomplete = "new-password";
+      secretInput.required = true;
+      secretLabel.append(secretInput);
+      secretForm.append(secretLabel, button("Save", "secondary", "submit"));
+      rotate.addEventListener("click", () => {
+        secretForm.hidden = !secretForm.hidden;
+        rotate.setAttribute("aria-expanded", String(!secretForm.hidden));
+        if (!secretForm.hidden) secretInput.focus();
+      });
+      secretForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        setBusy(secretForm, true);
+        const { error } = await callApi("mailboxes", { body: { action: "update_connection", connection_id: c.id, client_secret: secretInput.value } });
+        setBusy(secretForm, false);
+        if (error) return showMessage(error, "error");
+        secretForm.reset();
+        secretForm.hidden = true;
+        rotate.setAttribute("aria-expanded", "false");
+        showMessage(`Updated the client secret for ${c.name}.`, "ok");
+      });
+
+      remove.addEventListener("click", async () => {
+        const what = mailboxCount ? ` and its ${mailboxCount} mailbox${mailboxCount === 1 ? "" : "es"} (with their processed emails)` : "";
+        if (!confirm(`Remove ${c.name}${what}?`)) return;
+        remove.disabled = true;
+        const { error } = await callApi(`mailboxes?connection_id=${encodeURIComponent(c.id)}`, { method: "DELETE" });
+        if (error) {
+          remove.disabled = false;
+          return showMessage(`Could not remove: ${error}`, "error");
+        }
+        showMessage(`Removed ${c.name}.`, "ok");
+        if (bulkForm.dataset.connection === c.id) hideForm(bulkForm);
+        await loadMailboxes();
+      });
+
+      li.append(head, secretForm);
+      return li;
+    }
+
+    const orgForm = document.getElementById("org-form");
+    orgForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fields = Object.fromEntries(new FormData(orgForm));
+      setBusy(orgForm, true);
+      const { data, error } = await callApi("mailboxes", { body: { action: "add_connection", ...fields } });
+      setBusy(orgForm, false);
+      if (error) return showMessage(error, "error");
+      hideForm(orgForm);
+      showMessage(data.warning || `Connected ${data.connection.name}. Now add its mailboxes.`, data.warning ? "error" : "ok");
+      await loadMailboxes();
+      showBulkForm(data.connection);
+    });
+
+    // Bulk add: many shared mailboxes under one organization, each checked for access.
+    const bulkForm = document.getElementById("bulk-form");
+    const bulkResults = document.getElementById("bulk-results");
+
+    function showBulkForm(c) {
+      bulkForm.dataset.connection = c.id;
+      document.getElementById("bulk-title").textContent = `Add mailboxes to ${c.name}`;
+      bulkResults.hidden = true;
+      renderForwardChoices(bulkForm.querySelector("[data-forward]"), bulkForm.elements.mailbox_type.value);
+      showForm(bulkForm);
+    }
+
+    bulkForm.elements.mailbox_type.addEventListener("change", () =>
+      renderForwardChoices(bulkForm.querySelector("[data-forward]"), bulkForm.elements.mailbox_type.value));
+
+    bulkForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = {
+        action: "add_mailboxes",
+        connection_id: bulkForm.dataset.connection,
+        addresses: bulkForm.elements.addresses.value,
+        mailbox_type: bulkForm.elements.mailbox_type.value,
+        smart_ap_address: bulkForm.elements.smart_ap_address.value,
+        forward_categories: checkedForward(bulkForm),
+      };
+      setBusy(bulkForm, true);
+      const { data, error } = await callApi("mailboxes", { body });
+      setBusy(bulkForm, false);
+      if (error) return showMessage(error, "error");
+
+      const failed = data.results.filter((r) => !r.ok);
+      bulkResults.replaceChildren(...data.results.map((r) => {
+        const li = document.createElement("li");
+        li.className = r.ok ? "ok" : "failed";
+        li.textContent = r.ok ? `${r.address}: added` : `${r.address}: ${r.error}`;
+        return li;
+      }));
+      bulkResults.hidden = false;
+      // Keep only the addresses that failed, so they can be fixed and retried.
+      bulkForm.elements.addresses.value = failed.map((r) => r.address).join("\n");
+      const added = data.results.length - failed.length;
+      showMessage(`Added ${added} mailbox${added === 1 ? "" : "es"}${failed.length ? `; ${failed.length} could not be added (see below)` : ""}.`,
+        failed.length ? "error" : "ok");
+      await loadMailboxes();
+    });
+
+    // --- Mailbox rows ---
+
+    function mailboxRow(m) {
+      m.mailbox_type ??= "ap";
+      const li = document.createElement("li");
+      li.className = "stacked";
+      const org = connections.get(m.connection_id);
+      li.dataset.search = `${m.email_address} ${m.display_name ?? ""} ${org?.name ?? ""}`.toLowerCase();
+      li.dataset.type = m.mailbox_type;
+
+      const head = document.createElement("div");
+      head.className = "row";
       const info = document.createElement("div");
       const email = document.createElement("div");
       email.className = "value";
-      email.textContent = m.email_address;
+      const type = document.createElement("span");
+      type.className = `badge type-${m.mailbox_type}`;
+      type.textContent = TYPE_LABELS[m.mailbox_type] ?? "AP";
+      email.append(`${m.email_address} `, type);
       const meta = document.createElement("div");
       meta.className = "label";
-      meta.textContent = `${m.display_name ? m.display_name + " · " : ""}${PROVIDER_LABELS[m.provider] || "Azure"}` +
-        `${m.delegate_address ? ` shared mailbox, via ${m.delegate_address}` : ""}${m.auth_type === "app" ? " · API keys" : ""} · connected ${new Date(m.created_at).toLocaleDateString()}`;
+      const via = org ? ` · ${org.name} (API keys)` : m.delegate_address ? ` shared mailbox, via ${m.delegate_address}` : "";
+      meta.textContent = `${m.display_name ? m.display_name + " · " : ""}${PROVIDER_LABELS[m.provider] || "Azure"}${via}` +
+        ` · connected ${new Date(m.created_at).toLocaleDateString()}`;
 
       // Access window: active until access_expires_at, then the token is deleted and a reconnect is needed.
-      const expired = !m.active || (m.access_expires_at && new Date(m.access_expires_at) <= new Date());
+      // Organization mailboxes use the organization's keys and don't expire.
+      const expired = !m.connection_id && (!m.active || (m.access_expires_at && new Date(m.access_expires_at) <= new Date()));
       const access = document.createElement("div");
       access.className = expired ? "access expired" : "access";
       if (expired) {
         access.textContent = "Access expired. ";
-        const reconnect = document.createElement("button");
-        reconnect.className = "link-button";
-        reconnect.textContent = "Reconnect";
-        reconnect.addEventListener("click", () => m.auth_type === "app"
-          ? showApiKeysForm(m.email_address)
-          : startConnect(reconnect, m.provider || "microsoft", m.delegate_address ? m.email_address : null));
+        const reconnect = button("Reconnect", "link-button");
+        reconnect.addEventListener("click", () =>
+          startConnect(reconnect, m.provider || "microsoft", m.delegate_address ? m.email_address : null));
         access.append(reconnect);
+      } else if (m.connection_id) {
+        access.textContent = "Access through the organization's API keys.";
       } else {
         access.textContent = m.access_expires_at
           ? `Access until ${new Date(m.access_expires_at).toLocaleString()}`
           : "Access has no expiry (connected before access periods). Reconnect to set one.";
       }
-      info.append(email, meta, access, smartApForm(m));
+      info.append(email, meta, access);
 
-      const remove = document.createElement("button");
-      remove.className = "secondary";
-      remove.textContent = "Disconnect";
+      const remove = button("Disconnect", "secondary");
       remove.addEventListener("click", async () => {
         if (!confirm(`Disconnect ${m.email_address}?`)) return;
         remove.disabled = true;
@@ -169,39 +387,107 @@
         await loadMailboxes();
       });
 
-      li.append(info, remove);
+      head.append(info, remove);
+      li.append(head, settingsForm(m, type));
       return li;
     }
 
-    // Where the Inbox processor forwards invoices for this mailbox.
-    function smartApForm(m) {
+    // Per-mailbox settings: AP or AR, which categories are forwarded, and where to.
+    function settingsForm(m, typeBadge) {
       const form = document.createElement("form");
-      form.className = "inline-form";
-      const label = document.createElement("label");
-      label.textContent = "Smart AP address";
-      const input = document.createElement("input");
-      input.type = "email";
-      input.name = "smart_ap_address";
-      input.placeholder = "invoices@your-ap-system.com";
-      input.value = m.smart_ap_address || "";
-      label.append(input);
-      const save = document.createElement("button");
-      save.type = "submit";
-      save.className = "secondary";
-      save.textContent = "Save";
-      form.append(label, save);
+      form.className = "inline-form settings-form";
+
+      const typeLabel = document.createElement("label");
+      typeLabel.textContent = "Type";
+      const typeSelect = document.createElement("select");
+      typeSelect.name = "mailbox_type";
+      for (const [value, label] of Object.entries({ ap: "Accounts payable (AP)", ar: "Accounts receivable (AR)" })) {
+        typeSelect.append(new Option(label, value, false, value === m.mailbox_type));
+      }
+      typeLabel.append(typeSelect);
+
+      const destLabel = document.createElement("label");
+      destLabel.textContent = "Destination email";
+      const dest = document.createElement("input");
+      dest.type = "email";
+      dest.name = "smart_ap_address";
+      dest.placeholder = "invoices@your-ap-system.com";
+      dest.value = m.smart_ap_address || "";
+      destLabel.append(dest);
+
+      const forward = document.createElement("fieldset");
+      forward.className = "days";
+      renderForwardChoices(forward, m.mailbox_type, m.forward_categories);
+      // Switching type shows that type's categories with its defaults ticked, as the server would.
+      typeSelect.addEventListener("change", () =>
+        renderForwardChoices(forward, typeSelect.value, typeSelect.value === m.mailbox_type ? m.forward_categories : null));
+
+      form.append(typeLabel, destLabel, forward, button("Save", "secondary", "submit"));
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
+        const body = { id: m.id, mailbox_type: typeSelect.value, forward_categories: checkedForward(form), smart_ap_address: dest.value };
         setBusy(form, true);
-        const { error } = await callApi("mailboxes", { method: "PATCH", body: { id: m.id, smart_ap_address: input.value } });
+        const { data, error } = await callApi("mailboxes", { method: "PATCH", body });
         setBusy(form, false);
-        if (error) return showMessage(`Could not save Smart AP address: ${error}`, "error");
-        showMessage(input.value ? `Invoices from ${m.email_address} will be forwarded to ${input.value}.` : "Smart AP address cleared.", "ok");
+        if (error) return showMessage(`Could not save settings: ${error}`, "error");
+        Object.assign(m, data.mailbox);
+        typeBadge.className = `badge type-${m.mailbox_type}`;
+        typeBadge.textContent = TYPE_LABELS[m.mailbox_type];
+        form.closest("li").dataset.type = m.mailbox_type;
+        const cats = m.forward_categories.map((c) => CATEGORY_LABELS[c] ?? c).join(", ");
+        showMessage(!cats ? `Saved. Nothing from ${m.email_address} is forwarded automatically.`
+          : m.smart_ap_address ? `Saved. ${cats} from ${m.email_address} will be forwarded to ${m.smart_ap_address}.`
+          : `Saved. Set a destination email to forward ${cats} from ${m.email_address}.`, "ok");
       });
       return form;
     }
 
-    const PROVIDER_LABELS = { microsoft: "Azure", google: "Gmail (beta)" };
+    // Checkboxes for the categories of `type` that can be forwarded; `checked` defaults to that type's default.
+    function renderForwardChoices(fieldset, type, checked = null) {
+      const defaults = { ap: ["invoice"], ar: ["remittance"] };
+      const on = new Set(checked ?? defaults[type]);
+      const legend = document.createElement("legend");
+      legend.textContent = "Forward automatically";
+      fieldset.replaceChildren(legend, ...(categories[type] ?? []).filter((c) => c !== "other").map((c) => {
+        const label = document.createElement("label");
+        label.className = "checkbox";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.name = "forward";
+        input.value = c;
+        input.checked = on.has(c);
+        label.append(input, CATEGORY_LABELS[c] ?? c);
+        return label;
+      }));
+    }
+
+    const checkedForward = (form) => [...form.querySelectorAll('input[name="forward"]:checked')].map((i) => i.value);
+
+    function button(text, className, type = "button") {
+      const b = document.createElement("button");
+      b.type = type;
+      b.className = className;
+      b.textContent = text;
+      return b;
+    }
+
+    // --- Filter (useful with dozens of mailboxes) ---
+
+    function applyFilter() {
+      const text = document.getElementById("filter-text").value.trim().toLowerCase();
+      const type = document.getElementById("filter-type").value;
+      const rows = [...document.getElementById("mailbox-list").children];
+      let shown = 0;
+      for (const li of rows) {
+        li.hidden = (text && !li.dataset.search.includes(text)) || (type && li.dataset.type !== type);
+        if (!li.hidden) shown++;
+      }
+      document.getElementById("filter-count").textContent = shown === rows.length ? `${rows.length} mailboxes` : `${shown} of ${rows.length}`;
+    }
+    document.getElementById("filter-text").addEventListener("input", applyFilter);
+    document.getElementById("filter-type").addEventListener("change", applyFilter);
+
+    // --- Sign-in (delegated OAuth) ---
 
     // Starts Microsoft or Google sign-in in a popup; the chosen access period is carried through to the callback.
     // The popup is opened straight from the click (before the API call) so browsers don't block it; if they
@@ -247,36 +533,33 @@
       await loadMailboxes();
     });
 
-    // --- Shared mailbox and API-key forms: shown only from their "Add ..." button, one at a time ---
+    // --- Add forms: shown only from their button, one at a time ---
 
     const sharedForm = document.getElementById("shared-form");
-    const apiKeysForm = document.getElementById("api-keys-form");
 
-    function showForm(form, focus) {
-      for (const f of [sharedForm, apiKeysForm]) f.hidden = f !== form;
+    function showForm(form) {
+      for (const f of document.querySelectorAll(".connect-form")) f.hidden = f !== form;
       syncToggles();
-      (focus ?? form.querySelector("input")).focus();
+      form.querySelector("input, textarea").focus();
     }
 
     function hideForm(form) {
       form.reset();
       form.hidden = true;
+      if (form === bulkForm) bulkResults.hidden = true;
       syncToggles();
     }
 
-    // Highlights the "Add ..." button whose panel is open.
+    // Highlights the button whose form is open (for "Add mailboxes", the one for that organization).
     function syncToggles() {
       for (const b of document.querySelectorAll("[data-toggle]")) {
-        b.setAttribute("aria-expanded", String(!document.getElementById(b.dataset.toggle).hidden));
+        const form = document.getElementById(b.dataset.toggle);
+        const open = !form.hidden && (!b.dataset.connection || form.dataset.connection === b.dataset.connection);
+        b.setAttribute("aria-expanded", String(open));
       }
     }
 
-    function showApiKeysForm(address = "") {
-      showForm(apiKeysForm, address ? apiKeysForm.elements.tenant_id : null);
-      if (address) apiKeysForm.elements.email_address.value = address;
-    }
-
-    for (const b of document.querySelectorAll("[data-toggle]")) {
+    for (const b of document.querySelectorAll(".panel-head [data-toggle]")) {
       const form = document.getElementById(b.dataset.toggle);
       b.addEventListener("click", () => form.hidden ? showForm(form) : hideForm(form));
     }
@@ -288,20 +571,6 @@
       e.preventDefault();
       const address = sharedForm.elements.shared_mailbox.value.trim();
       startConnect(sharedForm.querySelector('button[type="submit"]'), "microsoft", address);
-    });
-
-    // API keys (app-only): POST mailboxes {action: "connect_app", ...}
-    apiKeysForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const fields = Object.fromEntries(new FormData(apiKeysForm));
-      const access_days = Number(document.getElementById("access-days").value);
-      setBusy(apiKeysForm, true);
-      const { data, error } = await callApi("mailboxes", { body: { action: "connect_app", ...fields, access_days } });
-      setBusy(apiKeysForm, false);
-      if (error) return showMessage(error, "error");
-      hideForm(apiKeysForm);
-      showMessage(`Connected ${data.mailbox.email_address} with API keys for ${data.days} day${data.days === 1 ? "" : "s"}.`, "ok");
-      await loadMailboxes();
     });
 
     for (const b of document.querySelectorAll(".connect-button")) {

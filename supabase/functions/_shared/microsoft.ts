@@ -20,13 +20,23 @@ export const mailboxPath = (shared?: string | null) => shared ? `/users/${encode
 
 export const msBase = () => `https://login.microsoftonline.com/${env("MS_TENANT_ID", "common")}/oauth2/v2.0`;
 
-// Customer's Azure app registration for API-key mailboxes; needs application permissions Mail.Read and Mail.Send
-// (admin-consented). Stored as JSON in Vault.
+// Customer's Azure app registration for an organization connection (ms_connections); needs application permissions
+// Mail.Read and Mail.Send (admin-consented). Stored as JSON in Vault.
 export interface AppCredentials { tenant_id: string; client_id: string; client_secret: string }
+
+export async function connectionCredentials(db: SupabaseClient, connectionId: string): Promise<AppCredentials> {
+  const { data, error } = await db.from("ms_connections").select("credentials_secret_id").eq("id", connectionId).maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data?.credentials_secret_id) throw new Error("The organization connection for this mailbox has no API keys; update them on the dashboard.");
+  const { data: secret, error: secretError } = await db.rpc("mailbox_secret_get", { p_secret_id: data.credentials_secret_id });
+  if (secretError || !secret) throw new Error(`Could not read the organization's API keys: ${secretError?.message ?? "missing"}`);
+  return JSON.parse(secret as string);
+}
 
 export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): Promise<MailClient> {
   const app = mailbox.auth_type === "app";
-  const token = app ? await appToken(JSON.parse(await readRefreshToken(db, mailbox))) : await graphToken(db, mailbox);
+  if (app && !mailbox.connection_id) throw new Error("Mailbox has no organization connection; add it again from the dashboard.");
+  const token = app ? await appToken(await connectionCredentials(db, mailbox.connection_id!)) : await graphToken(db, mailbox);
   // App-only tokens have no "me"; they address the mailbox by its address.
   const box = mailboxPath(app || mailbox.delegate_address ? mailbox.email_address : null);
   return {

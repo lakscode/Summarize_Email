@@ -18,6 +18,9 @@ const CATEGORY_LABELS: Record<string, string> = {
   utility_bill: "Utility bill",
   vendor_info: "Vendor info",
   statement: "Statement",
+  remittance: "Remittance",
+  purchase_order: "Purchase order",
+  customer_inquiry: "Customer inquiry",
   other: "Other",
 };
 

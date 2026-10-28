@@ -67,18 +67,33 @@ in with their own account, which needs Full Access to that mailbox in Exchange. 
 through that account. Invoices are forwarded from the shared mailbox (the account also needs Send As or Send on
 Behalf rights on it); the summary email is sent from the user's own mailbox to the shared one.
 
-**Add with API keys** connects a Microsoft 365 mailbox (typically a shared AP inbox) without anyone signing in,
-using the customer's own Azure app registration (app-only / client credentials):
+### Organizations (API keys) for many shared AP / AR mailboxes
+
+**Add organization** connects a customer's Microsoft 365 tenant once with its own Azure app registration
+(app-only / client credentials); its shared mailboxes are then added by address, many at a time, with no one signing in.
 
 1. In the customer's tenant: App registrations > New registration (single tenant, no redirect URI).
 2. API permissions > Microsoft Graph > **Application**: `Mail.Read` and `Mail.Send`, then **Grant admin consent**.
 3. Certificates & secrets > New client secret.
-4. Recommended: restrict the app to the shared mailbox only (Exchange Online
-   `New-ApplicationAccessPolicy -AccessRight RestrictAccess -PolicyScopeGroupId <mail-enabled group with the mailbox>`,
-   or RBAC for Applications); otherwise these permissions cover every mailbox in the tenant.
-5. On the dashboard enter the mailbox address, tenant ID, client ID and secret. The app checks it can read the inbox
-   before saving; the keys are stored in Vault for the chosen access period. Invoices are forwarded and the summary is
-   sent from the mailbox itself.
+4. Recommended: restrict the app to the AP/AR mailboxes only. Put them in a mail-enabled security group and run (Exchange
+   Online PowerShell) `New-ApplicationAccessPolicy -AppId <client id> -PolicyScopeGroupId <group> -AccessRight RestrictAccess`,
+   or use RBAC for Applications. Otherwise these permissions cover every mailbox in the tenant.
+5. On the dashboard, **Add organization** with the tenant ID, client ID and secret. The app checks the keys and that
+   `Mail.Read` is consented (and warns if `Mail.Send` is missing); the keys are stored in Vault and never returned.
+6. **Add mailboxes**: paste the shared mailbox addresses (up to 100 at a time), choose AP or AR, the destination email
+   and which categories to forward. Each address is checked for inbox access before it is added.
+7. When the client secret expires, use **Update secret** on the organization.
+
+Each mailbox has its own settings on the dashboard:
+
+- **Type**: AP (invoice, utility bill, vendor info, statement) or AR (remittance, purchase order, customer inquiry).
+  Claude classifies with that type's categories.
+- **Forward automatically**: which categories are forwarded to the destination. Defaults: AP invoices, AR remittances.
+  Anything not forwarded (or low-confidence) is listed as "action needed" with a next step.
+- **Destination email**: where forwarded emails go, e.g. the AP system's invoice inbox or the cash-application team.
+
+Forwarding and the summary email are sent from the mailbox itself. The scheduler processes three mailboxes at a time,
+so dozens of mailboxes on the same schedule are worked through over a few 5-minute ticks.
 
 ## 1c. Gmail mailbox connection (optional)
 

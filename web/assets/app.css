@@ -230,7 +230,27 @@ select {
 .access.expired { color: var(--error-text); }
 .link-button { padding: 0; background: none; border: 0; color: var(--accent); font-weight: 600; text-decoration: underline; cursor: pointer; }
 
-/* Dashboard: per-mailbox Smart AP address */
+/* Dashboard: organizations and mailboxes (rows with a header line and a settings form under it) */
+.list li[hidden] { display: none; }
+.list li.stacked { flex-direction: column; align-items: stretch; }
+.list .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.list .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.list .value .badge { margin-left: 4px; vertical-align: 1px; }
+.badge.type-ap { color: var(--accent); }
+.badge.type-ar { color: var(--ok-text); }
+.list-filter { margin-top: 16px; align-items: center; }
+.list-filter .label { color: var(--muted); font-size: 0.85rem; }
+.settings-form .days { padding: 4px 12px 6px; }
+.inline-form label.wide { flex-basis: 100%; }
+.inline-form textarea { font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); resize: vertical; }
+.inline-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.inline-form label.checkbox input { min-width: 0; }
+.results { flex-basis: 100%; list-style: none; margin: 0; padding: 0; font-size: 0.85rem; }
+.results li { padding: 2px 0; }
+.results li.ok { color: var(--ok-text); }
+.results li.failed { color: var(--error-text); }
+
+/* Dashboard: per-mailbox forms */
 .inline-form { display: flex; align-items: flex-end; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .inline-form[hidden] { display: none; }
 .inline-form .hint { flex-basis: 100%; margin-top: 0; }
@@ -290,7 +310,7 @@ a.email-subject:hover { color: var(--accent); }
 .email .message { margin: 10px 0 0; }
 .email-actions { margin-top: 12px; display: flex; justify-content: flex-end; }
 
-.badge.cat-invoice, .badge.status-action_needed { color: var(--accent); }
+.badge.cat-invoice, .badge.cat-remittance, .badge.status-action_needed { color: var(--accent); }
 .badge.status-done { background: var(--ok-bg); color: var(--ok-text); border-color: transparent; }
 .badge.status-error { background: var(--error-bg); color: var(--error-text); border-color: transparent; }
 .badge.status-no_action, .badge.status-processing { color: var(--muted); }
