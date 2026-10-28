@@ -12,6 +12,9 @@
 //   POST {action: "update_connection", connection_id, client_secret}                 -> { connection } (new secret)
 //   POST {action: "add_mailboxes", connection_id, addresses, mailbox_type, smart_ap_address?, forward_categories?}
 //                                         -> { results: [{address, ok, error?}] } each checked for inbox access
+//   POST {action: "find_shared_mailboxes", connection_id, person}
+//                                         -> { mailboxes: [{address, name}], checked, total } shared mailboxes the
+//                                            person has Full Access to (Exchange admin API, see microsoft.ts)
 //   DELETE ?connection_id=<id>            -> remove the connection, its mailboxes and their processed emails
 //   PATCH {id, mailbox_type?, forward_categories?, smart_ap_address?}
 //                                         -> per-mailbox settings: AP or AR, which categories are forwarded, and the
@@ -31,7 +34,9 @@ import { fail, logApi } from "../_shared/log.ts";
 import { GOOGLE_AUTH_URL, GOOGLE_SCOPES, GOOGLE_TOKEN_URL } from "../_shared/google.ts";
 import { type Provider, PROVIDER_LABELS, PROVIDERS } from "../_shared/mail.ts";
 import { CATEGORIES, DEFAULT_FORWARD, MAILBOX_TYPES, type MailboxType } from "../_shared/classify.ts";
-import { type AppCredentials, appToken, connectionCredentials, mailboxPath, MS_SCOPES, MS_SHARED_SCOPES, msBase } from "../_shared/microsoft.ts";
+import {
+  type AppCredentials, appToken, connectionCredentials, mailboxPath, MS_SCOPES, MS_SHARED_SCOPES, msBase, sharedMailboxesFor,
+} from "../_shared/microsoft.ts";
 import {
   FREQUENCIES, type Frequency, INTERVAL_UNITS, type IntervalUnit, isValidTimeZone, localDate, MIN_INTERVAL_MINUTES, nextRun,
 } from "../_shared/schedule.ts";
@@ -89,6 +94,7 @@ Deno.serve(async (req) => {
       if (body.action === "add_connection") return await addConnection(user.id, body);
       if (body.action === "update_connection") return await updateConnection(user.id, sb, body);
       if (body.action === "add_mailboxes") return await addMailboxes(user.id, sb, body);
+      if (body.action === "find_shared_mailboxes") return await findSharedMailboxes(user.id, sb, body);
       if (body.action !== "connect") return json({ error: "Unknown action" }, 400);
       const provider: Provider = body.provider ?? "microsoft";
       if (!PROVIDERS.includes(provider)) return json({ error: "provider must be microsoft or google" }, 400);
@@ -394,6 +400,20 @@ async function updateConnection(userId: string, sb: SupabaseClient, body: Record
   if (secretError) return await fail("mailboxes/update_connection", `Could not store the API keys: ${secretError.message}`, 500, { userId });
   await db.from("ms_connections").update({ credentials_secret_id: secretId, updated_at: new Date().toISOString() }).eq("id", conn.id);
   return json({ connection: { id: conn.id } });
+}
+
+// Lists the shared mailboxes in the connection's tenant that `person` has Full Access to, for the UI to add in bulk.
+async function findSharedMailboxes(userId: string, sb: SupabaseClient, body: Record<string, unknown>): Promise<Response> {
+  const { data: conn, error } = await sb.from("ms_connections").select("id").eq("id", body.connection_id).maybeSingle();
+  if (error) return await fail("mailboxes/find_shared", error.message, 500, { userId });
+  if (!conn) return json({ error: "Connection not found" }, 404);
+  const person = String(body.person ?? "").trim().toLowerCase();
+  if (!EMAIL.test(person)) return json({ error: "Enter the person's email address" }, 400);
+  try {
+    return json(await sharedMailboxesFor(await connectionCredentials(adminClient(), conn.id), person));
+  } catch (err) {
+    return await fail("mailboxes/find_shared", err instanceof Error ? err.message : String(err), 400, { userId, context: { connection: conn.id, person } });
+  }
 }
 
 // Adds shared mailboxes under a connection, checking each can be read. `addresses` is an array or text with one

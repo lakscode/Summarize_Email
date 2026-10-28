@@ -82,6 +82,14 @@ Behalf rights on it); the summary email is sent from the user's own mailbox to t
    `Mail.Read` is consented (and warns if `Mail.Send` is missing); the keys are stored in Vault and never returned.
 6. **Add mailboxes**: paste the shared mailbox addresses (up to 100 at a time), choose AP or AR, the destination email
    and which categories to forward. Each address is checked for inbox access before it is added.
+   **Find shared mailboxes for a person** fills the list with every shared mailbox that person has Full Access to. Graph
+   can't read mailbox permissions, so this uses the Exchange Online admin API, which needs two more grants on the app:
+   - API permissions > Add > APIs my organization uses > **Office 365 Exchange Online** > Application >
+     `Exchange.ManageAsApp`, then **Grant admin consent**.
+   - Entra ID > Roles and administrators > **Global Reader** (read-only) or **Exchange Recipient Administrator** >
+     Add assignment > the app.
+
+   It finds Full Access granted directly to the person, not through a group, and checks up to 500 shared mailboxes.
 7. When the client secret expires, use **Update secret** on the organization.
 
 Each mailbox has its own settings on the dashboard:

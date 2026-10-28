@@ -48,6 +48,13 @@
         </form>
         <form id="bulk-form" class="inline-form connect-form" hidden autocomplete="off">
           <h3 id="bulk-title">Add mailboxes</h3>
+          <div class="find-row">
+            <label>Find shared mailboxes for a person
+              <input type="email" id="find-person" placeholder="jane.doe@contoso.com" autocomplete="off" />
+            </label>
+            <button type="button" class="secondary" id="find-button">Find</button>
+            <span class="label" id="find-status"></span>
+          </div>
           <label class="wide">Shared mailbox addresses (one per line, or separated by commas)
             <textarea name="addresses" rows="5" placeholder="ap-east@contoso.com&#10;ap-west@contoso.com" required></textarea>
           </label>
@@ -62,7 +69,9 @@
           <button type="submit">Add mailboxes</button>
           <button type="button" class="secondary" data-cancel>Cancel</button>
           <p class="hint">Each address is checked before it is added. Type, destination and forwarded categories apply to every
-            mailbox in this batch and can be changed per mailbox afterwards.</p>
+            mailbox in this batch and can be changed per mailbox afterwards. <strong>Find</strong> lists the shared mailboxes the
+            person has Full Access to (granted directly, not through a group); it needs the Azure app to have
+            <code>Exchange.ManageAsApp</code> and the Global Reader role.</p>
           <ul class="results" id="bulk-results" hidden></ul>
         </form>
         <ul class="list" id="connection-list"></ul>
@@ -291,9 +300,45 @@
       bulkForm.dataset.connection = c.id;
       document.getElementById("bulk-title").textContent = `Add mailboxes to ${c.name}`;
       bulkResults.hidden = true;
+      findStatus.textContent = "";
       renderForwardChoices(bulkForm.querySelector("[data-forward]"), bulkForm.elements.mailbox_type.value);
       showForm(bulkForm);
     }
+
+    // Fills the address box with the shared mailboxes a person has Full Access to (Exchange lookup, can take a while).
+    const findButton = document.getElementById("find-button");
+    const findPerson = document.getElementById("find-person");
+    const findStatus = document.getElementById("find-status");
+
+    async function findShared() {
+      const person = findPerson.value.trim();
+      if (!findPerson.reportValidity() || !person) return findPerson.focus();
+      findButton.disabled = true;
+      findStatus.textContent = "Searching shared mailboxes…";
+      const { data, error } = await callApi("mailboxes", {
+        body: { action: "find_shared_mailboxes", connection_id: bulkForm.dataset.connection, person },
+      });
+      findButton.disabled = false;
+      if (error) {
+        findStatus.textContent = "";
+        return showMessage(error, "error");
+      }
+      const box = bulkForm.elements.addresses;
+      const existing = box.value.split(/[\s,;]+/).filter(Boolean);
+      box.value = [...new Set([...existing, ...data.mailboxes.map((m) => m.address)])].join("\n");
+      const partial = data.checked < data.total ? ` (checked the first ${data.checked} of ${data.total})` : "";
+      findStatus.textContent = data.mailboxes.length
+        ? `Found ${data.mailboxes.length} shared mailbox${data.mailboxes.length === 1 ? "" : "es"} for ${person}${partial}. Review the list, then add.`
+        : `${person} has no direct Full Access to any of ${data.total} shared mailboxes${partial}.`;
+    }
+
+    findButton.addEventListener("click", findShared);
+    // Enter in the person field searches instead of submitting the add form.
+    findPerson.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      findShared();
+    });
 
     bulkForm.elements.mailbox_type.addEventListener("change", () =>
       renderForwardChoices(bulkForm.querySelector("[data-forward]"), bulkForm.elements.mailbox_type.value));

@@ -242,6 +242,8 @@ select {
 .list-filter .label { color: var(--muted); font-size: 0.85rem; }
 .settings-form .days { padding: 4px 12px 6px; }
 .inline-form label.wide { flex-basis: 100%; }
+.find-row { flex-basis: 100%; display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; padding-bottom: 10px; border-bottom: 1px dashed var(--border); }
+.find-row .label { color: var(--muted); font-size: 0.85rem; align-self: center; }
 .inline-form textarea { font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); resize: vertical; }
 .inline-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .inline-form label.checkbox input { min-width: 0; }

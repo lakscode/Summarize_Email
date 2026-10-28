@@ -69,15 +69,17 @@ async function graphToken(db: SupabaseClient, mailbox: MailboxRow): Promise<stri
   return tok.access_token as string;
 }
 
-// Client-credentials access token for an API-key mailbox.
-export async function appToken(c: AppCredentials): Promise<string> {
+const EXCHANGE = "https://outlook.office365.com";
+
+// Client-credentials access token for an API-key mailbox (Graph), or for the Exchange Online admin API.
+export async function appToken(c: AppCredentials, resource = "https://graph.microsoft.com"): Promise<string> {
   const res = await fetch(`https://login.microsoftonline.com/${encodeURIComponent(c.tenant_id)}/oauth2/v2.0/token`, {
     method: "POST",
     body: new URLSearchParams({
       client_id: c.client_id,
       client_secret: c.client_secret,
       grant_type: "client_credentials",
-      scope: "https://graph.microsoft.com/.default",
+      scope: `${resource}/.default`,
     }),
   });
   if (!res.ok) {
@@ -85,6 +87,67 @@ export async function appToken(c: AppCredentials): Promise<string> {
     throw new Error(`Microsoft rejected the API keys (${res.status}${detail.error ? `: ${detail.error}` : ""}); check the tenant ID, client ID and secret.`);
   }
   return (await res.json()).access_token as string;
+}
+
+// --- Exchange Online admin API: which shared mailboxes a person has Full Access to ------------------------------
+// Graph can't read mailbox permissions, so this runs Exchange cmdlets through the admin API the
+// ExchangeOnlineManagement module uses. The Azure app needs the application permission Exchange.ManageAsApp
+// (Office 365 Exchange Online) with admin consent, and an Entra role that can read recipients and their
+// permissions (Global Reader, or Exchange Recipient Administrator).
+
+// At most this many shared mailboxes are checked per search; each needs one permission lookup.
+const MAX_SHARED_TO_CHECK = 500;
+const PERMISSION_CONCURRENCY = 8;
+
+export interface SharedMailbox { address: string; name: string }
+
+async function exoCommand<T>(token: string, tenantId: string, cmdlet: string, parameters: Record<string, unknown>): Promise<T[]> {
+  const body = JSON.stringify({ CmdletInput: { CmdletName: cmdlet, Parameters: parameters } });
+  const out: T[] = [];
+  let url: string | undefined = `${EXCHANGE}/adminapi/beta/${encodeURIComponent(tenantId)}/InvokeCommand`;
+  for (let page = 0; url && page < 50; page++) {
+    const res: Response = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body,
+    });
+    if (!res.ok) {
+      const text = (await res.text()).slice(0, 500);
+      if (res.status === 401 || res.status === 403) {
+        throw new Error("The Azure app can't run Exchange commands. Give it the Exchange.ManageAsApp application permission " +
+          "(Office 365 Exchange Online, admin-consented) and the Global Reader or Exchange Recipient Administrator role.");
+      }
+      throw new Error(`Exchange ${cmdlet} failed (${res.status}): ${text}`);
+    }
+    const data: { value?: T[]; "@odata.nextLink"?: string } = await res.json();
+    out.push(...(data.value ?? []));
+    url = data["@odata.nextLink"];
+  }
+  return out;
+}
+
+// Shared mailboxes in the tenant on which `person` has a direct (not group-inherited), allowed FullAccess entry.
+export async function sharedMailboxesFor(c: AppCredentials, person: string): Promise<{ mailboxes: SharedMailbox[]; checked: number; total: number }> {
+  const token = await appToken(c, EXCHANGE);
+  const shared = await exoCommand<{ PrimarySmtpAddress?: string; DisplayName?: string }>(token, c.tenant_id, "Get-Mailbox", {
+    RecipientTypeDetails: "SharedMailbox",
+    ResultSize: "Unlimited",
+  });
+  const candidates = shared.filter((m) => m.PrimarySmtpAddress).slice(0, MAX_SHARED_TO_CHECK);
+
+  const found: SharedMailbox[] = [];
+  const queue = [...candidates];
+  await Promise.all(Array.from({ length: Math.min(PERMISSION_CONCURRENCY, queue.length) }, async () => {
+    for (let m = queue.shift(); m; m = queue.shift()) {
+      const entries = await exoCommand<{ AccessRights?: string[] | string; Deny?: boolean | string }>(
+        token, c.tenant_id, "Get-MailboxPermission", { Identity: m.PrimarySmtpAddress, User: person },
+      ).catch(() => []); // a mailbox that can't be read is skipped rather than failing the whole search
+      const full = entries.some((e) => String(e.AccessRights ?? "").includes("FullAccess") && String(e.Deny) !== "true");
+      if (full) found.push({ address: m.PrimarySmtpAddress!.toLowerCase(), name: m.DisplayName ?? "" });
+    }
+  }));
+  found.sort((a, b) => a.address.localeCompare(b.address));
+  return { mailboxes: found, checked: candidates.length, total: shared.length };
 }
 
 async function graph<T>(token: string, path: string, init: RequestInit = {}, extraHeaders: Record<string, string> = {}): Promise<T> {
