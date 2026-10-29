@@ -1,5 +1,6 @@
 // Summary email sent to the mailbox owner after a processing run, rendered with the shared email template.
 // Subjects and summaries come from email content, so everything inserted here is HTML-escaped.
+import { APP_NAME } from "./brand.ts";
 import { escapeHtml as esc, renderEmail } from "./email-template.ts";
 
 export interface ReportItem {
@@ -113,7 +114,7 @@ export function buildReport(mailbox: string, items: ReportItem[], remaining: num
       `${items.length} email${s(items.length)} processed.`,
     button: appUrl ? { url: `${appUrl}/inbox`, label: "Open the Inbox" } : null,
     content,
-    footer: `Sent by SummarizeMail to ${esc(mailbox)}. Classifications are made by AI; check anything unexpected before acting on it.`,
+    footer: `Sent by ${esc(APP_NAME)} to ${esc(mailbox)}. Classifications are made by AI; check anything unexpected before acting on it.`,
   });
   return { subject, html };
 }

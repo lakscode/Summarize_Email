@@ -1,7 +1,9 @@
-# SummarizeMail
+# Smart AP
 
 UI on **Vercel** (static pages), API on **Supabase** (Auth, Postgres, Edge Functions).
 Users sign up / log in with email + password and land on a dashboard that calls the `profile` Edge Function.
+
+App and company names live in `brand.json` (used by the pages via `npm run config` and by the Edge Functions).
 
 ```
 vercel.json                           Vercel build: generates web/config.js, serves web/ with clean URLs

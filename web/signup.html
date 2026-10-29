@@ -3,19 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sign up · SummarizeMail</title>
+  <title>Sign up</title>
   <link rel="stylesheet" href="assets/app.css" />
   <link rel="icon" type="image/png" href="images/favicon.png" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <script src="config.js"></script>
+  <script src="assets/brand.js"></script>
   <script src="assets/common.js"></script>
 </head>
 <body>
   <div class="auth">
     <div class="card">
-      <img class="auth-logo" src="images/logo-256.png" alt="SummarizeMail" width="64" height="64" />
+      <img class="auth-logo" src="images/logo-256.png" alt="" data-brand-alt="appName" width="64" height="64" />
       <h1>Create account</h1>
-      <p class="sub">Start using SummarizeMail</p>
+      <p class="sub">Start using <span data-brand="appName"></span></p>
       <div id="message" class="message" hidden></div>
       <form id="signup-form">
         <label>Full name

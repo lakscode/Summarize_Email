@@ -4,6 +4,7 @@
 // Each message is processed once per mailbox (unique mailbox_id + message_id). With reprocess, emails already
 // classified are classified again unless they were forwarded or marked done, so nothing is forwarded twice.
 import { encodeBase64 } from "./base64.ts";
+import { APP_NAME } from "./brand.ts";
 import PostalMime from "npm:postal-mime@3.0.1";
 import { type AttachmentFile, type AttachmentText, classifyEmail, type Classification, type MailboxType } from "./classify.ts";
 import { logApi, logStep } from "./log.ts";
@@ -311,7 +312,7 @@ async function takeAction(run: Run, mailbox: Mailbox, client: MailClient, msg: M
 
   try {
     const details = [c.vendor, c.invoice_number && `#${c.invoice_number}`, c.amount, c.due_date && `due ${c.due_date}`].filter(Boolean).join(", ");
-    await client.forwardMessage(msg.id, mailbox.smart_ap_address, `Forwarded automatically by SummarizeMail: ${label}${details ? ` (${details})` : ""}.`);
+    await client.forwardMessage(msg.id, mailbox.smart_ap_address, `Forwarded automatically by ${APP_NAME}: ${label}${details ? ` (${details})` : ""}.`);
     return { status: "done", action: `Forwarded to ${mailbox.smart_ap_address}` };
   } catch (err) {
     await logApi("inbox/forward", err, { userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, subject: msg.subject } });

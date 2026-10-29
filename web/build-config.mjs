@@ -1,5 +1,5 @@
-// Generates web/config.js from web/.env so the static pages can read their settings.
-import { existsSync, writeFileSync } from "node:fs";
+// Generates web/config.js from web/.env and brand.json so the static pages can read their settings.
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const envFile = new URL(".env", import.meta.url);
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -18,8 +18,10 @@ if (missing.length) {
   console.warn(`web/.env: fill in ${missing.join(", ")}`);
 }
 
+const brand = JSON.parse(readFileSync(new URL("../brand.json", import.meta.url), "utf8"));
+
 writeFileSync(
   new URL("config.js", import.meta.url),
-  `// Generated from web/.env by web/build-config.mjs - do not edit.\nwindow.APP_CONFIG = ${JSON.stringify(config, null, 2)};\n`,
+  `// Generated from web/.env and brand.json by web/build-config.mjs - do not edit.\nwindow.APP_CONFIG = ${JSON.stringify({ ...config, BRAND: brand }, null, 2)};\n`,
 );
 console.log("Wrote web/config.js");

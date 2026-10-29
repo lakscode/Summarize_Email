@@ -9,6 +9,9 @@
 //   {{button_url}}    / {{button_label}}  call-to-action button; the whole <!--button--> block is removed when empty
 //   {{content}}       main body (HTML)
 //   {{footer}}        small print at the bottom
+//   {{app_name}} / {{app_tagline}}  brand bar text, from brand.json
+import { APP_NAME, APP_TAGLINE } from "./brand.ts";
+
 export const EMAIL_TEMPLATE = `<!doctype html>
 <html lang="en">
 <head>
@@ -26,8 +29,8 @@ export const EMAIL_TEMPLATE = `<!doctype html>
           <!-- Brand bar -->
           <tr>
             <td style="background:#3b5bdb;background-image:linear-gradient(90deg,#3b5bdb,#6c8cff);border-radius:12px 12px 0 0;padding:18px 28px;">
-              <span style="font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:700;color:#ffffff;letter-spacing:0.2px;">&#9993; SummarizeMail</span>
-              <span style="font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#dfe6ff;padding-left:10px;">AP inbox assistant</span>
+              <span style="font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:700;color:#ffffff;letter-spacing:0.2px;">&#9993; {{app_name}}</span>
+              <span style="font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#dfe6ff;padding-left:10px;">{{app_tagline}}</span>
             </td>
           </tr>
           <!-- Card -->
@@ -86,6 +89,8 @@ export function renderEmail(p: EmailParts): string {
     footer: p.footer,
     button_url: escapeHtml(p.button?.url),
     button_label: escapeHtml(p.button?.label),
+    app_name: escapeHtml(APP_NAME),
+    app_tagline: escapeHtml(APP_TAGLINE),
   };
   // Single pass, so placeholder-like text inside inserted values is never expanded again.
   return html.replace(/\{\{(\w+)\}\}/g, (match, key) => (key in values ? values[key] : match));

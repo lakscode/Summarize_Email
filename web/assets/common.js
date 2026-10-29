@@ -1,5 +1,5 @@
 // Shared Supabase client and auth helpers for every page.
-// Load order: supabase-js UMD, config.js, then this file.
+// Load order: supabase-js UMD, config.js, assets/brand.js, then this file.
 
 const { SUPABASE_URL, SUPABASE_ANON_KEY } = window.APP_CONFIG ?? {};
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -148,7 +148,7 @@ function renderSidebar(active, session) {
   const logo = document.createElement("img");
   logo.src = "images/logo-256.png";
   logo.alt = "";
-  brand.append(logo, "SummarizeMail");
+  brand.append(logo, BRAND.appName ?? "");
 
   const nav = document.createElement("nav");
   for (const item of NAV) {

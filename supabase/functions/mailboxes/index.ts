@@ -29,6 +29,7 @@
 // verify_jwt is off for this function (the OAuth callback carries no Supabase JWT); every other
 // route checks the caller itself. Failures are written to app_logs (see _shared/log.ts).
 import { decodeBase64Url, encodeBase64Url } from "../_shared/base64.ts";
+import { APP_NAME } from "../_shared/brand.ts";
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
 import { GOOGLE_AUTH_URL, GOOGLE_SCOPES, GOOGLE_TOKEN_URL } from "../_shared/google.ts";
@@ -594,7 +595,7 @@ const OAUTH: Record<Provider, { settings: string[]; authorizeUrl(token: string, 
       // Google lets people untick individual permissions on the consent screen.
       const granted = String(tok.scope ?? "").split(" ");
       if (!GOOGLE_SCOPES.split(" ").every((sc) => granted.includes(sc))) {
-        throw new ConnectError("Allow SummarizeMail to read and send Gmail on Google's consent screen, then try again.",
+        throw new ConnectError(`Allow ${APP_NAME} to read and send Gmail on Google's consent screen, then try again.`,
           "Google consent missing Gmail scopes", { granted });
       }
 
