@@ -16,9 +16,18 @@
 //                                         -> { mailboxes: [{address, name}], checked, total } shared mailboxes the
 //                                            person has Full Access to (Exchange admin API, see microsoft.ts)
 //   DELETE ?connection_id=<id>            -> remove the connection, its mailboxes and their processed emails
-//   PATCH {id, mailbox_type?, forward_categories?, smart_ap_address?}
-//                                         -> per-mailbox settings: AP or AR, which categories are forwarded, and the
-//                                            destination address they go to ("" clears it)
+//   Shared mailboxes of a signed-in Microsoft account (after "Add Azure mailbox", the callback returns mailbox_id):
+//   POST {action: "discover_shared", mailbox_id}
+//                                         -> { mailboxes: [{address, name}], warning? } shared mailboxes that account
+//                                            has Full Access to (Autodiscover, see microsoft.ts), not yet added
+//   POST {action: "add_shared", mailbox_id, addresses}
+//                                         -> { results: [{address, ok, error?}] } each added as a shared mailbox read
+//                                            through that account (its token, same access period), after checking
+//                                            the account can open it
+//   PATCH {id, mailbox_type?, forward_categories?, smart_ap_address?, send_summary?}
+//                                         -> per-mailbox settings: AP or AR, which categories are forwarded, the
+//                                            destination address they go to ("" clears it), and whether the run
+//                                            summary is emailed to the mailbox
 //   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
 //                                         -> scheduled processing (see _shared/schedule.ts)
 //   DELETE ?id=<mailbox id>               -> disconnect (Vault secret removed by trigger)
@@ -33,10 +42,11 @@ import { APP_NAME } from "../_shared/brand.ts";
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
 import { GOOGLE_AUTH_URL, GOOGLE_SCOPES, GOOGLE_TOKEN_URL } from "../_shared/google.ts";
-import { type Provider, PROVIDER_LABELS, PROVIDERS } from "../_shared/mail.ts";
+import { type MailboxRow, type Provider, PROVIDER_LABELS, PROVIDERS, readRefreshToken } from "../_shared/mail.ts";
 import { CATEGORIES, DEFAULT_FORWARD, MAILBOX_TYPES, type MailboxType } from "../_shared/classify.ts";
 import {
-  type AppCredentials, appToken, connectionCredentials, mailboxPath, MS_SCOPES, MS_SHARED_SCOPES, msBase, sharedMailboxesFor,
+  alternateMailboxes, type AppCredentials, appToken, connectionCredentials, delegatedToken, mailboxPath, MS_SHARED_SCOPES, msBase,
+  openInbox, sharedMailboxesFor,
 } from "../_shared/microsoft.ts";
 import {
   FREQUENCIES, type Frequency, INTERVAL_UNITS, type IntervalUnit, isValidTimeZone, localDate, MIN_INTERVAL_MINUTES, nextRun,
@@ -81,7 +91,7 @@ Deno.serve(async (req) => {
 
       const { data, error } = await sb
         .from("mailboxes")
-        .select("id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, last_processed_at, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
+        .select("id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, send_summary, last_processed_at, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
       const { data: connections, error: connError } = await sb.from("ms_connections")
@@ -96,6 +106,8 @@ Deno.serve(async (req) => {
       if (body.action === "update_connection") return await updateConnection(user.id, sb, body);
       if (body.action === "add_mailboxes") return await addMailboxes(user.id, sb, body);
       if (body.action === "find_shared_mailboxes") return await findSharedMailboxes(user.id, sb, body);
+      if (body.action === "discover_shared") return await discoverShared(user.id, sb, body);
+      if (body.action === "add_shared") return await addShared(user.id, body);
       if (body.action !== "connect") return json({ error: "Unknown action" }, 400);
       const provider: Provider = body.provider ?? "microsoft";
       if (!PROVIDERS.includes(provider)) return json({ error: "provider must be microsoft or google" }, 400);
@@ -221,11 +233,13 @@ async function oauthCallback(url: URL): Promise<Response> {
   try {
     const { refreshToken, email, displayName, delegate } = await OAUTH[state.provider].exchange(url.searchParams.get("code")!, state);
 
-    await saveMailbox(state.uid, {
+    const id = await saveMailbox(state.uid, {
       provider: state.provider, auth_type: "oauth", connection_id: null, email_address: email, delegate_address: delegate,
       display_name: displayName,
-    }, refreshToken, state.days);
-    return back({ connected: email, days: String(state.days) });
+    }, refreshToken, new Date(Date.now() + state.days * 86_400_000).toISOString());
+    // An own Microsoft mailbox: the dashboard then offers the shared mailboxes this account can open.
+    const own = state.provider === "microsoft" && !delegate ? { mailbox_id: id } : {};
+    return back({ connected: email, days: String(state.days), ...own });
   } catch (err) {
     if (err instanceof ConnectError) return await failed(err.message, err.detail, err.context);
     const message = err instanceof Error ? err.message : String(err);
@@ -233,7 +247,7 @@ async function oauthCallback(url: URL): Promise<Response> {
   }
 }
 
-// Creates or updates the user's signed-in mailbox row and stores its refresh token in Vault for `days` days.
+// Creates or updates the user's signed-in mailbox row and stores its refresh token in Vault until `expiresAt`.
 async function saveMailbox(
   uid: string,
   fields: {
@@ -241,7 +255,7 @@ async function saveMailbox(
     display_name: string | null;
   },
   secret: string,
-  days: number,
+  expiresAt: string,
 ): Promise<string> {
   const db = adminClient();
   const { data: existing, error: findError } = await db.from("mailboxes").select("id, credentials_secret_id")
@@ -266,7 +280,7 @@ async function saveMailbox(
     ...fields,
     credentials_secret_id: secretId,
     active: true,
-    access_expires_at: new Date(Date.now() + days * 86_400_000).toISOString(),
+    access_expires_at: expiresAt,
     updated_at: new Date().toISOString(),
   }).eq("id", id);
   if (error) throw new Error(error.message);
@@ -286,6 +300,10 @@ async function saveSettings(userId: string, sb: SupabaseClient, body: Record<str
     if (address && !EMAIL.test(address)) return json({ error: "Destination must be a valid email address" }, 400);
     update.smart_ap_address = address || null;
   }
+  if (body.send_summary !== undefined) {
+    if (typeof body.send_summary !== "boolean") return json({ error: "send_summary must be true or false" }, 400);
+    update.send_summary = body.send_summary;
+  }
   let type = current.mailbox_type as MailboxType;
   if (body.mailbox_type !== undefined) {
     if (!MAILBOX_TYPES.includes(body.mailbox_type as MailboxType)) return json({ error: "mailbox_type must be ap or ar" }, 400);
@@ -300,7 +318,7 @@ async function saveSettings(userId: string, sb: SupabaseClient, body: Record<str
   }
 
   const { data, error } = await sb.from("mailboxes").update(update).eq("id", body.id)
-    .select("id, mailbox_type, forward_categories, smart_ap_address").maybeSingle();
+    .select("id, mailbox_type, forward_categories, smart_ap_address, send_summary").maybeSingle();
   if (error) return await fail("mailboxes/update", error.message, 500, { userId, context: { id: body.id } });
   if (!data) return json({ error: "Mailbox not found" }, 404);
   return json({ mailbox: data });
@@ -487,6 +505,101 @@ async function addMailboxes(userId: string, sb: SupabaseClient, body: Record<str
   return json({ results });
 }
 
+// The caller's own signed-in Microsoft mailbox `id`, whose token reads the shared mailboxes; a Response on error.
+async function signedInMailbox(userId: string, id: unknown): Promise<(MailboxRow & { access_expires_at: string | null }) | Response> {
+  const { data, error } = await adminClient().from("mailboxes")
+    .select("id, provider, auth_type, email_address, delegate_address, credentials_secret_id, connection_id, active, access_expires_at")
+    .eq("id", id).eq("owner_user_id", userId).maybeSingle();
+  if (error) return await fail("mailboxes/shared", error.message, 500, { userId, context: { id } });
+  if (!data) return json({ error: "Mailbox not found" }, 404);
+  if (data.provider !== "microsoft" || data.auth_type !== "oauth" || data.delegate_address) {
+    return json({ error: "Shared mailboxes are found through an Azure mailbox you signed in to yourself" }, 400);
+  }
+  if (!data.active || !data.credentials_secret_id) return json({ error: `Access to ${data.email_address} has expired. Reconnect it first.` }, 400);
+  return data;
+}
+
+// Shared mailboxes the account behind `mailbox_id` has Full Access to, without those the user already has.
+// Not finding any is not an error: Autodiscover may be unavailable, and addresses can still be added by hand.
+async function discoverShared(userId: string, sb: SupabaseClient, body: Record<string, unknown>): Promise<Response> {
+  const source = await signedInMailbox(userId, body.mailbox_id);
+  if (source instanceof Response) return source;
+  let found;
+  try {
+    found = await alternateMailboxes(adminClient(), source);
+  } catch (err) {
+    await logApi("mailboxes/discover_shared", err, { userId, level: "warn", context: { mailbox: source.email_address } });
+    return json({
+      mailboxes: [],
+      warning: `Couldn't list the shared mailboxes of ${source.email_address} automatically (the Azure app may need the ` +
+        "EWS.AccessAsUser.All permission). You can still add them by address.",
+    });
+  }
+  const { data: existing, error } = await sb.from("mailboxes").select("email_address");
+  if (error) return await fail("mailboxes/discover_shared", error.message, 500, { userId });
+  const have = new Set((existing ?? []).map((m) => m.email_address));
+  return json({ mailboxes: found.filter((m) => !have.has(m.address)) });
+}
+
+// Adds shared mailboxes read through the signed-in account behind `mailbox_id`: each gets its own copy of that
+// account's refresh token and the same access period, after checking the account can open its inbox.
+async function addShared(userId: string, body: Record<string, unknown>): Promise<Response> {
+  const source = await signedInMailbox(userId, body.mailbox_id);
+  if (source instanceof Response) return source;
+  const raw = Array.isArray(body.addresses) ? body.addresses.join("\n") : String(body.addresses ?? "");
+  const addresses = [...new Set(raw.split(/[\s,;]+/).map((a) => a.trim().toLowerCase()).filter(Boolean))];
+  if (!addresses.length) return json({ error: "Select at least one shared mailbox" }, 400);
+  if (addresses.length > MAX_BULK) return json({ error: `Add at most ${MAX_BULK} mailboxes at a time` }, 400);
+
+  const db = adminClient();
+  let token: string, refreshToken: string;
+  try {
+    token = await delegatedToken(db, source);
+    refreshToken = await readRefreshToken(db, source);
+  } catch (err) {
+    return await fail("mailboxes/add_shared", err instanceof Error ? err.message : String(err), 400, { userId, context: { mailbox: source.email_address } });
+  }
+  const expiresAt = source.access_expires_at ?? new Date(Date.now() + DEFAULT_ACCESS_DAYS * 86_400_000).toISOString();
+
+  const addOne = async (address: string): Promise<{ address: string; ok: boolean; error?: string }> => {
+    if (!EMAIL.test(address)) return { address, ok: false, error: "Not a valid email address" };
+    if (address === source.email_address) return { address, ok: false, error: "This is the signed-in mailbox itself" };
+    const { data: existing, error: findError } = await db.from("mailboxes").select("connection_id")
+      .eq("owner_user_id", userId).eq("email_address", address).maybeSingle();
+    if (findError) return { address, ok: false, error: findError.message };
+    if (existing?.connection_id) return { address, ok: false, error: "Already added through an organization" };
+
+    const res = await openInbox(token, address);
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 1000);
+      await logApi("mailboxes/add_shared", `Graph ${res.status} for ${address}`, { userId, level: "warn", context: { via: source.email_address, response: detail } });
+      return {
+        address, ok: false,
+        error: res.status === 404 || res.status === 403 || res.status === 401
+          ? `${source.email_address} can't open this mailbox (needs Full Access; reconnect ${source.email_address} if it was connected before shared mailboxes were supported)`
+          : `Graph error ${res.status}`,
+      };
+    }
+    try {
+      await saveMailbox(userId, {
+        provider: "microsoft", auth_type: "oauth", connection_id: null, email_address: address,
+        delegate_address: source.email_address, display_name: null,
+      }, refreshToken, expiresAt);
+      return { address, ok: true };
+    } catch (err) {
+      return { address, ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
+  const results: { address: string; ok: boolean; error?: string }[] = [];
+  const queue = [...addresses];
+  await Promise.all(Array.from({ length: Math.min(CHECK_CONCURRENCY, queue.length) }, async () => {
+    for (let a = queue.shift(); a; a = queue.shift()) results.push(await addOne(a));
+  }));
+  results.sort((a, b) => addresses.indexOf(a.address) - addresses.indexOf(b.address));
+  return json({ results });
+}
+
 // --- per-provider OAuth: where sign-in starts, and how the callback's code becomes a refresh token ----------
 
 // email is the mailbox to read; delegate is the signed-in account when that is a shared mailbox.
@@ -507,7 +620,8 @@ const OAUTH: Record<Provider, { settings: string[]; authorizeUrl(token: string, 
       response_type: "code",
       redirect_uri: redirectUri(),
       response_mode: "query",
-      scope: s.shared ? MS_SHARED_SCOPES : MS_SCOPES,
+      // Shared scopes on every sign-in, so shared mailboxes found afterwards can be read with the same token.
+      scope: MS_SHARED_SCOPES,
       prompt: "select_account",
       state,
     }),
@@ -520,7 +634,7 @@ const OAUTH: Record<Provider, { settings: string[]; authorizeUrl(token: string, 
           grant_type: "authorization_code",
           code,
           redirect_uri: redirectUri(),
-          scope: s.shared ? MS_SHARED_SCOPES : MS_SCOPES,
+          scope: MS_SHARED_SCOPES,
         }),
       });
       if (!tokenRes.ok) {

@@ -45,7 +45,7 @@ export async function processMailbox(
   const db = adminClient();
   await db.rpc("expire_mailbox_access");
   const { data: mailbox, error } = await db.from("mailboxes")
-    .select("id, provider, auth_type, connection_id, email_address, delegate_address, credentials_secret_id, smart_ap_address, access_expires_at, mailbox_type, forward_categories")
+    .select("id, provider, auth_type, connection_id, email_address, delegate_address, credentials_secret_id, smart_ap_address, access_expires_at, mailbox_type, forward_categories, send_summary")
     .eq("id", mailboxId).eq("owner_user_id", userId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!mailbox) throw new Error("Mailbox not found");
@@ -93,7 +93,8 @@ export async function processMailbox(
 
   await db.from("mailboxes").update({ last_processed_at: new Date().toISOString() }).eq("id", mailbox.id);
   const remaining = fresh.length - batch.length;
-  const report = items.length ? await sendReport(run, mailbox, client, items, remaining, appUrl) : "skipped";
+  // Only when the mailbox's "Send summary email" setting is on, and there is something to report.
+  const report = !mailbox.send_summary ? "off" : items.length ? await sendReport(run, mailbox, client, items, remaining, appUrl) : "skipped";
   const result = {
     mailbox: mailbox.email_address,
     scanned: messages.length,
@@ -129,7 +130,7 @@ type Db = ReturnType<typeof adminClient>;
 interface Mailbox {
   id: string; provider: Provider; auth_type: "oauth" | "app"; connection_id: string | null; email_address: string;
   delegate_address: string | null; credentials_secret_id: string | null; smart_ap_address: string | null;
-  mailbox_type: MailboxType; forward_categories: string[];
+  mailbox_type: MailboxType; forward_categories: string[]; send_summary: boolean;
 }
 interface ExistingRow { id: string; message_id: string; status: string; action_taken: string | null }
 

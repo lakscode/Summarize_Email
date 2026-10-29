@@ -363,6 +363,7 @@
       if (data.remaining) text += ` ${data.remaining} more waiting. Run again to continue.`;
       if (data.report === "sent") text += ` Summary emailed to ${data.mailbox}.`;
       if (data.report === "failed") text += " The summary email could not be sent (see Logs).";
+      if (data.report === "off") text += " No summary email (turned off in this mailbox's settings).";
       showMessage(text, data.counts.error ? "error" : "ok");
       await loadEmails();
     });
