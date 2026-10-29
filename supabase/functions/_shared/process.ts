@@ -94,7 +94,7 @@ export async function processMailbox(
   await db.from("mailboxes").update({ last_processed_at: new Date().toISOString() }).eq("id", mailbox.id);
   const remaining = fresh.length - batch.length;
   // Only when the mailbox's "Send summary email" setting is on, it has a recipient, and there is something to report.
-  const to = summaryRecipient(mailbox);
+  const to = mailbox.send_summary ? await summaryRecipient(db, userId, mailbox) : null;
   const report = !mailbox.send_summary ? "off" : !to ? "no_recipient"
     : items.length ? await sendReport(run, mailbox, client, to, items, remaining, appUrl) : "skipped";
   const result = {
@@ -111,11 +111,14 @@ export async function processMailbox(
 }
 
 // Where the summary goes: the mailbox's summary address if set; otherwise an own mailbox gets it itself, and a shared
-// mailbox (read through another account or an organization connection) gets none.
-function summaryRecipient(mailbox: Mailbox): string | null {
+// mailbox (read through another account or an organization connection) goes to the owner's account email.
+async function summaryRecipient(db: Db, userId: string, mailbox: Mailbox): Promise<string | null> {
   if (mailbox.summary_address) return mailbox.summary_address;
   const shared = !!mailbox.delegate_address || mailbox.auth_type === "app";
-  return shared ? null : mailbox.email_address;
+  if (!shared) return mailbox.email_address;
+  const { data, error } = await db.auth.admin.getUserById(userId);
+  if (error) await logApi("process/report", error.message, { userId, level: "warn", context: { mailbox: mailbox.email_address } });
+  return data?.user?.email?.toLowerCase() || null;
 }
 
 // Emails the run summary to `to`. Needs Mail.Send, like forwarding. For a shared mailbox connected by sign-in it is

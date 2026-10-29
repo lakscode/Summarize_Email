@@ -528,7 +528,7 @@
         renderForwardChoices(forward, typeSelect.value, typeSelect.value === m.mailbox_type ? m.forward_categories : null));
 
       // Run summary emailed after each run; off means no summary email at all. When on, it goes to the summary address,
-      // or if that is blank to the mailbox itself; a shared mailbox gets none without an address.
+      // or if that is blank to the mailbox itself (a shared mailbox: the owner's account email).
       const summaryLabel = document.createElement("label");
       summaryLabel.className = "checkbox";
       const summary = document.createElement("input");
@@ -543,7 +543,7 @@
       const summaryTo = document.createElement("input");
       summaryTo.type = "email";
       summaryTo.name = "summary_address";
-      summaryTo.placeholder = shared ? "Required for a shared mailbox" : m.email_address;
+      summaryTo.placeholder = shared ? (appUser?.email || "Your account email") : m.email_address;
       summaryTo.value = m.summary_address || "";
       summaryToLabel.append(summaryTo);
       const showSummaryTo = () => (summaryToLabel.hidden = !summary.checked);
@@ -602,9 +602,6 @@
         showMessage(!cats ? `Saved. Nothing from ${m.email_address} is forwarded automatically.`
           : m.smart_ap_address ? `Saved. ${cats} from ${m.email_address} will be forwarded to ${m.smart_ap_address}.`
           : `Saved. Set a destination email to forward ${cats} from ${m.email_address}.`, "ok");
-        if (shared && m.send_summary && !m.summary_address) {
-          showMessage(`Saved. No summary email is sent for ${m.email_address} until you enter a Summary to address.`, "ok");
-        }
       });
       return form;
     }

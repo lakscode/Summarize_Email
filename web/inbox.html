@@ -364,7 +364,7 @@
       if (data.report === "sent") text += ` Summary emailed to ${data.mailbox}.`;
       if (data.report === "failed") text += " The summary email could not be sent (see Logs).";
       if (data.report === "off") text += " No summary email (turned off in this mailbox's settings).";
-      if (data.report === "no_recipient") text += " No summary email (no summary address set for this shared mailbox).";
+      if (data.report === "no_recipient") text += " No summary email (no summary address set, and your account has no email address).";
       showMessage(text, data.counts.error ? "error" : "ok");
       await loadEmails();
     });

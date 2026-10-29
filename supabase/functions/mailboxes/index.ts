@@ -28,7 +28,7 @@
 //                                         -> per-mailbox settings: AP or AR, which categories are forwarded, the
 //                                            destination address they go to ("" clears it), whether the run summary
 //                                            is emailed, and to which address ("" clears it: an own mailbox gets it
-//                                            itself, a shared mailbox gets none)
+//                                            itself, a shared mailbox sends it to the owner's account email)
 //   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
 //                                         -> scheduled processing (see _shared/schedule.ts)
 //   DELETE ?id=<mailbox id>               -> disconnect (Vault secret removed by trigger)
@@ -307,7 +307,7 @@ async function saveSettings(userId: string, sb: SupabaseClient, body: Record<str
     if (typeof body.send_summary !== "boolean") return json({ error: "send_summary must be true or false" }, 400);
     update.send_summary = body.send_summary;
   }
-  // Summary recipient; "" clears it (own mailbox: itself, shared mailbox: no summary).
+  // Summary recipient; "" clears it (own mailbox: itself, shared mailbox: the owner's account email).
   if (body.summary_address !== undefined) {
     const address = String(body.summary_address ?? "").trim().toLowerCase();
     if (address && !EMAIL.test(address)) return json({ error: "Summary email must be a valid email address" }, 400);
