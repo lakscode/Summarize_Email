@@ -111,8 +111,15 @@
         <button class="secondary" id="refresh">Refresh</button>
       </div>
 
-      <ul class="email-list" id="email-list"></ul>
-      <p class="empty" id="email-empty" hidden>Nothing here.</p>
+      <div class="panel log-panel">
+        <table class="logs emails">
+          <thead>
+            <tr><th>Status</th><th>Received</th><th>Email</th><th>Vendor / amount</th><th>Next step</th><th></th></tr>
+          </thead>
+          <tbody id="email-list"></tbody>
+        </table>
+        <p class="empty" id="email-empty" hidden>Nothing here.</p>
+      </div>
       </div>
       </div>
     </main>
@@ -322,7 +329,7 @@
       const { data, error } = await callApi(`inbox?${query}`, { method: "GET" });
       if (request !== emailsRequest) return;
       if (error) return showMessage(`Could not load emails: ${error}`, "error");
-      document.getElementById("email-list").replaceChildren(...data.emails.map(emailItem));
+      document.getElementById("email-list").replaceChildren(...data.emails.flatMap(emailRows));
       document.getElementById("email-empty").hidden = data.emails.length > 0;
     }
 
@@ -343,16 +350,21 @@
       error: "Error",
     };
 
-    // One row per email: action needed or not + one-line summary up front; extracted details below.
-    function emailItem(e) {
-      const li = el("li", `email status-row-${e.status}`);
+    // One table row per email (status, subject + summary, vendor, next step), plus a hidden row with the
+    // extracted details that the row's chevron opens.
+    function emailRows(e) {
+      const tr = el("tr", `email-row status-row-${e.status}`);
 
-      const head = el("div", "email-head");
+      const statusCell = el("td", "email-status");
       const badges = el("div", "badges");
       badges.append(el("span", `pill action-${e.status}`, ACTION_LABELS[e.status] || e.status));
       if (e.category) badges.append(el("span", `badge cat-${e.category}`, CATEGORY_LABELS[e.category] || e.category));
       if (e.confidence === "low") badges.append(el("span", "badge", "Low confidence"));
-      head.append(badges, el("span", "email-date", e.received_at ? new Date(e.received_at).toLocaleString() : ""));
+      statusCell.append(badges);
+
+      const date = e.received_at ? new Date(e.received_at) : null;
+      const dateCell = el("td", "email-date");
+      if (date) dateCell.append(el("div", null, date.toLocaleDateString()), el("div", null, date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })));
 
       const subject = e.web_link ? el("a", "email-subject") : el("div", "email-subject");
       subject.textContent = e.subject || "(no subject)";
@@ -361,30 +373,58 @@
         subject.target = "_blank";
         subject.rel = "noopener";
       }
-      const summary = el("p", "email-oneline", e.summary || (e.status === "processing" ? "Classifying…" : "No summary."));
-      li.append(head, subject, summary);
+      const summary = el("div", "email-oneline clamp", e.summary || (e.status === "processing" ? "Classifying…" : "No summary."));
+      summary.title = e.summary || "";
+      const emailCell = el("td", "email-main");
+      emailCell.append(subject, summary);
 
-      if (e.status === "action_needed" && e.next_step) {
-        const next = el("div", "next-step");
-        next.append(el("strong", null, "Next step: "), document.createTextNode(e.next_step));
-        li.append(next);
+      const vendorCell = el("td", "email-vendor");
+      if (e.vendor) vendorCell.append(el("div", null, e.vendor));
+      if (e.amount) vendorCell.append(el("div", "email-amount", e.amount));
+
+      const nextCell = el("td", "email-next");
+      if (e.error) nextCell.append(el("div", "clamp error-text", e.error));
+      else if (e.next_step) {
+        const next = el("div", "clamp", e.next_step);
+        next.title = e.next_step;
+        nextCell.append(next);
       }
-      if (e.error) li.append(el("div", "message error", e.error));
+
+      const actions = el("div", "email-actions");
+      const actionCell = el("td", "email-actions-cell");
+      actionCell.append(actions);
+      tr.append(statusCell, dateCell, emailCell, vendorCell, nextCell, actionCell);
 
       const facts = [
         ["From", e.from_name ? `${e.from_name} <${e.from_address}>` : e.from_address],
         ["Vendor", e.vendor], ["Invoice #", e.invoice_number], ["Amount", e.amount], ["Due", e.due_date],
         ["Attachments", e.attachment_names?.join(", ")],
+        ["Summary", e.summary],
+        ["Next step", e.next_step],
         ["Action taken", e.action_taken],
-        ["Next step", e.status !== "action_needed" ? e.next_step : null],
+        ["Error", e.error],
       ].filter(([, v]) => v);
+      const rows = [tr];
       if (facts.length) {
-        const details = el("details", "email-details");
-        details.append(el("summary", null, "Details"));
+        const detailRow = el("tr", "email-detail-row");
+        detailRow.hidden = true;
+        const cell = el("td");
+        cell.colSpan = 6;
         const dl = el("dl", "facts");
         for (const [k, v] of facts) dl.append(el("dt", null, k), el("dd", null, v));
-        details.append(dl);
-        li.append(details);
+        cell.append(dl);
+        detailRow.append(cell);
+        rows.push(detailRow);
+
+        const expand = el("button", "icon-button expand", "▸");
+        expand.title = "Details";
+        expand.setAttribute("aria-expanded", "false");
+        expand.addEventListener("click", () => {
+          detailRow.hidden = !detailRow.hidden;
+          expand.setAttribute("aria-expanded", String(!detailRow.hidden));
+          tr.classList.toggle("open", !detailRow.hidden);
+        });
+        actions.append(expand);
       }
 
       if (e.status === "action_needed" || e.status === "done") {
@@ -399,11 +439,9 @@
           }
           await loadEmails();
         });
-        const actions = el("div", "email-actions");
-        actions.append(toggle);
-        li.append(actions);
+        actions.prepend(toggle);
       }
-      return li;
+      return rows;
     }
 
     document.getElementById("process-form").addEventListener("submit", async (ev) => {

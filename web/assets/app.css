@@ -362,6 +362,66 @@ a.email-subject:hover { color: var(--accent); }
 .pill.action-no_action, .pill.action-processing { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
 .pill.action-error { background: var(--error-bg); color: var(--error-text); }
 .email.status-row-action_needed { border-left: 4px solid var(--accent); }
+
+/* Inbox table: one compact row per email, details in an expandable row below. */
+.log-panel:has(table.emails) { container-type: inline-size; }
+table.emails .email-status { width: 1%; }
+table.emails .badges { flex-direction: column; align-items: flex-start; gap: 4px; }
+table.emails .pill, table.emails .badge { white-space: nowrap; }
+table.emails .email-date { width: 1%; white-space: nowrap; }
+table.emails .email-main { width: 34%; }
+table.emails .email-subject { margin: 0; font-size: 0.92rem; }
+table.emails .email-oneline { margin-top: 2px; color: var(--muted); font-size: 0.85rem; }
+table.emails .email-vendor { width: 12%; word-break: break-word; }
+.email-amount { font-weight: 600; font-variant-numeric: tabular-nums; }
+table.emails .email-next { font-size: 0.85rem; }
+table.emails .email-actions-cell { width: 1%; }
+table.emails .email-actions { margin: 0; flex-wrap: nowrap; gap: 6px; align-items: center; }
+table.emails .email-actions button.secondary { padding: 6px 10px; font-size: 0.82rem; white-space: nowrap; }
+table.emails tr.status-row-action_needed td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+table.emails tr.email-row.open td { border-bottom: 0; }
+table.emails .email-detail-row td { background: var(--bg); }
+table.emails .email-detail-row .facts { margin: 0; }
+.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.error-text { color: var(--error-text); }
+.icon-button { padding: 4px 8px; background: transparent; color: var(--muted); border: 0; font-size: 0.9rem; line-height: 1; }
+.icon-button:hover { background: var(--bg); color: var(--text); }
+.icon-button.expand { transition: transform 0.15s; }
+.icon-button.expand[aria-expanded="true"] { transform: rotate(90deg); }
+
+/* Narrow panel: each email becomes a stacked block instead of a squeezed table row. */
+@container (max-width: 760px) {
+  table.emails, table.emails tbody { display: block; }
+  table.emails thead { display: none; }
+  table.emails .email-actions-cell:has(.email-actions:empty) { display: none; }
+  table.emails tr.email-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "status date" "main main" "vendor vendor" "next next" "actions actions";
+    gap: 6px 12px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  table.emails tr.email-row.open { border-bottom: 0; }
+  table.emails tr.email-row td { display: block; width: auto; padding: 0; border: 0; }
+  table.emails tr.status-row-action_needed { box-shadow: inset 3px 0 0 var(--accent); }
+  table.emails tr.status-row-action_needed td:first-child { box-shadow: none; }
+  table.emails .email-status { grid-area: status; }
+  table.emails .badges { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  table.emails .email-date { grid-area: date; text-align: right; }
+  table.emails .email-date div { display: inline; }
+  table.emails .email-date div + div::before { content: " · "; }
+  table.emails .email-main { grid-area: main; }
+  table.emails tr.email-row td.email-vendor { grid-area: vendor; display: flex; gap: 8px; }
+  table.emails .email-next { grid-area: next; }
+  table.emails tr.email-row td:empty { display: none; }
+  table.emails .email-next .clamp { padding: 6px 10px; border-radius: 6px; background: var(--bg); }
+  table.emails .email-actions-cell { grid-area: actions; }
+  table.emails .email-actions { justify-content: flex-end; }
+  table.emails .email-detail-row { display: block; }
+  table.emails .email-detail-row[hidden] { display: none; }
+  table.emails .email-detail-row td { display: block; padding: 10px 14px; }
+}
 .next-step { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--bg); }
 .action-taken { margin-top: 8px; color: var(--muted); font-size: 0.88rem; }
 .email .message { margin: 10px 0 0; }
