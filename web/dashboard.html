@@ -612,7 +612,7 @@
       const on = new Set(checked ?? defaults[type]);
       const legend = document.createElement("legend");
       legend.textContent = "Forward automatically";
-      fieldset.replaceChildren(legend, ...(categories[type] ?? []).filter((c) => c !== "other").map((c) => {
+      fieldset.replaceChildren(legend, ...(categories[type] ?? []).filter((c) => c !== "other" && c !== "not_relevant").map((c) => {
         const label = document.createElement("label");
         label.className = "checkbox";
         const input = document.createElement("input");

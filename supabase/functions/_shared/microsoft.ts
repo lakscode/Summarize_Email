@@ -46,6 +46,7 @@ export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): 
     // Delegated: always from the signed-in user's own mailbox, so a shared mailbox's summary needs no Send As rights.
     sendMail: (to, subject, html) => sendMail(token, app ? box : "/me", to, subject, html),
     forwardMessage: (messageId, to, comment) => forwardMessage(token, box, messageId, to, comment),
+    searchMail: (term) => searchMail(token, box, term),
   };
 }
 
@@ -242,6 +243,13 @@ async function listInbox(token: string, box: string, since: Date, top = 50): Pro
     Prefer: 'outlook.body-content-type="text"',
   });
   return data.value;
+}
+
+// Messages in any folder that mention `term`, at most 10.
+async function searchMail(token: string, box: string, term: string): Promise<string[]> {
+  const params = new URLSearchParams({ $search: `"${term.replace(/["\\]/g, "")}"`, $top: "10", $select: "id" });
+  const data = await graph<{ value: { id: string }[] }>(token, `${box}/messages?${params}`);
+  return data.value.map((m) => m.id);
 }
 
 interface GraphAttachment {

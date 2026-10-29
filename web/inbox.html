@@ -105,7 +105,6 @@
         <div class="tabs" role="tablist">
           <button class="tab active" data-status="action_needed">Action needed</button>
           <button class="tab" data-status="done">Done</button>
-          <button class="tab" data-status="no_action">No action</button>
           <button class="tab" data-status="error">Errors</button>
           <button class="tab" data-status="">All</button>
         </div>
@@ -129,12 +128,14 @@
       purchase_order: "Purchase order",
       customer_inquiry: "Customer inquiry",
       other: "Other",
+      not_relevant: "Not relevant",
     };
     const STATUS_LABELS = {
       processing: "Processing",
       action_needed: "Action needed",
       done: "Done",
       no_action: "No action",
+      ignored: "Not relevant",
       error: "Error",
     };
     let status = "action_needed";
@@ -337,6 +338,7 @@
       action_needed: "Action needed",
       done: "Done",
       no_action: "No action needed",
+      ignored: "Not relevant",
       processing: "Processing",
       error: "Error",
     };

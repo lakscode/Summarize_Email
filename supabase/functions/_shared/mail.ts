@@ -67,6 +67,8 @@ export interface MailClient {
   sendMail(to: string, subject: string, html: string): Promise<void>;
   // Forwards the message with its attachments, `comment` above the original.
   forwardMessage(messageId: string, to: string, comment: string): Promise<void>;
+  // Ids of messages anywhere in the mailbox that mention `term` (e.g. an invoice number), at most 10.
+  searchMail(term: string): Promise<string[]>;
 }
 
 export async function mailClient(db: SupabaseClient, mailbox: MailboxRow): Promise<MailClient> {

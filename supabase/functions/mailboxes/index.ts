@@ -44,7 +44,7 @@ import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
 import { GOOGLE_AUTH_URL, GOOGLE_SCOPES, GOOGLE_TOKEN_URL } from "../_shared/google.ts";
 import { type MailboxRow, type Provider, PROVIDER_LABELS, PROVIDERS, readRefreshToken } from "../_shared/mail.ts";
-import { CATEGORIES, DEFAULT_FORWARD, MAILBOX_TYPES, type MailboxType } from "../_shared/classify.ts";
+import { CATEGORIES, DEFAULT_FORWARD, MAILBOX_TYPES, type MailboxType, NOT_FORWARDABLE } from "../_shared/classify.ts";
 import {
   alternateMailboxes, type AppCredentials, appToken, connectionCredentials, delegatedToken, mailboxPath, MS_SHARED_SCOPES, msBase,
   openInbox, sharedMailboxesFor,
@@ -63,7 +63,8 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_BULK = 100;
 const CHECK_CONCURRENCY = 5;
 
-const redirectUri = () => `${env("SUPABASE_URL")}/functions/v1/mailboxes`;
+// OAUTH_REDIRECT_URI is only for local testing, where SUPABASE_URL is the internal http://kong:8000.
+const redirectUri = () => env("OAUTH_REDIRECT_URI", `${env("SUPABASE_URL")}/functions/v1/mailboxes`);
 
 // The app origin travels in the signed OAuth state (taken from the browser's Origin header when connecting),
 // so the callback returns to whichever deployment started it. APP_URL is only a fallback.
@@ -333,7 +334,7 @@ async function saveSettings(userId: string, sb: SupabaseClient, body: Record<str
   return json({ mailbox: data });
 }
 
-const forwardable = (type: MailboxType) => CATEGORIES[type].filter((c) => c !== "other");
+const forwardable = (type: MailboxType) => CATEGORIES[type].filter((c) => !NOT_FORWARDABLE.includes(c));
 
 // Validated, de-duplicated forward categories for `type`, or null if any is not forwardable for that type.
 function forwardCategories(value: unknown, type: MailboxType): string[] | null {

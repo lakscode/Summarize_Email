@@ -75,6 +75,12 @@ export async function googleClient(db: SupabaseClient, mailbox: MailboxRow): Pro
       return attachmentsOf(await full(messageId));
     },
 
+    async searchMail(term) {
+      const params = new URLSearchParams({ q: `"${term.replace(/["\\]/g, "")}"`, maxResults: "10" });
+      const list = await gmail<{ messages?: { id: string }[] }>(token, `/messages?${params}`);
+      return (list.messages ?? []).map((m) => m.id);
+    },
+
     attachmentBytes: bytes,
 
     async sendMail(to, subject, html) {

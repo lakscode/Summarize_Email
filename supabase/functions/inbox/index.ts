@@ -23,7 +23,9 @@ Deno.serve(async (req) => {
         .order("received_at", { ascending: false })
         .limit(300);
       const status = url.searchParams.get("status");
+      // "All" leaves out mail set aside as not AP / AR related; it has its own tab (status=ignored).
       if (status && STATUSES.includes(status)) query = query.eq("status", status);
+      else query = query.neq("status", "ignored");
       const mailboxId = url.searchParams.get("mailbox_id");
       if (mailboxId) query = query.eq("mailbox_id", mailboxId);
       const { data, error } = await query;
