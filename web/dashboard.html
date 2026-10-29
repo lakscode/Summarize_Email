@@ -152,7 +152,8 @@
 
       // Without a popup, the OAuth callback redirects back here with ?connected= / ?connect_error=; show
       // that first so a later load error doesn't hide it.
-      if (showConnectResult(new URLSearchParams(location.search))) history.replaceState(null, "", location.pathname);
+      const returning = showConnectResult(new URLSearchParams(location.search));
+      if (returning) history.replaceState(null, "", location.pathname);
 
       // Supabase Edge Function API: supabase/functions/profile
       const { data, error } = await callApi("profile", { method: "GET" });
@@ -166,7 +167,8 @@
       document.getElementById("profile-since").textContent =
         new Date(profile?.created_at || user.created_at).toLocaleDateString();
 
-      await loadMailboxes();
+      const mailboxes = await loadMailboxes();
+      if (!returning) autoConnectOwnMailbox(user, mailboxes);
     })();
 
     // --- Mailboxes and organizations (Supabase Edge Function API: supabase/functions/mailboxes) ---
@@ -217,6 +219,25 @@
       document.getElementById("mailbox-filter").hidden = data.mailboxes.length < 2;
       applyFilter();
       syncToggles();
+      return data.mailboxes;
+    }
+
+    // Signed in to the app with Microsoft: connect that account's own mailbox automatically, once per browser, when
+    // it isn't connected yet. It goes through the usual Azure mailbox sign-in (a redirect, since a popup that wasn't
+    // opened by a click would be blocked), which Microsoft usually completes without asking again.
+    function autoConnectOwnMailbox(user, mailboxes) {
+      if (!mailboxes || user.app_metadata?.provider !== "azure" || !user.email) return;
+      const email = user.email.toLowerCase();
+      if (mailboxes.some((m) => m.email_address === email && !m.delegate_address)) return;
+      const key = `auto-mailbox:${user.id}`;
+      try {
+        if (localStorage.getItem(key)) return;
+        localStorage.setItem(key, new Date().toISOString());
+      } catch {
+        return; // without storage this could repeat on every visit
+      }
+      startConnect(document.querySelector('.connect-button[data-provider="microsoft"]'), "microsoft", null, { login_hint: email, redirect: true });
+      showMessage(`Connecting your mailbox ${email}…`, "ok");
     }
 
     // --- Organization connections ---
@@ -602,14 +623,18 @@
     // The popup is opened straight from the click (before the API call) so browsers don't block it; if they
     // do anyway, sign-in falls back to navigating this page.
     // `shared_mailbox`: a Microsoft 365 shared mailbox read through the account that signs in.
-    async function startConnect(button, provider, shared_mailbox = null) {
+    // `login_hint`: the account to sign in with; `redirect`: navigate this page instead of opening a popup.
+    async function startConnect(button, provider, shared_mailbox = null, { login_hint = null, redirect = false } = {}) {
       button.disabled = true;
       showMessage("");
-      const popup = openCentered(500, 650);
+      const popup = redirect ? null : openCentered(500, 650);
       if (popup) popup.document.body.textContent = `Opening ${provider === "google" ? "Google" : "Microsoft"} sign-in…`;
       const access_days = Number(document.getElementById("access-days").value);
       const { data, error } = await callApi("mailboxes", {
-        body: { action: "connect", provider, access_days, popup: !!popup, ...(shared_mailbox ? { shared_mailbox } : {}) },
+        body: {
+          action: "connect", provider, access_days, popup: !!popup,
+          ...(shared_mailbox ? { shared_mailbox } : {}), ...(login_hint ? { login_hint } : {}),
+        },
       });
       if (error) {
         popup?.close();

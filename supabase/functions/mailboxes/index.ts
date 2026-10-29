@@ -1,7 +1,7 @@
 // Connected mailboxes (Azure / Microsoft 365 or Gmail) for the signed-in user.
 //   GET                                   -> { mailboxes, connections, categories } (expired access is cleaned up
 //                                            first; categories: the AP and AR categories per mailbox type)
-//   POST {action: "connect", provider: "microsoft" | "google", access_days, popup, shared_mailbox?}
+//   POST {action: "connect", provider: "microsoft" | "google", access_days, popup, shared_mailbox?, login_hint?}
 //                                         -> { url } to start Microsoft or Google sign-in (OAuth). With
 //                                            shared_mailbox (Microsoft only), the user signs in with their own
 //                                            account and the app reads that shared mailbox through it.
@@ -122,7 +122,9 @@ Deno.serve(async (req) => {
       const shared = String(body.shared_mailbox ?? "").trim().toLowerCase() || undefined;
       if (shared && provider !== "microsoft") return json({ error: "Shared mailboxes are only supported for Azure / Microsoft 365" }, 400);
       if (shared && !EMAIL.test(shared)) return json({ error: "Shared mailbox must be a valid email address" }, 400);
-      const s: State = { uid: user.id, days, origin, popup: body.popup === true, provider, shared };
+      const hint = String(body.login_hint ?? "").trim().toLowerCase() || undefined;
+      if (hint && !EMAIL.test(hint)) return json({ error: "login_hint must be a valid email address" }, 400);
+      const s: State = { uid: user.id, days, origin, popup: body.popup === true, provider, shared, hint };
       return json({ url: OAUTH[provider].authorizeUrl(await signState(s), s) });
     }
 
@@ -637,7 +639,8 @@ const OAUTH: Record<Provider, { settings: string[]; authorizeUrl(token: string, 
       response_mode: "query",
       // Shared scopes on every sign-in, so shared mailboxes found afterwards can be read with the same token.
       scope: MS_SHARED_SCOPES,
-      prompt: "select_account",
+      // With a hint (the account already signed in to the app), sign in as it without the account picker.
+      ...(s.hint ? { login_hint: s.hint } : { prompt: "select_account" }),
       state,
     }),
     async exchange(code, s) {
@@ -753,6 +756,8 @@ interface State {
   provider: Provider;
   // Microsoft shared mailbox address to read through the signed-in account.
   shared?: string;
+  // Account to sign in with (login_hint); used only to build the sign-in URL.
+  hint?: string;
 }
 
 const enc = new TextEncoder();
