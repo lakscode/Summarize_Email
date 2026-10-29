@@ -1,4 +1,4 @@
-npx supabase link --project-ref bnzllbgsbrhiesaqnkcz # asks for the database password
+npx supabase link --project-ref <project supabase id> # asks for the database password
 
 
 
