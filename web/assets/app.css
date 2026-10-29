@@ -147,6 +147,11 @@ form.busy :is(button:not([type]), button[type="submit"])::before {
   animation: spin 0.7s linear infinite;
 }
 
+.sso { display: grid; gap: 10px; margin-bottom: 14px; }
+.sso:empty { display: none; }
+.divider { display: flex; align-items: center; gap: 10px; margin-top: 4px; color: var(--muted); font-size: 0.85rem; }
+.divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+
 .forgot { margin: -4px 0 0; text-align: right; font-size: 0.85rem; }
 .alt { margin: 18px 0 0; text-align: center; color: var(--muted); font-size: 0.9rem; }
 .legal-links { margin: 12px 0 0; text-align: center; color: var(--muted); font-size: 0.8rem; }

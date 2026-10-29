@@ -1,4 +1,4 @@
-# Smart AP
+# Smart AP 
 
 UI on **Vercel** (static pages), API on **Supabase** (Auth, Postgres, Edge Functions).
 Users sign up / log in with email + password and land on a dashboard that calls the `profile` Edge Function.
@@ -45,6 +45,19 @@ web/
 3. Authentication > URL Configuration:
    - **Site URL**: `https://<your-app>.vercel.app`
    - **Redirect URLs**: `https://<your-app>.vercel.app/**`, `https://*-<team>.vercel.app/**` (previews), `http://localhost:5500/**`
+
+## 1a. Single sign-on (optional)
+
+The login and signup pages show **Continue with Microsoft**. The first SSO sign-in creates the account; a user
+who already signed up with the same (verified) email is linked to it.
+
+1. Reuse the app registration from 1b (or create one). Authentication > Add a Web redirect URI:
+   `https://<project-ref>.supabase.co/auth/v1/callback`
+2. In Supabase: Authentication > Sign In / Providers > **Azure**: enable, paste the client ID and a client secret
+   **value**, and set Azure Tenant URL to `https://login.microsoftonline.com/common` (any work or personal account)
+   or `https://login.microsoftonline.com/<tenant-id>` (your organization only).
+
+Until Azure is enabled in Supabase, clicking the button shows "Unsupported provider".
 
 ## 1b. Azure mailbox connection
 

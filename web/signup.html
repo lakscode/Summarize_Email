@@ -18,6 +18,7 @@
       <h1>Create account</h1>
       <p class="sub">Start using <span data-brand="appName"></span></p>
       <div id="message" class="message" hidden></div>
+      <div id="sso" class="sso"></div>
       <form id="signup-form">
         <label>Full name
           <input type="text" name="full_name" autocomplete="name" required />
@@ -37,6 +38,7 @@
 
   <script>
     redirectIfSignedIn();
+    renderSsoButtons();
 
     const form = document.getElementById("signup-form");
     form.addEventListener("submit", async (e) => {

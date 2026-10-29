@@ -35,6 +35,47 @@ async function redirectIfSignedIn() {
   if (await getSession()) location.replace(pageUrl("dashboard"));
 }
 
+// --- Single sign-on (Supabase Auth OAuth providers; enable them under Authentication > Sign In / Providers). ---
+
+const SSO_PROVIDERS = [
+  // Azure only returns the user's email when the `email` scope is requested.
+  { provider: "azure", label: "Continue with Microsoft", scopes: "email" },
+];
+
+// Fills <div id="sso"> with one button per provider. The provider sends the user back to the login page,
+// which shows any error and otherwise forwards to the dashboard. New users get an account on first sign-in.
+function renderSsoButtons() {
+  const box = document.getElementById("sso");
+  if (!box) return;
+  const buttons = SSO_PROVIDERS.map(({ provider, label, scopes }) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary";
+    button.textContent = label;
+    button.addEventListener("click", async () => {
+      showMessage("");
+      for (const b of buttons) b.disabled = true;
+      const { error } = await sb.auth.signInWithOAuth({ provider, options: { redirectTo: pageUrl("login"), scopes } });
+      if (error) {
+        for (const b of buttons) b.disabled = false;
+        showMessage(error.message, "error");
+      }
+    });
+    return button;
+  });
+  const divider = document.createElement("div");
+  divider.className = "divider";
+  divider.textContent = "or";
+  box.replaceChildren(...buttons, divider);
+}
+
+// Errors from a failed SSO sign-in come back in the query string or hash (e.g. the user cancelled).
+function ssoErrorFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const hash = new URLSearchParams(location.hash.slice(1));
+  return params.get("error_description") || hash.get("error_description");
+}
+
 // Protected pages: bounce to login when signed out.
 async function requireSession() {
   const session = await getSession();
