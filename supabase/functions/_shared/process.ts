@@ -6,9 +6,7 @@
 import { encodeBase64 } from "./base64.ts";
 import { APP_NAME } from "./brand.ts";
 import PostalMime from "npm:postal-mime@3.0.1";
-import {
-  type AttachmentFile, type AttachmentText, classifyEmail, type Classification, type MailboxType, pickRelevant,
-} from "./classify.ts";
+import { type AttachmentFile, type AttachmentText, classifyEmail, type Classification, type MailboxType } from "./classify.ts";
 import { logApi, logStep } from "./log.ts";
 import { htmlToText, isEmailAttachment, type MailClient, mailClient, type MailMessage, type Provider } from "./mail.ts";
 import { buildReport, type ReportItem } from "./report.ts";
@@ -16,12 +14,9 @@ import { adminClient } from "./supabase.ts";
 
 // Keeps one run well inside the Edge Function time limit; the UI offers to run again when more remain.
 const MAX_PER_RUN = 15;
-// Emails the quick first pass looks at per run; the ones it sets aside cost no full read.
-const MAX_SCAN = 100;
 const CONCURRENCY = 4;
-// ignored: not AP / AR mail at all (category not_relevant); kept so it isn't read again, hidden from the Inbox lists.
-export const STATUSES = ["processing", "action_needed", "done", "no_action", "ignored", "error"];
-const RECHECKABLE = ["no_action", "ignored", "error", "action_needed"];
+export const STATUSES = ["processing", "action_needed", "done", "no_action", "error"];
+const RECHECKABLE = ["no_action", "error", "action_needed"];
 
 // Attachments sent to Claude. Small images are usually logos / signatures and are skipped.
 const MAX_FILES = 4;
@@ -78,27 +73,13 @@ export async function processMailbox(
     const row = seenById.get(m.id);
     return !row || (reprocess && recheckable(row));
   });
-  // Quick first pass on sender, subject and preview: mail that isn't AP / AR at all is set aside without a full read.
-  const scan = fresh.slice(0, MAX_SCAN);
-  const relevant = await pickRelevant(scan.map((m) => ({
-    id: m.id,
-    from: m.from?.emailAddress?.address ?? "unknown",
-    subject: m.subject ?? "",
-    preview: m.body?.content ?? "",
-    hasAttachments: !!m.hasAttachments,
-  })), mailbox.mailbox_type);
-  const unrelated = scan.filter((m) => !relevant.has(m.id));
-  const batch = scan.filter((m) => relevant.has(m.id)).slice(0, MAX_PER_RUN);
-  const remaining = fresh.length - unrelated.length - batch.length;
+  const batch = fresh.slice(0, MAX_PER_RUN);
   await step(run, "process/fetch",
-    `Found ${messages.length} email${messages.length === 1 ? "" : "s"} in the inbox; ${fresh.length} new, ` +
-      `${unrelated.length} not ${mailbox.mailbox_type.toUpperCase()}-related (set aside), ${batch.length} read in full` +
-      (remaining ? `, ${remaining} in the next run` : ""),
-    { skipped_already_processed: messages.length - fresh.length, set_aside: unrelated.map((m) => m.subject ?? "") });
+    `Found ${messages.length} email${messages.length === 1 ? "" : "s"} in the inbox; ${fresh.length} to process` +
+      (fresh.length > batch.length ? ` (${batch.length} now, ${fresh.length - batch.length} in the next run)` : ""),
+    { skipped_already_processed: messages.length - fresh.length });
 
-  for (const msg of unrelated) await setAside(db, run, mailbox, msg, seenById.get(msg.id));
-
-  const counts: Record<string, number> = unrelated.length ? { ignored: unrelated.length } : {};
+  const counts: Record<string, number> = {};
   const items: ReportItem[] = [];
   const queue = [...batch];
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
@@ -111,16 +92,15 @@ export async function processMailbox(
   }));
 
   await db.from("mailboxes").update({ last_processed_at: new Date().toISOString() }).eq("id", mailbox.id);
-  // Not-relevant mail found by the full read stays out of the summary too.
-  const reported = items.filter((i) => i.status !== "ignored");
+  const remaining = fresh.length - batch.length;
   // Only when the mailbox's "Send summary email" setting is on, it has a recipient, and there is something to report.
   const to = mailbox.send_summary ? await summaryRecipient(db, userId, mailbox) : null;
   const report = !mailbox.send_summary ? "off" : !to ? "no_recipient"
-    : reported.length ? await sendReport(run, mailbox, client, to, reported, remaining, appUrl) : "skipped";
+    : items.length ? await sendReport(run, mailbox, client, to, items, remaining, appUrl) : "skipped";
   const result = {
     mailbox: mailbox.email_address,
     scanned: messages.length,
-    processed: batch.length + unrelated.length,
+    processed: batch.length,
     remaining,
     counts,
     report,
@@ -193,25 +173,6 @@ async function claim(db: Db, userId: string, mailbox: Mailbox, msg: MailMessage,
   }, { onConflict: "mailbox_id,message_id", ignoreDuplicates: true }).select("id");
   if (error) throw new Error(error.message);
   return data?.[0]?.id ?? null;
-}
-
-// Records an email the first pass set aside as not relevant, so it isn't looked at again (unless re-checked).
-async function setAside(db: Db, run: Run, mailbox: Mailbox, msg: MailMessage, existing?: ExistingRow) {
-  try {
-    const rowId = await claim(db, run.userId, mailbox, msg, existing);
-    if (!rowId) return;
-    const { error } = await db.from("processed_emails").update({
-      category: "not_relevant",
-      summary: `Not ${mailbox.mailbox_type.toUpperCase()}-related; set aside by the quick first pass.`,
-      next_step: null,
-      action_taken: null,
-      status: "ignored",
-      updated_at: new Date().toISOString(),
-    }).eq("id", rowId);
-    if (error) throw new Error(error.message);
-  } catch (err) {
-    await logApi("inbox/process", err, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, subject: msg.subject } });
-  }
 }
 
 // What Claude gets from a message's attachments: all names (including files inside attached emails), the PDFs /
@@ -326,14 +287,7 @@ async function processMessage(
     await step(run, "process/classify", `Classified "${subject}" as ${c.category} (${c.confidence} confidence): ${c.summary}`,
       { ...email, category: c.category, confidence: c.confidence, vendor: c.vendor, amount: c.amount, next_step: c.next_step });
 
-    const check = c.category === "statement" ? await checkStatement(run, client, msg, c) : null;
-    if (check) c.next_step = check.nextStep;
-    let { status, action } = await takeAction(run, mailbox, client, msg, c);
-    // Every invoice on the statement is already in the mailbox: nothing left to chase.
-    if (check?.complete && status === "action_needed" && !action) {
-      status = "done";
-      action = check.nextStep;
-    }
+    const { status, action } = await takeAction(run, mailbox, client, msg, c);
     await step(run, "process/action", `"${subject}" → ${status.replace("_", " ")}${action ? `: ${action}` : ""}`, { ...email, status });
 
     const { error } = await db.from("processed_emails").update({
@@ -360,38 +314,12 @@ async function processMessage(
   }
 }
 
-// Statements: looks for each listed invoice number elsewhere in the mailbox (the system of record isn't connected),
-// and tells the employee which invoices are missing and must be requested from the vendor.
-const MAX_STATEMENT_LINES = 30;
-
-async function checkStatement(run: Run, client: MailClient, msg: MailMessage, c: Classification) {
-  const numbers = [...new Set((c.statement_invoices ?? []).map((n) => n.trim()).filter(Boolean))].slice(0, MAX_STATEMENT_LINES);
-  if (!numbers.length) return null;
-  const missing: string[] = [];
-  try {
-    for (const n of numbers) {
-      if (!(await client.searchMail(n)).some((id) => id !== msg.id)) missing.push(n);
-    }
-  } catch (err) {
-    await logApi("inbox/statement", err, { userId: run.userId, level: "warn", context: { run: run.id, subject: msg.subject } });
-    return null;
-  }
-  const vendor = c.vendor || "the vendor";
-  const nextStep = missing.length
-    ? `Request ${missing.length} missing invoice${missing.length === 1 ? "" : "s"} from ${vendor}: ${missing.map((n) => `#${n}`).join(", ")} ` +
-      `(${numbers.length - missing.length} of ${numbers.length} on the statement found in the mailbox).`
-    : `All ${numbers.length} invoice${numbers.length === 1 ? "" : "s"} on ${vendor}'s statement are already in the mailbox.`;
-  await step(run, "process/statement", `Statement "${msg.subject ?? ""}": ${numbers.length} invoices listed, ${missing.length} missing`,
-    { listed: numbers, missing });
-  return { nextStep, complete: !missing.length };
-}
-
 // The only automatic action: forward confident emails in the mailbox's forward_categories to its destination address.
 // The recipient always comes from settings, never from the email or the model.
 async function takeAction(run: Run, mailbox: Mailbox, client: MailClient, msg: MailMessage, c: Classification) {
   const userId = run.userId;
   const label = c.category.replace("_", " ");
-  if (c.category === "not_relevant") return { status: "ignored", action: null };
+  if (c.category === "other") return { status: "no_action", action: null };
   if (!(mailbox.forward_categories ?? []).includes(c.category)) return { status: "action_needed", action: null };
 
   if (c.confidence === "low") return { status: "action_needed", action: `Not forwarded: not sure this is a ${label} email. Check it, then forward it.` };
