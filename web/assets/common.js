@@ -176,26 +176,74 @@ window.addEventListener("unhandledrejection", (e) => {
 
 // --- Side menu shared by signed-in pages. Expects <aside id="sidebar"> in the page. ---
 
+// Icon paths are 24x24 stroked outlines; shown alone when the sidebar is collapsed.
+const ICONS = {
+  dashboard: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/>',
+  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/>',
+  logs: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
+  collapse: '<path d="M15 18l-6-6 6-6"/>',
+};
+
 const NAV = [
   { page: "dashboard", label: "Config" },
   { page: "inbox", label: "Inbox" },
   { page: "logs", label: "Logs" },
 ];
 
+const SIDEBAR_COLLAPSED_KEY = "sidebar-collapsed";
+
+function icon(name) {
+  const span = document.createElement("span");
+  span.className = "icon";
+  span.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+  return span;
+}
+
+function labelled(iconName, text) {
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = text;
+  return [icon(iconName), label];
+}
+
+function readCollapsed() {
+  try { return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1"; } catch { return false; }
+}
+
+function setCollapsed(shell, toggle, collapsed) {
+  shell.classList.toggle("sidebar-collapsed", collapsed);
+  toggle.title = collapsed ? "Expand menu" : "Collapse menu";
+  toggle.setAttribute("aria-label", toggle.title);
+  try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0"); } catch {}
+}
+
 function renderSidebar(active, session) {
   const aside = document.getElementById("sidebar");
+  const shell = aside.closest(".shell");
   const brand = document.createElement("div");
   brand.className = "brand";
   const logo = document.createElement("img");
   logo.src = "images/logo-256.png";
   logo.alt = "";
-  brand.append(logo, BRAND.appName ?? "");
+  const name = document.createElement("span");
+  name.className = "label";
+  name.textContent = BRAND.appName ?? "";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "side-toggle";
+  toggle.append(icon("collapse"));
+  toggle.addEventListener("click", () =>
+    setCollapsed(shell, toggle, !shell.classList.contains("sidebar-collapsed")));
+  setCollapsed(shell, toggle, readCollapsed());
+  brand.append(logo, name, toggle);
 
   const nav = document.createElement("nav");
   for (const item of NAV) {
     const a = document.createElement("a");
     a.href = pageUrl(item.page);
-    a.textContent = item.label;
+    a.title = item.label;
+    a.append(...labelled(item.page, item.label));
     if (item.page === active) a.className = "active";
     nav.append(a);
   }
@@ -206,8 +254,9 @@ function renderSidebar(active, session) {
   email.className = "side-email";
   email.textContent = session.user.email;
   const logout = document.createElement("button");
-  logout.className = "secondary";
-  logout.textContent = "Log out";
+  logout.className = "secondary side-logout";
+  logout.title = "Log out";
+  logout.append(...labelled("logout", "Log out"));
   logout.addEventListener("click", () => sb.auth.signOut());
   const legal = document.createElement("div");
   legal.className = "side-legal";
