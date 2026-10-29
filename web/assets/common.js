@@ -136,7 +136,7 @@ window.addEventListener("unhandledrejection", (e) => {
 // --- Side menu shared by signed-in pages. Expects <aside id="sidebar"> in the page. ---
 
 const NAV = [
-  { page: "dashboard", label: "Dashboard" },
+  { page: "dashboard", label: "Config" },
   { page: "inbox", label: "Inbox" },
   { page: "logs", label: "Logs" },
 ];

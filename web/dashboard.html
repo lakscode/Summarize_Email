@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Dashboard</title>
+  <title>Config</title>
   <link rel="stylesheet" href="assets/app.css" />
   <link rel="icon" type="image/png" href="images/favicon.png" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -17,7 +17,7 @@
 
     <main class="content">
       <div id="message" class="message" hidden></div>
-      <h1 id="greeting">Dashboard</h1>
+      <h1 id="greeting">Config</h1>
       <p class="sub">You're signed in.</p>
       <section class="grid">
         <div class="tile"><div class="label">Name</div><div class="value" id="profile-name">—</div></div>
@@ -160,7 +160,7 @@
       const profile = data?.profile;
 
       const name = profile?.full_name || user.user_metadata?.full_name || "";
-      document.getElementById("greeting").textContent = name ? `Hello, ${name}` : "Dashboard";
+      document.getElementById("greeting").textContent = name ? `Hello, ${name}` : "Config";
       document.getElementById("profile-name").textContent = name || "—";
       document.getElementById("profile-email").textContent = profile?.email || user.email;
       document.getElementById("profile-since").textContent =
@@ -494,7 +494,7 @@
       const summary = document.createElement("input");
       summary.type = "checkbox";
       summary.name = "send_summary";
-      summary.checked = m.send_summary !== false;
+      summary.checked = m.send_summary === true;
       summaryLabel.append(summary, " Send summary email");
 
       // Save is only enabled (and highlighted) when something changed; the result shows next to it.
@@ -535,7 +535,7 @@
         }
         Object.assign(m, data.mailbox);
         dest.value = m.smart_ap_address || "";
-        summary.checked = m.send_summary !== false;
+        summary.checked = m.send_summary === true;
         saved = current();
         refresh();
         status.className = "save-status ok";
