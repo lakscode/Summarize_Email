@@ -156,30 +156,54 @@ export async function sharedMailboxesFor(c: AppCredentials, person: string): Pro
 // user directly) as "Delegate" AlternativeMailbox entries in the Outlook Autodiscover response. Needs a delegated
 // token for Exchange Online: the Azure app needs the delegated permission EWS.AccessAsUser.All
 // (Office 365 Exchange Online), admin-consented.
-export async function alternateMailboxes(db: SupabaseClient, mailbox: MailboxRow): Promise<SharedMailbox[]> {
+// `entries` counts every AlternativeMailbox (any type) and `response` is the start of Exchange's reply, so an empty
+// result can be told apart from an unexpected response in the logs.
+export async function alternateMailboxes(
+  db: SupabaseClient, mailbox: MailboxRow,
+): Promise<{ mailboxes: SharedMailbox[]; entries: number; response: string }> {
   const token = await delegatedToken(db, mailbox, EXCHANGE);
-  const res = await fetch(`${EXCHANGE}/autodiscover/autodiscover.xml`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/xml; charset=utf-8", "X-AnchorMailbox": mailbox.email_address },
-    body: `<?xml version="1.0" encoding="utf-8"?>
+  let address = mailbox.email_address;
+  let xml = "";
+  // Exchange may answer with a redirect to the user's primary address (e.g. when signed in by an alias or UPN).
+  for (let hop = 0; hop < 3; hop++) {
+    const res = await fetch(`${EXCHANGE}/autodiscover/autodiscover.xml`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/xml; charset=utf-8", "X-AnchorMailbox": address },
+      body: `<?xml version="1.0" encoding="utf-8"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006">
   <Request>
-    <EMailAddress>${xmlEscape(mailbox.email_address)}</EMailAddress>
+    <EMailAddress>${xmlEscape(address)}</EMailAddress>
     <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
   </Request>
 </Autodiscover>`,
-  });
-  if (!res.ok) throw new Error(`Autodiscover failed (${res.status}): ${(await res.text()).slice(0, 500)}`);
-  const xml = await res.text();
-  const found = new Map<string, SharedMailbox>();
-  for (const [, entry] of xml.matchAll(/<AlternativeMailbox>([\s\S]*?)<\/AlternativeMailbox>/g)) {
-    const field = (name: string) => xmlUnescape(entry.match(new RegExp(`<${name}>([^<]*)</${name}>`))?.[1] ?? "").trim();
-    if (field("Type") !== "Delegate") continue;
-    const address = (field("SmtpAddress") || field("OwnerSmtpAddress")).toLowerCase();
-    if (address && address !== mailbox.email_address) found.set(address, { address, name: field("DisplayName") });
+    });
+    xml = await res.text();
+    if (!res.ok) throw new Error(`Autodiscover failed (${res.status}): ${xml.slice(0, 500)}`);
+    const redirect = xmlField(xml, "Action") === "redirectAddr" ? xmlField(xml, "RedirectAddr").toLowerCase() : "";
+    if (!redirect || redirect === address) break;
+    address = redirect;
   }
-  return [...found.values()].sort((a, b) => a.address.localeCompare(b.address));
+  if (/<(\w+:)?Error[\s>]/.test(xml)) {
+    throw new Error(`Autodiscover returned an error: ${xmlField(xml, "Message") || xmlField(xml, "ErrorCode") || xml.slice(0, 500)}`);
+  }
+
+  const found = new Map<string, SharedMailbox>();
+  const entries = [...xml.matchAll(/<(?:\w+:)?AlternativeMailbox>([\s\S]*?)<\/(?:\w+:)?AlternativeMailbox>/g)];
+  for (const [, entry] of entries) {
+    if (xmlField(entry, "Type") !== "Delegate") continue;
+    const smtp = (xmlField(entry, "SmtpAddress") || xmlField(entry, "OwnerSmtpAddress")).toLowerCase();
+    if (smtp && smtp !== mailbox.email_address && smtp !== address) found.set(smtp, { address: smtp, name: xmlField(entry, "DisplayName") });
+  }
+  return {
+    mailboxes: [...found.values()].sort((a, b) => a.address.localeCompare(b.address)),
+    entries: entries.length,
+    response: xml.slice(0, 3000),
+  };
 }
+
+// Text of the first <name> element (namespace prefix allowed), unescaped.
+const xmlField = (xml: string, name: string) =>
+  xmlUnescape(xml.match(new RegExp(`<(?:\\w+:)?${name}>([^<]*)</(?:\\w+:)?${name}>`))?.[1] ?? "").trim();
 
 const xmlEscape = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const xmlUnescape = (s: string) =>

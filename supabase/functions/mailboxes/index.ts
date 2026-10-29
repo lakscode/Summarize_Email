@@ -538,7 +538,22 @@ async function discoverShared(userId: string, sb: SupabaseClient, body: Record<s
   const { data: existing, error } = await sb.from("mailboxes").select("email_address");
   if (error) return await fail("mailboxes/discover_shared", error.message, 500, { userId });
   const have = new Set((existing ?? []).map((m) => m.email_address));
-  return json({ mailboxes: found.filter((m) => !have.has(m.address)) });
+  const mailboxes = found.mailboxes.filter((m) => !have.has(m.address));
+  if (mailboxes.length) return json({ mailboxes });
+
+  // Nothing to offer: say why, and keep Exchange's reply in the logs.
+  const already = found.mailboxes.length;
+  await logApi("mailboxes/discover_shared", `Autodiscover listed ${already} shared mailbox(es) (${found.entries} alternative mailbox entries) for ${source.email_address}`, {
+    userId, level: "info", context: { mailbox: source.email_address, already_added: already, response: found.response },
+  });
+  return json({
+    mailboxes: [],
+    warning: already
+      ? `All ${already} shared mailbox${already === 1 ? "" : "es"} ${source.email_address} can open ${already === 1 ? "is" : "are"} already added.`
+      : `Exchange didn't report any shared mailboxes for ${source.email_address}. It only lists mailboxes where Full Access ` +
+        "was granted to this user directly with automapping on (not through a group, and not with -AutoMapping $false). " +
+        "Add the shared mailbox by address below; access is checked when it's added.",
+  });
 }
 
 // Adds shared mailboxes read through the signed-in account behind `mailbox_id`: each gets its own copy of that
