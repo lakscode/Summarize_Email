@@ -173,10 +173,13 @@ form.busy :is(button:not([type]), button[type="submit"])::before {
 .message { padding: 10px 12px; border-radius: 8px; font-size: 0.9rem; margin-bottom: 14px; }
 .message.error { background: var(--error-bg); color: var(--error-text); }
 .message.ok, .message.info { background: var(--ok-bg); color: var(--ok-text); }
+.own-mailbox-prompt:not([hidden]) { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.own-mailbox-prompt span { flex: 1 1 240px; }
 
 /* Signed-in layout: side menu + content */
 .shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
 .shell[hidden] { display: none; }
+.inline-form label[hidden] { display: none; }
 
 .sidebar {
   position: sticky;

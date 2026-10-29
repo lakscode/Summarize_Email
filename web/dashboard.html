@@ -17,6 +17,11 @@
 
     <main class="content">
       <div id="message" class="message" hidden></div>
+      <div id="own-mailbox-prompt" class="message info own-mailbox-prompt" hidden>
+        <span id="own-mailbox-text"></span>
+        <button type="button" id="own-mailbox-add">Add my mailbox</button>
+        <button type="button" class="secondary" id="own-mailbox-later">Not now</button>
+      </div>
       <h1 id="greeting">Config</h1>
       <p class="sub">You're signed in.</p>
       <section class="grid">
@@ -146,14 +151,14 @@
       const session = await requireSession();
       if (!session) return;
       const { user } = session;
+      appUser = user;
 
       renderSidebar("dashboard", session);
       document.querySelector(".shell").hidden = false;
 
       // Without a popup, the OAuth callback redirects back here with ?connected= / ?connect_error=; show
       // that first so a later load error doesn't hide it.
-      const returning = showConnectResult(new URLSearchParams(location.search));
-      if (returning) history.replaceState(null, "", location.pathname);
+      if (showConnectResult(new URLSearchParams(location.search))) history.replaceState(null, "", location.pathname);
 
       // Supabase Edge Function API: supabase/functions/profile
       const { data, error } = await callApi("profile", { method: "GET" });
@@ -167,8 +172,7 @@
       document.getElementById("profile-since").textContent =
         new Date(profile?.created_at || user.created_at).toLocaleDateString();
 
-      const mailboxes = await loadMailboxes();
-      if (!returning) autoConnectOwnMailbox(user, mailboxes);
+      promptOwnMailbox(user, await loadMailboxes());
     })();
 
     // --- Mailboxes and organizations (Supabase Edge Function API: supabase/functions/mailboxes) ---
@@ -222,22 +226,36 @@
       return data.mailboxes;
     }
 
-    // Signed in to the app with Microsoft: connect that account's own mailbox automatically, once per browser, when
-    // it isn't connected yet. It goes through the usual Azure mailbox sign-in (a redirect, since a popup that wasn't
-    // opened by a click would be blocked), which Microsoft usually completes without asking again.
-    function autoConnectOwnMailbox(user, mailboxes) {
+    // Signed in to the app with Microsoft and that account's own mailbox isn't connected: prompt to add it. "Add my
+    // mailbox" runs the usual Azure mailbox sign-in for that account (Microsoft usually completes it without asking
+    // again); "Not now" hides the prompt until the next sign-in.
+    const ownPrompt = document.getElementById("own-mailbox-prompt");
+    let appUser = null;
+
+    function promptOwnMailbox(user, mailboxes) {
+      ownPrompt.hidden = true;
       if (!mailboxes || user.app_metadata?.provider !== "azure" || !user.email) return;
       const email = user.email.toLowerCase();
       if (mailboxes.some((m) => m.email_address === email && !m.delegate_address)) return;
-      const key = `auto-mailbox:${user.id}`;
+      const key = `own-mailbox-later:${user.id}`;
       try {
-        if (localStorage.getItem(key)) return;
-        localStorage.setItem(key, new Date().toISOString());
+        if (sessionStorage.getItem(key)) return;
       } catch {
-        return; // without storage this could repeat on every visit
+        // Storage blocked: always prompt.
       }
-      startConnect(document.querySelector('.connect-button[data-provider="microsoft"]'), "microsoft", null, { login_hint: email, redirect: true });
-      showMessage(`Connecting your mailbox ${email}…`, "ok");
+      document.getElementById("own-mailbox-text").textContent =
+        `Your mailbox ${email} isn't added yet. Add it to process its inbox.`;
+      const add = document.getElementById("own-mailbox-add");
+      add.onclick = () => startConnect(add, "microsoft", null, { login_hint: email });
+      document.getElementById("own-mailbox-later").onclick = () => {
+        ownPrompt.hidden = true;
+        try {
+          sessionStorage.setItem(key, "1");
+        } catch {
+          // Not remembered; the prompt returns on the next visit.
+        }
+      };
+      ownPrompt.hidden = false;
     }
 
     // --- Organization connections ---
@@ -509,7 +527,8 @@
       typeSelect.addEventListener("change", () =>
         renderForwardChoices(forward, typeSelect.value, typeSelect.value === m.mailbox_type ? m.forward_categories : null));
 
-      // Run summary emailed to the mailbox after each run; off means no summary email at all.
+      // Run summary emailed after each run; off means no summary email at all. When on, it goes to the summary address,
+      // or if that is blank to the mailbox itself; a shared mailbox gets none without an address.
       const summaryLabel = document.createElement("label");
       summaryLabel.className = "checkbox";
       const summary = document.createElement("input");
@@ -518,12 +537,25 @@
       summary.checked = m.send_summary === true;
       summaryLabel.append(summary, " Send summary email");
 
+      const shared = !!m.delegate_address || !!m.connection_id;
+      const summaryToLabel = document.createElement("label");
+      summaryToLabel.textContent = "Summary to";
+      const summaryTo = document.createElement("input");
+      summaryTo.type = "email";
+      summaryTo.name = "summary_address";
+      summaryTo.placeholder = shared ? "Required for a shared mailbox" : m.email_address;
+      summaryTo.value = m.summary_address || "";
+      summaryToLabel.append(summaryTo);
+      const showSummaryTo = () => (summaryToLabel.hidden = !summary.checked);
+      summary.addEventListener("change", showSummaryTo);
+      showSummaryTo();
+
       // Save is only enabled (and highlighted) when something changed; the result shows next to it.
       const save = button("Save", "secondary", "submit");
       const status = document.createElement("span");
       status.className = "save-status";
       status.setAttribute("role", "status");
-      const current = () => JSON.stringify([typeSelect.value, dest.value.trim(), checkedForward(form), summary.checked]);
+      const current = () => JSON.stringify([typeSelect.value, dest.value.trim(), checkedForward(form), summary.checked, summaryTo.value.trim()]);
       let saved = null;
       const refresh = () => {
         const dirty = current() !== saved;
@@ -534,14 +566,14 @@
       form.addEventListener("input", refresh);
       form.addEventListener("change", refresh);
 
-      form.append(typeLabel, destLabel, forward, summaryLabel, save, status);
+      form.append(typeLabel, destLabel, forward, summaryLabel, summaryToLabel, save, status);
       saved = current();
       refresh();
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
         const body = {
           id: m.id, mailbox_type: typeSelect.value, forward_categories: checkedForward(form), smart_ap_address: dest.value,
-          send_summary: summary.checked,
+          send_summary: summary.checked, summary_address: summaryTo.value,
         };
         status.className = "save-status";
         status.textContent = "Saving…";
@@ -557,6 +589,8 @@
         Object.assign(m, data.mailbox);
         dest.value = m.smart_ap_address || "";
         summary.checked = m.send_summary === true;
+        summaryTo.value = m.summary_address || "";
+        showSummaryTo();
         saved = current();
         refresh();
         status.className = "save-status ok";
@@ -568,6 +602,9 @@
         showMessage(!cats ? `Saved. Nothing from ${m.email_address} is forwarded automatically.`
           : m.smart_ap_address ? `Saved. ${cats} from ${m.email_address} will be forwarded to ${m.smart_ap_address}.`
           : `Saved. Set a destination email to forward ${cats} from ${m.email_address}.`, "ok");
+        if (shared && m.send_summary && !m.summary_address) {
+          showMessage(`Saved. No summary email is sent for ${m.email_address} until you enter a Summary to address.`, "ok");
+        }
       });
       return form;
     }
@@ -623,11 +660,11 @@
     // The popup is opened straight from the click (before the API call) so browsers don't block it; if they
     // do anyway, sign-in falls back to navigating this page.
     // `shared_mailbox`: a Microsoft 365 shared mailbox read through the account that signs in.
-    // `login_hint`: the account to sign in with; `redirect`: navigate this page instead of opening a popup.
-    async function startConnect(button, provider, shared_mailbox = null, { login_hint = null, redirect = false } = {}) {
+    // `login_hint`: the account to sign in with (skips the account picker).
+    async function startConnect(button, provider, shared_mailbox = null, { login_hint = null } = {}) {
       button.disabled = true;
       showMessage("");
-      const popup = redirect ? null : openCentered(500, 650);
+      const popup = openCentered(500, 650);
       if (popup) popup.document.body.textContent = `Opening ${provider === "google" ? "Google" : "Microsoft"} sign-in…`;
       const access_days = Number(document.getElementById("access-days").value);
       const { data, error } = await callApi("mailboxes", {
@@ -664,7 +701,8 @@
       const params = new URLSearchParams(e.data);
       if (params.has("connected")) hideForm(sharedForm);
       showConnectResult(params);
-      await loadMailboxes();
+      const mailboxes = await loadMailboxes();
+      if (appUser) promptOwnMailbox(appUser, mailboxes);
     });
 
     // --- Add forms: shown only from their button, one at a time ---

@@ -24,10 +24,11 @@
 //                                         -> { results: [{address, ok, error?}] } each added as a shared mailbox read
 //                                            through that account (its token, same access period), after checking
 //                                            the account can open it
-//   PATCH {id, mailbox_type?, forward_categories?, smart_ap_address?, send_summary?}
+//   PATCH {id, mailbox_type?, forward_categories?, smart_ap_address?, send_summary?, summary_address?}
 //                                         -> per-mailbox settings: AP or AR, which categories are forwarded, the
-//                                            destination address they go to ("" clears it), and whether the run
-//                                            summary is emailed to the mailbox
+//                                            destination address they go to ("" clears it), whether the run summary
+//                                            is emailed, and to which address ("" clears it: an own mailbox gets it
+//                                            itself, a shared mailbox gets none)
 //   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
 //                                         -> scheduled processing (see _shared/schedule.ts)
 //   DELETE ?id=<mailbox id>               -> disconnect (Vault secret removed by trigger)
@@ -91,7 +92,7 @@ Deno.serve(async (req) => {
 
       const { data, error } = await sb
         .from("mailboxes")
-        .select("id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, send_summary, last_processed_at, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
+        .select("id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, send_summary, summary_address, last_processed_at, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
       const { data: connections, error: connError } = await sb.from("ms_connections")
@@ -306,6 +307,12 @@ async function saveSettings(userId: string, sb: SupabaseClient, body: Record<str
     if (typeof body.send_summary !== "boolean") return json({ error: "send_summary must be true or false" }, 400);
     update.send_summary = body.send_summary;
   }
+  // Summary recipient; "" clears it (own mailbox: itself, shared mailbox: no summary).
+  if (body.summary_address !== undefined) {
+    const address = String(body.summary_address ?? "").trim().toLowerCase();
+    if (address && !EMAIL.test(address)) return json({ error: "Summary email must be a valid email address" }, 400);
+    update.summary_address = address || null;
+  }
   let type = current.mailbox_type as MailboxType;
   if (body.mailbox_type !== undefined) {
     if (!MAILBOX_TYPES.includes(body.mailbox_type as MailboxType)) return json({ error: "mailbox_type must be ap or ar" }, 400);
@@ -320,7 +327,7 @@ async function saveSettings(userId: string, sb: SupabaseClient, body: Record<str
   }
 
   const { data, error } = await sb.from("mailboxes").update(update).eq("id", body.id)
-    .select("id, mailbox_type, forward_categories, smart_ap_address, send_summary").maybeSingle();
+    .select("id, mailbox_type, forward_categories, smart_ap_address, send_summary, summary_address").maybeSingle();
   if (error) return await fail("mailboxes/update", error.message, 500, { userId, context: { id: body.id } });
   if (!data) return json({ error: "Mailbox not found" }, 404);
   return json({ mailbox: data });

@@ -45,7 +45,7 @@ export async function processMailbox(
   const db = adminClient();
   await db.rpc("expire_mailbox_access");
   const { data: mailbox, error } = await db.from("mailboxes")
-    .select("id, provider, auth_type, connection_id, email_address, delegate_address, credentials_secret_id, smart_ap_address, access_expires_at, mailbox_type, forward_categories, send_summary")
+    .select("id, provider, auth_type, connection_id, email_address, delegate_address, credentials_secret_id, smart_ap_address, access_expires_at, mailbox_type, forward_categories, send_summary, summary_address")
     .eq("id", mailboxId).eq("owner_user_id", userId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!mailbox) throw new Error("Mailbox not found");
@@ -93,8 +93,10 @@ export async function processMailbox(
 
   await db.from("mailboxes").update({ last_processed_at: new Date().toISOString() }).eq("id", mailbox.id);
   const remaining = fresh.length - batch.length;
-  // Only when the mailbox's "Send summary email" setting is on, and there is something to report.
-  const report = !mailbox.send_summary ? "off" : items.length ? await sendReport(run, mailbox, client, items, remaining, appUrl) : "skipped";
+  // Only when the mailbox's "Send summary email" setting is on, it has a recipient, and there is something to report.
+  const to = summaryRecipient(mailbox);
+  const report = !mailbox.send_summary ? "off" : !to ? "no_recipient"
+    : items.length ? await sendReport(run, mailbox, client, to, items, remaining, appUrl) : "skipped";
   const result = {
     mailbox: mailbox.email_address,
     scanned: messages.length,
@@ -108,20 +110,28 @@ export async function processMailbox(
   return result;
 }
 
-// Emails the run summary from the mailbox to itself (the mailbox owner). Needs Mail.Send, like forwarding.
-// For a shared mailbox connected by sign-in it is sent from the signed-in user's own mailbox to the shared one.
+// Where the summary goes: the mailbox's summary address if set; otherwise an own mailbox gets it itself, and a shared
+// mailbox (read through another account or an organization connection) gets none.
+function summaryRecipient(mailbox: Mailbox): string | null {
+  if (mailbox.summary_address) return mailbox.summary_address;
+  const shared = !!mailbox.delegate_address || mailbox.auth_type === "app";
+  return shared ? null : mailbox.email_address;
+}
+
+// Emails the run summary to `to`. Needs Mail.Send, like forwarding. For a shared mailbox connected by sign-in it is
+// sent from the signed-in user's own mailbox.
 async function sendReport(
-  run: Run, mailbox: Mailbox, client: MailClient, items: ReportItem[], remaining: number, appUrl: string | null,
+  run: Run, mailbox: Mailbox, client: MailClient, to: string, items: ReportItem[], remaining: number, appUrl: string | null,
 ): Promise<"sent" | "failed"> {
   const order = ["action_needed", "error", "done", "no_action"];
   items.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   const { subject, html } = buildReport(mailbox.email_address, items, remaining, run.trigger, appUrl);
   try {
-    await client.sendMail(mailbox.email_address, subject, html);
-    await step(run, "process/report", `Summary email sent to ${mailbox.email_address}: "${subject}"`);
+    await client.sendMail(to, subject, html);
+    await step(run, "process/report", `Summary email sent to ${to}: "${subject}"`);
     return "sent";
   } catch (err) {
-    await logApi("process/report", err, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address } });
+    await logApi("process/report", err, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, to } });
     return "failed";
   }
 }
@@ -131,6 +141,7 @@ interface Mailbox {
   id: string; provider: Provider; auth_type: "oauth" | "app"; connection_id: string | null; email_address: string;
   delegate_address: string | null; credentials_secret_id: string | null; smart_ap_address: string | null;
   mailbox_type: MailboxType; forward_categories: string[]; send_summary: boolean;
+  summary_address: string | null;
 }
 interface ExistingRow { id: string; message_id: string; status: string; action_taken: string | null }
 
