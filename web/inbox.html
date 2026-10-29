@@ -20,11 +20,23 @@
       <h1>Inbox</h1>
       <p class="sub">AP and AR emails classified by Claude, with what to do next. Categories chosen on the Config page are forwarded to the mailbox's destination email.</p>
 
+      <p class="empty" id="no-mailboxes" hidden>Connect a mailbox on the <a href="dashboard.html">Config</a> page first.</p>
+
+      <div class="inbox-layout" id="inbox-layout" hidden>
+      <nav class="mailbox-nav" aria-label="Mailboxes">
+        <h2>Mailboxes</h2>
+        <ul id="mailbox-nav-list"></ul>
+      </nav>
+
+      <div class="mailbox-detail">
+      <div class="mailbox-detail-head">
+        <h2 id="detail-title"></h2>
+        <p class="sub" id="detail-meta"></p>
+      </div>
+
       <section class="panel process-panel">
         <form id="process-form" class="process-form">
-          <label>Mailbox
-            <select name="mailbox_id" id="mailbox-select" required></select>
-          </label>
+          <input type="hidden" name="mailbox_id" id="mailbox-select" />
           <label>Look back
             <select name="lookback_hours">
               <option value="24">Last 24 hours</option>
@@ -39,11 +51,9 @@
           </label>
           <button type="submit" id="process-btn">Process inbox</button>
         </form>
-        <p class="empty" id="no-mailboxes" hidden>Connect a mailbox on the <a href="dashboard.html">Config</a> page first.</p>
-
-        <form id="schedule-form" class="schedule-form" hidden>
+        <form id="schedule-form" class="schedule-form">
           <h2>Schedule</h2>
-          <p class="sub">Process the selected mailbox automatically. Each run covers mail received since the previous run.</p>
+          <p class="sub">Process this mailbox automatically. Each run covers mail received since the previous run.</p>
           <div class="schedule-row">
             <label class="checkbox">
               <input type="checkbox" name="enabled" id="schedule-enabled" />
@@ -104,6 +114,8 @@
 
       <ul class="email-list" id="email-list"></ul>
       <p class="empty" id="email-empty" hidden>Nothing here.</p>
+      </div>
+      </div>
     </main>
   </div>
 
@@ -139,24 +151,79 @@
     let mailboxes = [];
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+    // The selected mailbox lives in the process form's hidden mailbox_id field; the last one picked is remembered
+    // in this browser.
+    const SELECTED_KEY = "inbox-mailbox";
+
     async function loadMailboxes() {
       const { data, error } = await callApi("mailboxes", { method: "GET" });
       if (error) return showMessage(`Could not load mailboxes: ${error}`, "error");
       mailboxes = data.mailboxes;
-      const select = document.getElementById("mailbox-select");
-      const selected = select.value;
-      select.replaceChildren(...mailboxes.map((m) => {
-        const opt = document.createElement("option");
-        opt.value = m.id;
-        opt.textContent = `${m.email_address} · ${m.mailbox_type === "ar" ? "AR" : "AP"}${m.smart_ap_address ? "" : " (no destination email)"}`;
-        return opt;
-      }));
-      if (mailboxes.some((m) => m.id === selected)) select.value = selected;
       const none = mailboxes.length === 0;
-      document.getElementById("process-form").hidden = none;
-      document.getElementById("schedule-form").hidden = none;
+      document.getElementById("inbox-layout").hidden = none;
       document.getElementById("no-mailboxes").hidden = !none;
+      if (none) return;
+
+      let selected = document.getElementById("mailbox-select").value;
+      if (!selected) {
+        try {
+          selected = localStorage.getItem(SELECTED_KEY) || "";
+        } catch {
+          // Storage blocked: start with the first mailbox.
+        }
+      }
+      if (!mailboxes.some((m) => m.id === selected)) selected = mailboxes[0].id;
+      document.getElementById("mailbox-select").value = selected;
+      renderMailboxNav();
+      renderDetailHead();
       fillSchedule();
+    }
+
+    // Left-hand list: one entry per mailbox with its type and whether it runs on a schedule.
+    function renderMailboxNav() {
+      const selected = document.getElementById("mailbox-select").value;
+      document.getElementById("mailbox-nav-list").replaceChildren(...mailboxes.map((m) => {
+        const item = el("button", m.id === selected ? "mailbox-nav-item active" : "mailbox-nav-item");
+        item.type = "button";
+        if (m.id === selected) item.setAttribute("aria-current", "true");
+        const top = el("span", "mailbox-nav-top");
+        top.append(el("span", "mailbox-nav-email", m.email_address),
+          el("span", `badge type-${m.mailbox_type || "ap"}`, m.mailbox_type === "ar" ? "AR" : "AP"));
+        const sub = el("span", "mailbox-nav-sub",
+          [m.display_name, m.schedule_enabled ? "Scheduled" : null,
+            m.last_processed_at ? `Processed ${new Date(m.last_processed_at).toLocaleDateString()}` : "Not processed yet"]
+            .filter(Boolean).join(" · "));
+        item.append(top, sub);
+        item.addEventListener("click", () => selectMailbox(m.id));
+        const li = el("li");
+        li.append(item);
+        return li;
+      }));
+    }
+
+    function renderDetailHead() {
+      const m = mailboxes.find((x) => x.id === document.getElementById("mailbox-select").value);
+      if (!m) return;
+      document.getElementById("detail-title").textContent = m.email_address;
+      document.getElementById("detail-meta").textContent = [
+        m.mailbox_type === "ar" ? "Accounts receivable" : "Accounts payable",
+        m.delegate_address ? `shared, via ${m.delegate_address}` : m.connection_id ? "shared, via organization" : null,
+        m.smart_ap_address ? `forwards to ${m.smart_ap_address}` : "no destination email",
+      ].filter(Boolean).join(" · ");
+    }
+
+    function selectMailbox(id) {
+      if (id === document.getElementById("mailbox-select").value) return;
+      document.getElementById("mailbox-select").value = id;
+      try {
+        localStorage.setItem(SELECTED_KEY, id);
+      } catch {
+        // Not remembered; harmless.
+      }
+      renderMailboxNav();
+      renderDetailHead();
+      fillSchedule();
+      loadEmails();
     }
 
     // --- Schedule for the selected mailbox (saved via PATCH mailboxes {id, schedule}) ---
@@ -211,10 +278,6 @@
         interval && document.getElementById("schedule-interval-unit").value === "minutes" ? 5 : 1;
     }
 
-    document.getElementById("mailbox-select").addEventListener("change", () => {
-      fillSchedule();
-      loadEmails();
-    });
     document.getElementById("schedule-frequency").addEventListener("change", toggleFrequencyFields);
     document.getElementById("schedule-interval-unit").addEventListener("change", toggleFrequencyFields);
 
@@ -366,7 +429,7 @@
       if (data.report === "off") text += " No summary email (turned off in this mailbox's settings).";
       if (data.report === "no_recipient") text += " No summary email (no summary address set, and your account has no email address).";
       showMessage(text, data.counts.error ? "error" : "ok");
-      await loadEmails();
+      await Promise.all([loadEmails(), loadMailboxes()]);
     });
 
     for (const tab of document.querySelectorAll(".tab")) {
