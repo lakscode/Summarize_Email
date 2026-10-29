@@ -67,7 +67,9 @@ Until Azure is enabled in Supabase, clicking the button shows "Unsupported provi
 2. Certificates & secrets > New client secret. Copy the **value**.
 3. API permissions > Microsoft Graph > Delegated: `offline_access`, `User.Read`, `Mail.Read`, `Mail.Send`
    (`Mail.Send` forwards invoices; mailboxes connected before it was added must be reconnected).
-   For shared mailboxes also add `Mail.Read.Shared` and `Mail.Send.Shared`.
+   Also add `Mail.Read.Shared` and `Mail.Send.Shared` (requested on every sign-in, for shared mailboxes).
+   To list a signed-in user's shared mailboxes after sign-in, add Office 365 Exchange Online > Delegated >
+   `EWS.AccessAsUser.All` and grant admin consent (without it, shared mailboxes can still be added by address).
 4. Copy `supabase/functions/.env.example` to `supabase/functions/.env`, fill in `MS_CLIENT_ID`,
    `MS_CLIENT_SECRET`, `MS_TENANT_ID`, `ANTHROPIC_API_KEY`, `OAUTH_STATE_SECRET` and `APP_URL`, then:
    ```

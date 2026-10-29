@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Dashboard</title>
+  <title>Config</title>
   <link rel="stylesheet" href="assets/app.css" />
   <link rel="icon" type="image/png" href="images/favicon.png" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -17,7 +17,7 @@
 
     <main class="content">
       <div id="message" class="message" hidden></div>
-      <h1 id="greeting">Dashboard</h1>
+      <h1 id="greeting">Config</h1>
       <p class="sub">You're signed in.</p>
       <section class="grid">
         <div class="tile"><div class="label">Name</div><div class="value" id="profile-name">—</div></div>
@@ -25,7 +25,7 @@
         <div class="tile"><div class="label">Member since</div><div class="value" id="profile-since">—</div></div>
       </section>
 
-      <section class="panel">
+      <section class="panel"  style="display:none">
         <div class="panel-head">
           <div>
             <h2>Organizations</h2>
@@ -111,6 +111,19 @@
             or Send on Behalf to forward emails from it). Ask your Microsoft 365 admin if you don't have it. For many
             mailboxes, add an organization above instead.</p>
         </form>
+        <form id="pick-shared-form" class="inline-form connect-form" hidden autocomplete="off">
+          <h3 id="pick-shared-title">Shared mailboxes</h3>
+          <p class="label wide" id="pick-shared-status"></p>
+          <fieldset class="days" id="pick-shared-list" hidden></fieldset>
+          <label class="wide">Other shared mailbox addresses (optional, one per line)
+            <textarea name="extra" rows="2" placeholder="ap@yourcompany.com"></textarea>
+          </label>
+          <button type="submit">Add selected</button>
+          <button type="button" class="secondary" data-cancel>Close</button>
+          <p class="hint">Selected mailboxes are read through the account you signed in with, for the same access period.
+            Only mailboxes that account has Full Access to can be added.</p>
+          <ul class="results" id="pick-shared-results" hidden></ul>
+        </form>
         <div class="inline-form list-filter" id="mailbox-filter" hidden>
           <label>Filter <input type="search" id="filter-text" placeholder="Address or organization" /></label>
           <label>Type
@@ -147,7 +160,7 @@
       const profile = data?.profile;
 
       const name = profile?.full_name || user.user_metadata?.full_name || "";
-      document.getElementById("greeting").textContent = name ? `Hello, ${name}` : "Dashboard";
+      document.getElementById("greeting").textContent = name ? `Hello, ${name}` : "Config";
       document.getElementById("profile-name").textContent = name || "—";
       document.getElementById("profile-email").textContent = profile?.email || user.email;
       document.getElementById("profile-since").textContent =
@@ -181,6 +194,8 @@
       }
       else if (params.has("connect_error")) showMessage(params.get("connect_error"), "error");
       else return false;
+      // An own Azure mailbox: offer the shared mailboxes that account can open.
+      if (params.has("mailbox_id")) offerSharedMailboxes(params.get("mailbox_id"), params.get("connected"));
       return true;
     }
 
@@ -415,8 +430,13 @@
         access.textContent = "Access through the organization's API keys.";
       } else {
         access.textContent = m.access_expires_at
-          ? `Access until ${new Date(m.access_expires_at).toLocaleString()}`
-          : "Access has no expiry (connected before access periods). Reconnect to set one.";
+          ? `Access until ${new Date(m.access_expires_at).toLocaleString()}. `
+          : "Access has no expiry (connected before access periods). Reconnect to set one. ";
+        if ((m.provider || "microsoft") === "microsoft" && !m.delegate_address) {
+          const findShared = button("Shared mailboxes…", "link-button");
+          findShared.addEventListener("click", () => offerSharedMailboxes(m.id, m.email_address));
+          access.append(findShared);
+        }
       }
       info.append(email, meta, access);
 
@@ -468,12 +488,21 @@
       typeSelect.addEventListener("change", () =>
         renderForwardChoices(forward, typeSelect.value, typeSelect.value === m.mailbox_type ? m.forward_categories : null));
 
+      // Run summary emailed to the mailbox after each run; off means no summary email at all.
+      const summaryLabel = document.createElement("label");
+      summaryLabel.className = "checkbox";
+      const summary = document.createElement("input");
+      summary.type = "checkbox";
+      summary.name = "send_summary";
+      summary.checked = m.send_summary === true;
+      summaryLabel.append(summary, " Send summary email");
+
       // Save is only enabled (and highlighted) when something changed; the result shows next to it.
       const save = button("Save", "secondary", "submit");
       const status = document.createElement("span");
       status.className = "save-status";
       status.setAttribute("role", "status");
-      const current = () => JSON.stringify([typeSelect.value, dest.value.trim(), checkedForward(form)]);
+      const current = () => JSON.stringify([typeSelect.value, dest.value.trim(), checkedForward(form), summary.checked]);
       let saved = null;
       const refresh = () => {
         const dirty = current() !== saved;
@@ -484,12 +513,15 @@
       form.addEventListener("input", refresh);
       form.addEventListener("change", refresh);
 
-      form.append(typeLabel, destLabel, forward, save, status);
+      form.append(typeLabel, destLabel, forward, summaryLabel, save, status);
       saved = current();
       refresh();
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
-        const body = { id: m.id, mailbox_type: typeSelect.value, forward_categories: checkedForward(form), smart_ap_address: dest.value };
+        const body = {
+          id: m.id, mailbox_type: typeSelect.value, forward_categories: checkedForward(form), smart_ap_address: dest.value,
+          send_summary: summary.checked,
+        };
         status.className = "save-status";
         status.textContent = "Saving…";
         setBusy(form, true);
@@ -503,6 +535,7 @@
         }
         Object.assign(m, data.mailbox);
         dest.value = m.smart_ap_address || "";
+        summary.checked = m.send_summary === true;
         saved = current();
         refresh();
         status.className = "save-status ok";
@@ -623,6 +656,7 @@
       form.reset();
       form.hidden = true;
       if (form === bulkForm) bulkResults.hidden = true;
+      if (form === pickForm) pickResults.hidden = true;
       syncToggles();
     }
 
@@ -652,6 +686,77 @@
     for (const b of document.querySelectorAll(".connect-button")) {
       b.addEventListener("click", () => startConnect(b, b.dataset.provider));
     }
+
+    // --- Shared mailboxes of a signed-in Azure account: listed after sign-in (or from the mailbox row), then the
+    // ticked ones (plus any typed addresses) are added, read through that account. ---
+
+    const pickForm = document.getElementById("pick-shared-form");
+    const pickList = document.getElementById("pick-shared-list");
+    const pickStatus = document.getElementById("pick-shared-status");
+    const pickResults = document.getElementById("pick-shared-results");
+
+    async function offerSharedMailboxes(mailboxId, account) {
+      pickForm.dataset.mailbox = mailboxId;
+      document.getElementById("pick-shared-title").textContent = `Shared mailboxes for ${account}`;
+      pickStatus.textContent = "Looking for shared mailboxes…";
+      pickList.replaceChildren();
+      pickList.hidden = true;
+      pickResults.hidden = true;
+      showForm(pickForm);
+
+      const { data, error } = await callApi("mailboxes", { body: { action: "discover_shared", mailbox_id: mailboxId } });
+      if (pickForm.dataset.mailbox !== mailboxId) return; // another account's list was opened meanwhile
+      if (error) return (pickStatus.textContent = error);
+      if (!data.mailboxes.length) {
+        pickStatus.textContent = data.warning ?? `No shared mailboxes left to add for ${account}. You can still add one by address.`;
+        return;
+      }
+      const n = data.mailboxes.length;
+      pickStatus.textContent = `${account} has Full Access to ${n} shared mailbox${n === 1 ? "" : "es"} not added yet. Tick the ones to add.`;
+      const legend = document.createElement("legend");
+      legend.textContent = "Shared mailboxes";
+      pickList.replaceChildren(legend, ...data.mailboxes.map((m) => {
+        const label = document.createElement("label");
+        label.className = "checkbox";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.value = m.address;
+        label.append(input, ` ${m.name ? `${m.name} · ` : ""}${m.address}`);
+        return label;
+      }));
+      pickList.hidden = false;
+    }
+
+    pickForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const ticked = [...pickList.querySelectorAll("input:checked")].map((i) => i.value);
+      const extra = pickForm.elements.extra.value.trim();
+      if (!ticked.length && !extra) return showMessage("Tick a shared mailbox or enter an address.", "error");
+
+      setBusy(pickForm, true);
+      const { data, error } = await callApi("mailboxes", {
+        body: { action: "add_shared", mailbox_id: pickForm.dataset.mailbox, addresses: [...ticked, extra] },
+      });
+      setBusy(pickForm, false);
+      if (error) return showMessage(error, "error");
+
+      pickResults.replaceChildren(...data.results.map((r) => {
+        const li = document.createElement("li");
+        li.className = r.ok ? "ok" : "failed";
+        li.textContent = r.ok ? `${r.address}: added` : `${r.address}: ${r.error}`;
+        return li;
+      }));
+      pickResults.hidden = false;
+      // Added mailboxes leave the list; failed typed addresses stay so they can be fixed and retried.
+      const added = new Set(data.results.filter((r) => r.ok).map((r) => r.address));
+      for (const input of pickList.querySelectorAll("input")) if (added.has(input.value)) input.closest("label").remove();
+      if (!pickList.querySelector("input")) pickList.hidden = true;
+      pickForm.elements.extra.value = data.results.filter((r) => !r.ok && !ticked.includes(r.address)).map((r) => r.address).join("\n");
+      const failed = data.results.length - added.size;
+      showMessage(`Added ${added.size} shared mailbox${added.size === 1 ? "" : "es"}${failed ? `; ${failed} could not be added (see below)` : ""}.`,
+        failed ? "error" : "ok");
+      await loadMailboxes();
+    });
   </script>
 </body>
 </html>

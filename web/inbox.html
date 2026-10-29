@@ -18,7 +18,7 @@
     <main class="content">
       <div id="message" class="message" hidden></div>
       <h1>Inbox</h1>
-      <p class="sub">AP and AR emails classified by Claude, with what to do next. Categories chosen on the Dashboard are forwarded to the mailbox's destination email.</p>
+      <p class="sub">AP and AR emails classified by Claude, with what to do next. Categories chosen on the Config page are forwarded to the mailbox's destination email.</p>
 
       <section class="panel process-panel">
         <form id="process-form" class="process-form">
@@ -39,7 +39,7 @@
           </label>
           <button type="submit" id="process-btn">Process inbox</button>
         </form>
-        <p class="empty" id="no-mailboxes" hidden>Connect a mailbox on the <a href="dashboard.html">Dashboard</a> first.</p>
+        <p class="empty" id="no-mailboxes" hidden>Connect a mailbox on the <a href="dashboard.html">Config</a> page first.</p>
 
         <form id="schedule-form" class="schedule-form" hidden>
           <h2>Schedule</h2>
@@ -363,6 +363,7 @@
       if (data.remaining) text += ` ${data.remaining} more waiting. Run again to continue.`;
       if (data.report === "sent") text += ` Summary emailed to ${data.mailbox}.`;
       if (data.report === "failed") text += " The summary email could not be sent (see Logs).";
+      if (data.report === "off") text += " No summary email (turned off in this mailbox's settings).";
       showMessage(text, data.counts.error ? "error" : "ok");
       await loadEmails();
     });

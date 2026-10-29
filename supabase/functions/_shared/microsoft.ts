@@ -11,8 +11,8 @@ const GRAPH = "https://graph.microsoft.com/v1.0";
 // Requested at connect time. Mail.Send is needed to forward invoices to the Smart AP address;
 // mailboxes connected before it was added must be reconnected to grant it.
 export const MS_SCOPES = "offline_access User.Read Mail.Read Mail.Send";
-// Added when connecting a shared mailbox: read it, and forward from it (which also needs Send As or
-// Send on Behalf rights on the shared mailbox in Exchange).
+// Requested on every Microsoft sign-in, so shared mailboxes (chosen up front or found afterwards) can be read and
+// forwarded from with the same token (forwarding also needs Send As or Send on Behalf rights in Exchange).
 export const MS_SHARED_SCOPES = `${MS_SCOPES} Mail.Read.Shared Mail.Send.Shared`;
 
 // Graph path of a mailbox: the signed-in user's own, or a shared mailbox they have access to.
@@ -36,7 +36,7 @@ export async function connectionCredentials(db: SupabaseClient, connectionId: st
 export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): Promise<MailClient> {
   const app = mailbox.auth_type === "app";
   if (app && !mailbox.connection_id) throw new Error("Mailbox has no organization connection; add it again from the dashboard.");
-  const token = app ? await appToken(await connectionCredentials(db, mailbox.connection_id!)) : await graphToken(db, mailbox);
+  const token = app ? await appToken(await connectionCredentials(db, mailbox.connection_id!)) : await delegatedToken(db, mailbox);
   // App-only tokens have no "me"; they address the mailbox by its address.
   const box = mailboxPath(app || mailbox.delegate_address ? mailbox.email_address : null);
   return {
@@ -50,7 +50,8 @@ export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): 
 }
 
 // Exchanges the stored refresh token for an access token, saving a rotated refresh token if Microsoft returns one.
-async function graphToken(db: SupabaseClient, mailbox: MailboxRow): Promise<string> {
+// `resource`: Graph by default, or Exchange Online for Autodiscover (alternateMailboxes).
+export async function delegatedToken(db: SupabaseClient, mailbox: MailboxRow, resource = "https://graph.microsoft.com"): Promise<string> {
   const refreshToken = await readRefreshToken(db, mailbox);
   const res = await fetch(`${msBase()}/token`, {
     method: "POST",
@@ -60,7 +61,7 @@ async function graphToken(db: SupabaseClient, mailbox: MailboxRow): Promise<stri
       grant_type: "refresh_token",
       refresh_token: refreshToken,
       // .default = whatever this mailbox consented to, so older connections without Mail.Send still refresh.
-      scope: "offline_access https://graph.microsoft.com/.default",
+      scope: `offline_access ${resource}/.default`,
     }),
   });
   if (!res.ok) throw new Error(`Microsoft token refresh failed (${res.status}); reconnect the mailbox. ${await res.text()}`);
@@ -149,6 +150,69 @@ export async function sharedMailboxesFor(c: AppCredentials, person: string): Pro
   found.sort((a, b) => a.address.localeCompare(b.address));
   return { mailboxes: found, checked: candidates.length, total: shared.length };
 }
+
+// --- Autodiscover: which shared mailboxes a signed-in user has Full Access to ------------------------------------
+// Exchange lists mailboxes the user has Full Access to (with automapping, the default when access is granted to the
+// user directly) as "Delegate" AlternativeMailbox entries in the Outlook Autodiscover response. Needs a delegated
+// token for Exchange Online: the Azure app needs the delegated permission EWS.AccessAsUser.All
+// (Office 365 Exchange Online), admin-consented.
+// `entries` counts every AlternativeMailbox (any type) and `response` is the start of Exchange's reply, so an empty
+// result can be told apart from an unexpected response in the logs.
+export async function alternateMailboxes(
+  db: SupabaseClient, mailbox: MailboxRow,
+): Promise<{ mailboxes: SharedMailbox[]; entries: number; response: string }> {
+  const token = await delegatedToken(db, mailbox, EXCHANGE);
+  let address = mailbox.email_address;
+  let xml = "";
+  // Exchange may answer with a redirect to the user's primary address (e.g. when signed in by an alias or UPN).
+  for (let hop = 0; hop < 3; hop++) {
+    const res = await fetch(`${EXCHANGE}/autodiscover/autodiscover.xml`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/xml; charset=utf-8", "X-AnchorMailbox": address },
+      body: `<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006">
+  <Request>
+    <EMailAddress>${xmlEscape(address)}</EMailAddress>
+    <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
+  </Request>
+</Autodiscover>`,
+    });
+    xml = await res.text();
+    if (!res.ok) throw new Error(`Autodiscover failed (${res.status}): ${xml.slice(0, 500)}`);
+    const redirect = xmlField(xml, "Action") === "redirectAddr" ? xmlField(xml, "RedirectAddr").toLowerCase() : "";
+    if (!redirect || redirect === address) break;
+    address = redirect;
+  }
+  if (/<(\w+:)?Error[\s>]/.test(xml)) {
+    throw new Error(`Autodiscover returned an error: ${xmlField(xml, "Message") || xmlField(xml, "ErrorCode") || xml.slice(0, 500)}`);
+  }
+
+  const found = new Map<string, SharedMailbox>();
+  const entries = [...xml.matchAll(/<(?:\w+:)?AlternativeMailbox>([\s\S]*?)<\/(?:\w+:)?AlternativeMailbox>/g)];
+  for (const [, entry] of entries) {
+    if (xmlField(entry, "Type") !== "Delegate") continue;
+    const smtp = (xmlField(entry, "SmtpAddress") || xmlField(entry, "OwnerSmtpAddress")).toLowerCase();
+    if (smtp && smtp !== mailbox.email_address && smtp !== address) found.set(smtp, { address: smtp, name: xmlField(entry, "DisplayName") });
+  }
+  return {
+    mailboxes: [...found.values()].sort((a, b) => a.address.localeCompare(b.address)),
+    entries: entries.length,
+    response: xml.slice(0, 3000),
+  };
+}
+
+// Text of the first <name> element (namespace prefix allowed), unescaped.
+const xmlField = (xml: string, name: string) =>
+  xmlUnescape(xml.match(new RegExp(`<(?:\\w+:)?${name}>([^<]*)</(?:\\w+:)?${name}>`))?.[1] ?? "").trim();
+
+const xmlEscape = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const xmlUnescape = (s: string) =>
+  s.replace(/&(lt|gt|quot|apos|amp|#\d+);/g, (_, e) =>
+    ({ lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" } as Record<string, string>)[e] ?? String.fromCharCode(Number(e.slice(1))));
+
+// Whether `token` can open the inbox of `address` (the Graph response, for its status and error text).
+export const openInbox = (token: string, address: string) =>
+  fetch(`${GRAPH}${mailboxPath(address)}/mailFolders/inbox?$select=id`, { headers: { Authorization: `Bearer ${token}` } });
 
 async function graph<T>(token: string, path: string, init: RequestInit = {}, extraHeaders: Record<string, string> = {}): Promise<T> {
   for (let attempt = 0; ; attempt++) {
