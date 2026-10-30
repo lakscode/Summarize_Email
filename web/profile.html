@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Profile</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <link rel="icon" type="image/png" href="images/favicon.png" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="assets/brand.js"></script>
+  <script src="assets/common.js"></script>
+</head>
+<body>
+  <div class="shell" hidden>
+    <aside id="sidebar" class="sidebar"></aside>
+
+    <main class="content profile-page">
+      <div id="message" class="message" hidden></div>
+      <h1>Profile</h1>
+      <p class="sub">Your account details.</p>
+
+      <section class="panel">
+        <div class="profile-head">
+          <div class="avatar" id="avatar" aria-hidden="true"></div>
+          <div>
+            <h2 id="profile-name">—</h2>
+            <p class="sub" id="profile-email"></p>
+          </div>
+        </div>
+        <dl class="profile-facts">
+          <div><dt>Sign-in method</dt><dd id="profile-method">—</dd></div>
+          <div><dt>Member since</dt><dd id="profile-since">—</dd></div>
+          <div><dt>Organization</dt><dd id="profile-org">—</dd></div>
+          <div id="profile-access-row" hidden><dt>Access</dt><dd><span class="badge type-ap">Super admin</span></dd></div>
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2>Your name</h2>
+        <p class="sub">Shown to the people in your organization.</p>
+        <form id="name-form" class="profile-form" autocomplete="off">
+          <label>Full name
+            <input name="full_name" autocomplete="name" maxlength="100" required />
+          </label>
+          <div><button type="submit">Save name</button></div>
+        </form>
+      </section>
+
+      <section class="panel" id="password-panel" hidden>
+        <h2>Password</h2>
+        <p class="sub">Choose a new password for signing in with your email address.</p>
+        <form id="password-form" class="profile-form">
+          <label>New password
+            <input type="password" name="password" autocomplete="new-password" minlength="6" required />
+          </label>
+          <label>Confirm new password
+            <input type="password" name="confirm" autocomplete="new-password" minlength="6" required />
+          </label>
+          <div><button type="submit">Change password</button></div>
+        </form>
+      </section>
+
+      <section class="panel" id="password-sso" hidden>
+        <h2>Password</h2>
+        <p class="sub">You sign in with Microsoft, so your password is managed by your Microsoft account.</p>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const PROVIDER_NAMES = { email: "Email and password", azure: "Microsoft" };
+
+    (async () => {
+      const session = await requireSession();
+      if (!session) return;
+      const { user } = session;
+      renderSidebar("profile", session);
+      document.querySelector(".shell").hidden = false;
+
+      const providers = user.app_metadata?.providers ?? [user.app_metadata?.provider].filter(Boolean);
+      document.getElementById("profile-method").textContent = providers.map((p) => PROVIDER_NAMES[p] ?? p).join(", ") || "—";
+      // Only email accounts have a password here; Microsoft sign-ins use their Microsoft password.
+      document.getElementById("password-panel").hidden = !providers.includes("email");
+      document.getElementById("password-sso").hidden = providers.includes("email");
+
+      // Supabase Edge Function APIs: supabase/functions/profile and supabase/functions/organizations
+      const [profileRes, orgRes] = await Promise.all([
+        callApi("profile", { method: "GET" }),
+        callApi("organizations", { method: "GET" }),
+      ]);
+      if (profileRes.error) showMessage(`Could not load your profile: ${profileRes.error}`, "error");
+      showProfile(profileRes.data?.profile, user);
+
+      const org = orgRes.data;
+      const orgCell = document.getElementById("profile-org");
+      if (orgRes.error) orgCell.textContent = "Couldn't load";
+      else if (!org.organization) orgCell.textContent = "Not in an organization";
+      else {
+        const link = document.createElement("a");
+        link.href = pageUrl("settings");
+        link.textContent = org.organization.name;
+        orgCell.replaceChildren(link, ` · ${org.role === "admin" ? "Admin" : "Member"}`);
+      }
+      document.getElementById("profile-access-row").hidden = !org?.super_admin;
+    })();
+
+    function showProfile(profile, user) {
+      const name = profile?.full_name || user.user_metadata?.full_name || user.user_metadata?.name || "";
+      const email = profile?.email || user.email || "";
+      document.getElementById("profile-name").textContent = name || "No name yet";
+      document.getElementById("profile-email").textContent = email;
+      document.getElementById("profile-since").textContent = new Date(profile?.created_at || user.created_at).toLocaleDateString();
+      document.getElementById("avatar").textContent = initials(name || email);
+      document.getElementById("name-form").elements.full_name.value = name;
+    }
+
+    function initials(text) {
+      const words = text.split(/[\s@._-]+/).filter(Boolean);
+      return (words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? "?").slice(0, 2)).toUpperCase();
+    }
+
+    const nameForm = document.getElementById("name-form");
+    nameForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const full_name = nameForm.elements.full_name.value.trim();
+      setBusy(nameForm, true);
+      const { data, error } = await callApi("profile", { method: "PATCH", body: { full_name } });
+      setBusy(nameForm, false);
+      if (error) return showMessage(error, "error");
+      showProfile(data.profile, (await getSession()).user);
+      showMessage("Name saved.", "ok");
+    });
+
+    const passwordForm = document.getElementById("password-form");
+    passwordForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const { password, confirm } = Object.fromEntries(new FormData(passwordForm));
+      if (password !== confirm) return showMessage("Passwords don't match.", "error");
+      setBusy(passwordForm, true);
+      const { error } = await sb.auth.updateUser({ password });
+      setBusy(passwordForm, false);
+      if (error) return showMessage(error.message, "error");
+      passwordForm.reset();
+      showMessage("Password changed. Use the new one next time you log in.", "ok");
+    });
+  </script>
+</body>
+</html>
