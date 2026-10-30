@@ -49,12 +49,12 @@
       const { data, error } = await sb.auth.signUp({
         email,
         password,
-        options: { data: { full_name }, emailRedirectTo: pageUrl("dashboard") },
+        options: { data: { full_name }, emailRedirectTo: pageUrl("inbox") },
       });
       setBusy(form, false);
       if (error) return showMessage(error.message, "error");
       // With email confirmation on, signUp returns no session until the link is clicked.
-      if (data.session) location.replace(pageUrl("dashboard"));
+      if (data.session) location.replace(pageUrl("inbox"));
       else location.replace(pageUrl("login") + "?confirm=1");
     });
   </script>

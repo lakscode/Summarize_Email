@@ -32,7 +32,7 @@ async function getSession() {
 
 // Login/signup pages: skip straight to the dashboard when already signed in.
 async function redirectIfSignedIn() {
-  if (await getSession()) location.replace(pageUrl("dashboard"));
+  if (await getSession()) location.replace(pageUrl("inbox"));
 }
 
 // --- Single sign-on (Supabase Auth OAuth providers; enable them under Authentication > Sign In / Providers). ---
@@ -182,17 +182,19 @@ const ICONS = {
   inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/>',
   logs: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
   profile: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
-  settings: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  settings: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   collapse: '<path d="M15 18l-6-6 6-6"/>',
 };
 
+// Daily work first, then setup, admin, troubleshooting, and the user's own account last.
 const NAV = [
-  { page: "dashboard", label: "Config" },
   { page: "inbox", label: "Inbox" },
-  { page: "logs", label: "Logs" },
+  // Mailbox setup: connecting mailboxes and how each one is handled.
+  { page: "dashboard", label: "Settings" },
   // Organization details for everyone; what can be changed there depends on the user's role.
-  { page: "settings", label: "Settings" },
+  { page: "settings", label: "Organization" },
+  { page: "logs", label: "Logs" },
   { page: "profile", label: "Profile" },
 ];
 

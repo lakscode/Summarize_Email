@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Config</title>
+  <title>Settings</title>
   <link rel="stylesheet" href="assets/app.css" />
   <link rel="icon" type="image/png" href="images/favicon.png" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -22,7 +22,7 @@
         <button type="button" id="own-mailbox-add">Add my mailbox</button>
         <button type="button" class="secondary" id="own-mailbox-later">Not now</button>
       </div>
-      <h1 id="greeting">Config</h1>
+      <h1 id="greeting">Settings</h1>
       <p class="sub">You're signed in.</p>
       <section class="grid">
         <div class="tile"><div class="label">Name</div><div class="value" id="profile-name">—</div></div>
@@ -167,7 +167,7 @@
       const profile = data?.profile;
 
       const name = profile?.full_name || user.user_metadata?.full_name || "";
-      document.getElementById("greeting").textContent = name ? `Hello, ${name}` : "Config";
+      document.getElementById("greeting").textContent = name ? `Hello, ${name}` : "Settings";
       document.getElementById("profile-name").textContent = name || "—";
       document.getElementById("profile-email").textContent = profile?.email || user.email;
       document.getElementById("profile-since").textContent =

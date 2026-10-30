@@ -1,4 +1,4 @@
-// Organizations (a company's users) on the Settings page, for everyone. Supabase Edge Function API:
+// Organizations (a company's users) on the Organization page, for everyone. Supabase Edge Function API:
 // supabase/functions/organizations.
 //   Super admins: every organization in a list; create them and assign people.
 //   Organization admins: their own organization (people, roles, name; not the auto-join domain).

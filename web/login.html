@@ -54,7 +54,7 @@
       const { error } = await sb.auth.signInWithPassword({ email, password });
       setBusy(form, false);
       if (error) return showMessage(error.message, "error");
-      location.replace(pageUrl("dashboard"));
+      location.replace(pageUrl("inbox"));
     });
   </script>
 </body>
