@@ -28,8 +28,9 @@
 //                                         -> { results: [{address, ok, error?}], warning? } discover_shared + add_shared
 //                                            for every shared mailbox found, run after signing in to the app with
 //                                            Microsoft so nothing has to be picked by hand
-//   A newly added mailbox that another user already has takes that user's settings (type, forwarded categories,
-//   destination, summary); the schedule is not copied, so the same mailbox isn't processed twice.
+//   A newly added mailbox that another member of the same organization already has takes that member's settings
+//   (type, forwarded categories, destination, summary); the schedule is not copied, so the same mailbox isn't
+//   processed twice.
 //   PATCH {id, mailbox_type?, forward_categories?, smart_ap_address?, send_summary?, summary_address?}
 //                                         -> per-mailbox settings: AP or AR, which categories are forwarded, the
 //                                            destination address they go to ("" clears it), whether the run summary
@@ -299,12 +300,20 @@ async function saveMailbox(
   return id;
 }
 
-// Settings of the same mailbox as another user most recently configured it, for a mailbox this user adds for the
-// first time (typically a shared AP/AR mailbox colleagues already set up). Empty when no one else has it.
+// Settings of the same mailbox as another member of the user's organization most recently configured it, for a
+// mailbox this user adds for the first time (typically a shared AP/AR mailbox colleagues already set up). Empty when
+// the user is in no organization or no other member has it.
 async function settingsFromOtherUsers(db: SupabaseClient, uid: string, address: string): Promise<Record<string, unknown>> {
+  const { data: own, error: orgError } = await db.from("organization_members").select("org_id").eq("user_id", uid).maybeSingle();
+  if (orgError) throw new Error(orgError.message);
+  if (!own) return {};
+  const { data: members, error: membersError } = await db.from("organization_members").select("user_id")
+    .eq("org_id", own.org_id).neq("user_id", uid);
+  if (membersError) throw new Error(membersError.message);
+  if (!members.length) return {};
   const { data, error } = await db.from("mailboxes")
     .select("mailbox_type, forward_categories, smart_ap_address, send_summary, summary_address")
-    .eq("email_address", address).neq("owner_user_id", uid)
+    .eq("email_address", address).in("owner_user_id", members.map((m) => m.user_id))
     .order("updated_at", { ascending: false }).limit(1).maybeSingle();
   if (error) throw new Error(error.message);
   return data ?? {};

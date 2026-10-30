@@ -435,6 +435,10 @@ verify_jwt = false
 verify_jwt = true
 
 
+[functions.organizations]
+verify_jwt = true
+
+
 [functions.inbox]
 verify_jwt = true
 

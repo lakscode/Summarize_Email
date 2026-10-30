@@ -30,6 +30,7 @@
         <div class="tile"><div class="label">Member since</div><div class="value" id="profile-since">—</div></div>
       </section>
 
+
       <section class="panel"  style="display:none">
         <div class="panel-head">
           <div>
@@ -172,6 +173,10 @@
       document.getElementById("profile-since").textContent =
         new Date(profile?.created_at || user.created_at).toLocaleDateString();
 
+      // Organization first (shown under Settings): loading it joins one by invitation or email domain, which decides
+      // whose settings new mailboxes reuse.
+      const { error: orgError } = await callApi("organizations", { method: "GET" });
+      if (orgError) showMessage(`Could not load your organization: ${orgError}`, "error");
       autoAddMailboxes(user, await loadMailboxes());
     })();
 

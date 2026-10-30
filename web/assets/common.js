@@ -181,6 +181,7 @@ const ICONS = {
   dashboard: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/>',
   inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/>',
   logs: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  settings: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   collapse: '<path d="M15 18l-6-6 6-6"/>',
 };
@@ -189,6 +190,8 @@ const NAV = [
   { page: "dashboard", label: "Config" },
   { page: "inbox", label: "Inbox" },
   { page: "logs", label: "Logs" },
+  // Organization details for everyone; what can be changed there depends on the user's role.
+  { page: "settings", label: "Settings" },
 ];
 
 const SIDEBAR_COLLAPSED_KEY = "sidebar-collapsed";

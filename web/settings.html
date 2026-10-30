@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Settings</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <link rel="icon" type="image/png" href="images/favicon.png" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="assets/brand.js"></script>
+  <script src="assets/common.js"></script>
+  <script src="assets/organizations.js"></script>
+</head>
+<body>
+  <div class="shell" hidden>
+    <aside id="sidebar" class="sidebar"></aside>
+
+    <main class="content">
+      <div id="message" class="message" hidden></div>
+      <h1>Settings</h1>
+      <p class="sub" id="settings-intro">Loading…</p>
+
+      <div class="org-layout" id="org-layout" hidden>
+        <!-- Super admins: every organization. -->
+        <aside class="panel org-nav-panel" id="org-nav-panel" hidden>
+          <div class="org-nav-head">
+            <h2>Organizations</h2>
+            <button type="button" id="org-new">+ New</button>
+          </div>
+          <input type="search" id="org-search" placeholder="Search" aria-label="Search organizations" />
+          <ul class="org-nav" id="org-nav"></ul>
+          <p class="empty" id="org-nav-empty" hidden></p>
+        </aside>
+
+        <section class="panel org-detail">
+          <div class="org-placeholder" id="org-placeholder" hidden>
+            <p id="org-placeholder-text"></p>
+            <button type="button" id="org-placeholder-new" hidden>Create an organization</button>
+          </div>
+
+          <div id="org-content" hidden>
+            <div class="org-header">
+              <div>
+                <h2 id="org-name"></h2>
+                <p class="org-autojoin" id="org-autojoin"></p>
+                <p class="org-role-note" id="org-role-note"></p>
+              </div>
+              <div class="org-header-actions">
+                <button type="button" class="secondary" id="org-edit">Edit details</button>
+                <button type="button" class="secondary" id="org-leave">Leave</button>
+              </div>
+            </div>
+
+            <div class="org-section-head">
+              <h3>People <span class="org-count" id="org-count"></span></h3>
+              <button type="button" id="org-add">Add people</button>
+            </div>
+            <div class="org-table-wrap">
+              <table class="logs org-members">
+                <thead><tr><th>Name</th><th>Email</th><th>Role</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+                <tbody id="org-members"></tbody>
+              </table>
+            </div>
+            <p class="empty" id="org-members-empty" hidden>No one here yet. Use <strong>Add people</strong> to add the first members.</p>
+            <p class="hint" id="org-manage-hint">Admins can add and remove people here; members can see who is in the
+              organization.</p>
+
+            <details class="org-danger">
+              <summary>Delete organization</summary>
+              <p>Everyone in it is taken out of the organization. Their mailboxes and emails are not deleted.</p>
+              <button type="button" class="danger" id="org-delete">Delete this organization</button>
+            </details>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <dialog class="dialog" id="org-create-dialog" aria-labelledby="org-create-title">
+    <form method="dialog" id="org-create-form" autocomplete="off">
+      <h2 id="org-create-title">New organization</h2>
+      <label>Name
+        <input name="name" placeholder="e.g. Contoso" required />
+      </label>
+      <label>Company email domain <span class="optional">optional</span>
+        <input name="domain" placeholder="e.g. contoso.com" />
+      </label>
+      <p class="hint">With a domain, anyone who signs in with Microsoft using an address at it joins this organization
+        automatically. Leave it empty to add people only by hand.</p>
+      <div class="dialog-actions">
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="org-edit-dialog" aria-labelledby="org-edit-title">
+    <form method="dialog" id="org-edit-form" autocomplete="off">
+      <h2 id="org-edit-title">Edit details</h2>
+      <label>Name
+        <input name="name" required />
+      </label>
+      <label id="org-edit-domain">Company email domain <span class="optional">optional</span>
+        <input name="domain" placeholder="e.g. contoso.com" />
+      </label>
+      <p class="hint" id="org-edit-domain-hint">Anyone who signs in with Microsoft at this domain joins automatically. Clear it
+        to turn that off.</p>
+      <div class="dialog-actions">
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog dialog-wide" id="org-add-dialog" aria-labelledby="org-add-title">
+    <form method="dialog" id="org-add-form" autocomplete="off">
+      <h2 id="org-add-title">Add people</h2>
+
+      <!-- Super admins: choose from everyone with an account. -->
+      <div id="org-pick" hidden>
+        <p class="step">1. Choose people</p>
+        <input type="search" id="org-pick-search" placeholder="Search by name or email" aria-label="Search people" />
+        <div class="org-pick-list" id="org-pick-list"></div>
+        <p class="hint" id="org-pick-status"></p>
+      </div>
+
+      <label><span class="step" id="org-emails-step">Email addresses</span>
+        <textarea name="emails" rows="3" placeholder="jane.doe@contoso.com, john.smith@contoso.com"></textarea>
+      </label>
+      <p class="hint" id="org-emails-hint">Separate addresses with commas or new lines. People without an account get an
+        invitation and join when they first sign in.</p>
+
+      <fieldset class="org-roles">
+        <legend class="step" id="org-role-step">Role</legend>
+        <label class="org-role"><input type="radio" name="role" value="member" checked />
+          <span><strong>Member</strong><br /><span class="hint">Uses the app; sees the organization.</span></span></label>
+        <label class="org-role"><input type="radio" name="role" value="admin" />
+          <span><strong>Admin</strong><br /><span class="hint">Can also add and remove people here.</span></span></label>
+      </fieldset>
+
+      <ul class="results" id="org-add-results" hidden></ul>
+      <div class="dialog-actions">
+        <button type="button" class="secondary" data-close>Close</button>
+        <button type="submit" id="org-add-submit">Add</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    // Organizations (assets/organizations.js): super admins create them and assign people, organization admins manage
+    // their own, members see theirs.
+    (async () => {
+      const session = await requireSession();
+      if (!session) return;
+      renderSidebar("settings", session);
+      document.querySelector(".shell").hidden = false;
+      await initOrganizations().load();
+    })();
+  </script>
+</body>
+</html>

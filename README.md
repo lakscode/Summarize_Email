@@ -87,8 +87,31 @@ Behalf rights on it); the summary email is sent from the user's own mailbox to t
 **Signing in to the app with Microsoft** adds mailboxes automatically, once per sign-in: if the user's own mailbox
 isn't connected, the dashboard goes straight to the Azure mailbox sign-in for that account (usually no extra prompt),
 then adds every shared mailbox the account has Full Access to (found through Autodiscover, so `EWS.AccessAsUser.All`
-is needed). A mailbox another user has already added starts with that user's settings (AP/AR type, forwarded
-categories, destination, summary); its schedule is not copied, so the same mailbox isn't processed twice.
+is needed). A mailbox another member of the same organization has already added starts with that member's settings
+(AP/AR type, forwarded categories, destination, summary); its schedule is not copied, so the same mailbox isn't
+processed twice.
+
+### Organizations (users)
+
+An **organization** groups a company's users; each user is in at most one. Organization details are under
+**Settings** in the menu, for everyone:
+- **Super admins** see every organization, create them and assign people by picking them from everyone with an
+  account or by email (people without an account yet are invited and join on their first visit; people in another
+  organization are moved).
+- **Organization admins** manage their own organization: add people by email, change roles (admin / member), remove
+  members and rename it, but can't change its domain.
+- **Members** see their organization and who is in it, and can leave it.
+
+With a **domain** set (not a public one like gmail.com), anyone who signs
+in with Microsoft using an address at that domain joins automatically as a member, on their next visit to the
+dashboard; someone removed isn't joined again unless they are added back. Membership decides whose mailbox settings
+are reused (above). Not to be confused with the API-key organizations below.
+
+Make someone a super admin in the Supabase SQL editor (after they have signed in once):
+
+```sql
+insert into public.super_admins (user_id) select id from auth.users where email = 'you@yourcompany.com';
+```
 
 ### Organizations (API keys) for many shared AP / AR mailboxes
 

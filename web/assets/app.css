@@ -208,6 +208,7 @@ form.busy :is(button:not([type]), button[type="submit"])::before {
 .sidebar .icon { display: inline-flex; flex: none; width: 18px; height: 18px; }
 .sidebar .icon svg { width: 100%; height: 100%; }
 .sidebar nav a, .side-logout { display: flex; align-items: center; gap: 10px; }
+.sidebar nav a[hidden] { display: none; }
 .side-logout { justify-content: center; }
 .sidebar .label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .side-toggle {
@@ -247,6 +248,82 @@ form.busy :is(button:not([type]), button[type="submit"])::before {
 .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .panel h2 { margin: 0 0 4px; font-size: 1.15rem; }
 .panel .sub { margin: 0; }
+/* Settings: organizations. Super admins get a list on the left and the open organization on the right. */
+.org-layout { display: grid; grid-template-columns: minmax(220px, 280px) 1fr; gap: 20px; align-items: start; margin-top: 20px; }
+.org-layout.single { grid-template-columns: 1fr; }
+.org-layout[hidden], .org-layout [hidden] { display: none; }
+.org-layout .panel { margin-top: 0; }
+.org-nav-panel { display: grid; gap: 12px; position: sticky; top: 16px; }
+.org-nav-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.org-nav-head h2 { margin: 0; font-size: 1.05rem; }
+.org-nav-head button { padding: 6px 12px; }
+.org-nav { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; max-height: 60vh; overflow-y: auto; }
+.org-nav button { width: 100%; display: grid; gap: 2px; text-align: left; background: transparent; color: var(--text); font-weight: 500; padding: 9px 10px; }
+.org-nav button:hover { background: var(--bg); }
+.org-nav button[aria-current="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.org-nav-name { font-weight: 600; overflow-wrap: anywhere; }
+.org-nav-meta { font-size: 0.8rem; color: var(--muted); font-weight: 400; }
+.org-nav-panel .empty { margin: 0; font-size: 0.9rem; }
+.org-placeholder { text-align: center; padding: 32px 8px; color: var(--muted); }
+.org-placeholder p { margin: 0 0 14px; }
+.org-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.org-header h2 { margin: 0 0 6px; font-size: 1.35rem; overflow-wrap: anywhere; }
+.org-autojoin { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.org-role-note { margin: 6px 0 0; font-size: 0.9rem; }
+.org-role-note:empty { display: none; }
+.org-header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.org-section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 20px 0 8px; }
+.org-section-head h3 { margin: 0; font-size: 1.05rem; }
+.org-count { color: var(--muted); font-weight: 400; font-size: 0.9rem; margin-left: 6px; }
+.org-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+table.org-members td { vertical-align: middle; }
+table.org-members .org-email { color: var(--muted); overflow-wrap: anywhere; }
+table.org-members .org-row-actions { width: 1%; white-space: nowrap; text-align: right; }
+table.org-members .hint { margin: 4px 0 0; font-size: 0.8rem; }
+table.org-members tr.org-invite td { background: color-mix(in srgb, var(--bg) 60%, transparent); }
+.badge.you { margin-left: 8px; color: var(--accent); }
+button.small { padding: 5px 10px; font-size: 0.82rem; }
+button.danger { background: var(--error-text); color: var(--surface); }
+.org-danger { margin-top: 28px; border-top: 1px solid var(--border); padding-top: 12px; }
+.org-danger summary { cursor: pointer; color: var(--error-text); font-weight: 600; font-size: 0.9rem; }
+.org-danger p { color: var(--muted); font-size: 0.9rem; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+a.button-link { display: inline-block; padding: 10px 14px; border-radius: 8px; background: var(--accent); color: var(--accent-text); font-weight: 600; text-decoration: none; }
+
+/* Dialogs (Settings): one focused task at a time. */
+.dialog { border: 0; border-radius: 14px; padding: 22px; width: min(460px, calc(100vw - 32px)); background: var(--surface); color: var(--text); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3); }
+.dialog-wide { width: min(600px, calc(100vw - 32px)); }
+.dialog::backdrop { background: rgba(15, 18, 25, 0.5); }
+.dialog h2 { margin: 0 0 4px; font-size: 1.2rem; }
+.dialog .hint { margin: -6px 0 0; }
+.dialog textarea { font: inherit; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); resize: vertical; }
+.dialog .optional { color: var(--muted); font-weight: 400; font-size: 0.8rem; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.dialog .step { font-weight: 600; font-size: 0.9rem; margin: 0 0 6px; }
+.dialog [hidden] { display: none; }
+#org-pick { display: grid; gap: 8px; }
+#org-pick[hidden] { display: none; }
+#org-pick .step, #org-pick .hint { margin: 0; }
+.org-pick-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.org-person { display: flex; flex-direction: row; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-weight: 400; cursor: pointer; }
+.org-person:last-child { border-bottom: 0; }
+.org-person:hover { background: var(--bg); }
+.org-person[hidden] { display: none; }
+.org-person input { width: 16px; height: 16px; flex: none; }
+.org-person > span { display: grid; min-width: 0; }
+.org-person-name { font-weight: 600; overflow-wrap: anywhere; }
+.org-person-meta { font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+.org-roles { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.org-role { display: flex; flex-direction: row; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-weight: 400; cursor: pointer; }
+.org-role:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.org-role input { margin-top: 3px; }
+.org-role .hint { margin: 0; font-size: 0.8rem; }
+@media (max-width: 720px) {
+  .org-layout { grid-template-columns: 1fr; }
+  .org-nav-panel { position: static; }
+  .org-nav { max-height: 220px; }
+  .org-roles { grid-template-columns: 1fr; }
+}
 .list { list-style: none; margin: 16px 0 0; padding: 0; }
 .list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); }
 .list .label { color: var(--muted); font-size: 0.85rem; margin-top: 2px; }
