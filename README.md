@@ -84,6 +84,12 @@ in with their own account, which needs Full Access to that mailbox in Exchange. 
 through that account. Invoices are forwarded from the shared mailbox (the account also needs Send As or Send on
 Behalf rights on it); the summary email is sent from the user's own mailbox to the shared one.
 
+**Signing in to the app with Microsoft** adds mailboxes automatically, once per sign-in: if the user's own mailbox
+isn't connected, the dashboard goes straight to the Azure mailbox sign-in for that account (usually no extra prompt),
+then adds every shared mailbox the account has Full Access to (found through Autodiscover, so `EWS.AccessAsUser.All`
+is needed). A mailbox another user has already added starts with that user's settings (AP/AR type, forwarded
+categories, destination, summary); its schedule is not copied, so the same mailbox isn't processed twice.
+
 ### Organizations (API keys) for many shared AP / AR mailboxes
 
 **Add organization** connects a customer's Microsoft 365 tenant once with its own Azure app registration

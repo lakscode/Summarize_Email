@@ -172,7 +172,7 @@
       document.getElementById("profile-since").textContent =
         new Date(profile?.created_at || user.created_at).toLocaleDateString();
 
-      promptOwnMailbox(user, await loadMailboxes());
+      autoAddMailboxes(user, await loadMailboxes());
     })();
 
     // --- Mailboxes and organizations (Supabase Edge Function API: supabase/functions/mailboxes) ---
@@ -200,8 +200,12 @@
       }
       else if (params.has("connect_error")) showMessage(params.get("connect_error"), "error");
       else return false;
-      // An own Azure mailbox: offer the shared mailboxes that account can open.
-      if (params.has("mailbox_id")) offerSharedMailboxes(params.get("mailbox_id"), params.get("connected"));
+      // An own Azure mailbox: offer the shared mailboxes that account can open (added straight away when the sign-in
+      // was started automatically after signing in to the app with Microsoft).
+      if (params.has("mailbox_id")) {
+        if (params.has("auto")) addSharedAutomatically(params.get("mailbox_id"), params.get("connected"));
+        else offerSharedMailboxes(params.get("mailbox_id"), params.get("connected"));
+      }
       return true;
     }
 
@@ -226,17 +230,41 @@
       return data.mailboxes;
     }
 
-    // Signed in to the app with Microsoft and that account's own mailbox isn't connected: prompt to add it. "Add my
-    // mailbox" runs the usual Azure mailbox sign-in for that account (Microsoft usually completes it without asking
-    // again); "Not now" hides the prompt until the next sign-in.
+    // Signed in to the app with Microsoft: once per sign-in, that account's own mailbox and the shared mailboxes it
+    // has Full Access to are added without any clicks. Without an active own mailbox the page goes straight to the
+    // usual Azure mailbox sign-in for that account (Microsoft usually completes it without asking again), and the
+    // shared mailboxes follow when it returns; with one, the shared mailboxes are looked up through it.
+    // If the automatic sign-in didn't complete, a prompt offers it: "Add my mailbox" runs it again, "Not now" hides
+    // the prompt until the next sign-in.
     const ownPrompt = document.getElementById("own-mailbox-prompt");
     let appUser = null;
 
-    function promptOwnMailbox(user, mailboxes) {
+    function autoAddMailboxes(user, mailboxes) {
       ownPrompt.hidden = true;
       if (!mailboxes || user.app_metadata?.provider !== "azure" || !user.email) return;
       const email = user.email.toLowerCase();
-      if (mailboxes.some((m) => m.email_address === email && !m.delegate_address)) return;
+      const own = mailboxes.find((m) => m.provider === "microsoft" && m.email_address === email && !m.delegate_address && m.active);
+
+      const autoKey = `auto-mailboxes:${user.id}`;
+      const signIn = String(user.last_sign_in_at ?? "");
+      let firstVisit = false;
+      try {
+        firstVisit = localStorage.getItem(autoKey) !== signIn;
+        localStorage.setItem(autoKey, signIn);
+      } catch {
+        // Storage blocked: never redirect automatically, which could loop; the prompt below still works.
+      }
+      if (own) {
+        if (firstVisit) addSharedAutomatically(own.id, email);
+        return;
+      }
+      const add = document.getElementById("own-mailbox-add");
+      add.onclick = () => startConnect(add, "microsoft", null, { login_hint: email, auto: true });
+      if (firstVisit) {
+        showMessage(`Adding your mailbox ${email}…`);
+        return startConnect(add, "microsoft", null, { login_hint: email, auto: true, redirect: true });
+      }
+
       const key = `own-mailbox-later:${user.id}`;
       try {
         if (sessionStorage.getItem(key)) return;
@@ -245,8 +273,6 @@
       }
       document.getElementById("own-mailbox-text").textContent =
         `Your mailbox ${email} isn't added yet. Add it to process its inbox.`;
-      const add = document.getElementById("own-mailbox-add");
-      add.onclick = () => startConnect(add, "microsoft", null, { login_hint: email });
       document.getElementById("own-mailbox-later").onclick = () => {
         ownPrompt.hidden = true;
         try {
@@ -658,16 +684,18 @@
     // do anyway, sign-in falls back to navigating this page.
     // `shared_mailbox`: a Microsoft 365 shared mailbox read through the account that signs in.
     // `login_hint`: the account to sign in with (skips the account picker).
-    async function startConnect(button, provider, shared_mailbox = null, { login_hint = null } = {}) {
+    // `auto`: the shared mailboxes of the account are then added without asking (see autoAddMailboxes).
+    // `redirect`: navigate this page instead of a popup (needed when not started from a click).
+    async function startConnect(button, provider, shared_mailbox = null, { login_hint = null, auto = false, redirect = false } = {}) {
       button.disabled = true;
-      showMessage("");
-      const popup = openCentered(500, 650);
+      if (!redirect) showMessage("");
+      const popup = redirect ? null : openCentered(500, 650);
       if (popup) popup.document.body.textContent = `Opening ${provider === "google" ? "Google" : "Microsoft"} sign-in…`;
       const access_days = Number(document.getElementById("access-days").value);
       const { data, error } = await callApi("mailboxes", {
         body: {
           action: "connect", provider, access_days, popup: !!popup,
-          ...(shared_mailbox ? { shared_mailbox } : {}), ...(login_hint ? { login_hint } : {}),
+          ...(shared_mailbox ? { shared_mailbox } : {}), ...(login_hint ? { login_hint } : {}), ...(auto ? { auto } : {}),
         },
       });
       if (error) {
@@ -699,7 +727,7 @@
       if (params.has("connected")) hideForm(sharedForm);
       showConnectResult(params);
       const mailboxes = await loadMailboxes();
-      if (appUser) promptOwnMailbox(appUser, mailboxes);
+      if (appUser) autoAddMailboxes(appUser, mailboxes);
     });
 
     // --- Add forms: shown only from their button, one at a time ---
@@ -754,6 +782,21 @@
     const pickList = document.getElementById("pick-shared-list");
     const pickStatus = document.getElementById("pick-shared-status");
     const pickResults = document.getElementById("pick-shared-results");
+
+    // Adds every shared mailbox `account` can open that isn't added yet, without a picker. Quiet when there are none.
+    async function addSharedAutomatically(mailboxId, account) {
+      const { data, error } = await callApi("mailboxes", { body: { action: "auto_shared", mailbox_id: mailboxId } });
+      if (error) return showMessage(`Could not add the shared mailboxes of ${account}: ${error}`, "error");
+      if (!data.results.length) return;
+      const added = data.results.filter((r) => r.ok);
+      const failed = data.results.filter((r) => !r.ok);
+      showMessage(
+        `Added ${added.length} shared mailbox${added.length === 1 ? "" : "es"} of ${account}` +
+          (failed.length ? `; could not add ${failed.map((r) => `${r.address} (${r.error})`).join(", ")}` : "") + ".",
+        failed.length ? "error" : "ok",
+      );
+      await loadMailboxes();
+    }
 
     async function offerSharedMailboxes(mailboxId, account) {
       pickForm.dataset.mailbox = mailboxId;
