@@ -18,7 +18,7 @@
     <main class="content">
       <div id="message" class="message" hidden></div>
       <h1>Logs</h1>
-      <p class="sub">Logs from the web app (UI) and the Supabase Edge Functions (API), plus a step-by-step trail of every inbox run. Newest first.</p>
+      <p class="sub">Logs from the web app (UI) and the Supabase Edge Functions (API), a step-by-step trail of every inbox run, and who processed each email. Newest first.</p>
 
       <div class="toolbar">
         <div class="filters">
@@ -26,6 +26,7 @@
             <button class="tab active" data-kind="">Everything</button>
             <button class="tab" data-kind="problems">Errors</button>
             <button class="tab" data-kind="steps">Steps</button>
+            <button class="tab" data-kind="emails">Email processing</button>
           </div>
           <div class="tabs" role="tablist" id="source-tabs">
             <button class="tab active" data-source="">All</button>
@@ -39,6 +40,22 @@
         </div>
       </div>
 
+      <form class="log-filters" id="log-filters">
+        <label>Mailbox
+          <select name="mailbox"><option value="">All mailboxes</option></select>
+        </label>
+        <label id="user-filter" hidden>User
+          <select name="user"><option value="">All users</option></select>
+        </label>
+        <label>From
+          <input type="date" name="from" />
+        </label>
+        <label>To
+          <input type="date" name="to" />
+        </label>
+        <button type="button" class="link-button" id="filters-clear" hidden>Clear filters</button>
+      </form>
+
       <div class="run-banner" id="run-banner" hidden>
         <span id="run-label"></span>
         <button class="link-button" id="run-clear">Show all logs</button>
@@ -46,9 +63,7 @@
 
       <div class="panel log-panel">
         <table class="logs">
-          <thead>
-            <tr><th>Time</th><th>Source</th><th>Level</th><th>Where</th><th>Message</th></tr>
-          </thead>
+          <thead id="log-head"></thead>
           <tbody id="log-rows"></tbody>
         </table>
         <p class="empty" id="log-empty" hidden>No logs.</p>
@@ -57,27 +72,75 @@
   </div>
 
   <script>
-    let source = "";
-    let kind = "";
-    let run = "";
+    // The page state, also kept in the address bar so a filtered view can be reloaded or shared.
+    const initial = new URLSearchParams(location.search);
+    let source = initial.get("source") || "";
+    let kind = initial.get("kind") || "";
+    let run = initial.get("run") || "";
+    let others = false; // whether the caller can see other users' logs (shows the User filter and column)
+    const filtersForm = document.getElementById("log-filters");
+
+    const TRIGGER_LABELS = { manual: "Process inbox", schedule: "Scheduled run", user: "By hand" };
+    const STATUS_LABELS = {
+      action_needed: "Action needed", done: "Done", no_action: "No action needed", processing: "Processing", error: "Error",
+    };
 
     (async () => {
       const session = await requireSession();
       if (!session) return;
       renderSidebar("logs", session);
       document.querySelector(".shell").hidden = false;
+      for (const name of ["from", "to"]) filtersForm.elements[name].value = initial.get(name) || "";
+      syncTabs();
+      await loadFilters();
       await loadLogs();
     })();
 
+    // Mailbox and user choices: the caller's own, their organization's (organization admin) or everyone's (super admin).
+    async function loadFilters() {
+      const { data, error } = await callApi("logs?filters=1", { method: "GET" });
+      if (error) return;
+      others = data.others;
+      const mailboxSelect = filtersForm.elements.mailbox;
+      mailboxSelect.append(...data.mailboxes.map((m) => new Option(m, m)));
+      mailboxSelect.value = initial.get("mailbox") || "";
+      const userSelect = filtersForm.elements.user;
+      userSelect.append(...data.users.map((u) => new Option(u.email && u.email !== u.name ? `${u.name} (${u.email})` : u.name, u.id)));
+      userSelect.value = initial.get("user") || "";
+      document.getElementById("user-filter").hidden = !others;
+    }
+
+    function filterValues() {
+      const f = Object.fromEntries(new FormData(filtersForm));
+      if (!others) delete f.user;
+      return f;
+    }
+
     async function loadLogs() {
-      const params = new URLSearchParams();
-      if (source) params.set("source", source);
-      if (kind) params.set("kind", kind);
-      if (run) params.set("run", run);
+      const f = filterValues();
+      const state = new URLSearchParams();
+      if (source && kind !== "emails") state.set("source", source);
+      if (kind) state.set("kind", kind);
+      if (run) state.set("run", run);
+      for (const key of ["mailbox", "user", "from", "to"]) if (f[key]) state.set(key, f[key]);
+      history.replaceState(null, "", state.size ? `?${state}` : location.pathname);
+      document.getElementById("filters-clear").hidden = !["mailbox", "user", "from", "to"].some((k) => f[k]);
+
+      // Dates are whole days in the viewer's time zone: from the start of From to the end of To.
+      const params = new URLSearchParams(state);
+      params.delete("from");
+      params.delete("to");
+      if (f.from) params.set("from", new Date(`${f.from}T00:00`).toISOString());
+      if (f.to) {
+        const end = new Date(`${f.to}T00:00`);
+        end.setDate(end.getDate() + 1);
+        params.set("to", end.toISOString());
+      }
+
       document.getElementById("run-banner").hidden = !run;
-      document.getElementById("run-label").textContent = run ? `Showing every step of run ${run}, in order.` : "";
-      const query = params.size ? `?${params}` : "";
-      const { data, error } = await callApi(`logs${query}`, { method: "GET" });
+      document.getElementById("run-label").textContent = !run ? ""
+        : kind === "emails" ? `Showing the emails of run ${run}.` : `Showing every step of run ${run}, in order.`;
+      const { data, error } = await callApi(`logs?${params}`, { method: "GET" });
       if (error) {
         // Not via showMessage(..., "error"): if the logs API is down, logging that would fail too.
         const el = document.getElementById("message");
@@ -87,7 +150,13 @@
         return;
       }
       document.getElementById("message").hidden = true;
-      document.getElementById("log-rows").replaceChildren(...data.logs.map(logRow));
+      const columns = kind === "emails"
+        ? ["Time", "Mailbox", "Email", "Processed by", "How", "Outcome"]
+        : ["Time", ...(others ? ["User"] : []), "Source", "Level", "Where", "Message"];
+      const head = document.createElement("tr");
+      head.append(...columns.map((c) => Object.assign(document.createElement("th"), { textContent: c })));
+      document.getElementById("log-head").replaceChildren(head);
+      document.getElementById("log-rows").replaceChildren(...data.logs.map(kind === "emails" ? emailRow : logRow));
       document.getElementById("log-empty").hidden = data.logs.length > 0;
     }
 
@@ -98,10 +167,24 @@
       return td;
     }
 
+    function runLink(id, label, nextKind) {
+      const follow = document.createElement("button");
+      follow.className = "link-button run-link";
+      follow.textContent = label;
+      follow.addEventListener("click", () => {
+        run = id;
+        kind = nextKind;
+        syncTabs();
+        loadLogs();
+      });
+      return follow;
+    }
+
     function logRow(log) {
       const tr = document.createElement("tr");
+      tr.append(cell(new Date(log.created_at).toLocaleString(), "nowrap"));
+      if (others) tr.append(cell(log.user_name || "—", "nowrap"));
       tr.append(
-        cell(new Date(log.created_at).toLocaleString(), "nowrap"),
         badgeCell(log.source.toUpperCase(), `badge source-${log.source}`),
         badgeCell(log.level, `badge level-${log.level}`),
         cell(log.location || "—", "mono"),
@@ -112,16 +195,7 @@
       const text = document.createElement("div");
       text.textContent = log.message;
       msg.append(text);
-      if (log.context?.run && !run) {
-        const follow = document.createElement("button");
-        follow.className = "link-button run-link";
-        follow.textContent = `Show run ${log.context.run}`;
-        follow.addEventListener("click", () => {
-          run = log.context.run;
-          loadLogs();
-        });
-        msg.append(follow);
-      }
+      if (log.context?.run && !run) msg.append(runLink(log.context.run, `Show run ${log.context.run}`, kind === "emails" ? "" : kind));
       if (log.context && Object.keys(log.context).length) {
         const details = document.createElement("details");
         const summary = document.createElement("summary");
@@ -135,6 +209,32 @@
       return tr;
     }
 
+    // One email_processing_log row: which email, who processed it and how, and what came of it.
+    function emailRow(h) {
+      const tr = document.createElement("tr");
+      const outcome = document.createElement("td");
+      outcome.className = "msg";
+      const badge = document.createElement("span");
+      badge.className = `pill action-${h.status}`;
+      badge.textContent = STATUS_LABELS[h.status] || h.status;
+      outcome.append(badge);
+      const detail = h.error || h.action;
+      if (detail) outcome.append(Object.assign(document.createElement("div"), { textContent: detail }));
+      if (h.run_id && !run) outcome.append(runLink(h.run_id, `Show run ${h.run_id} steps`, "steps"));
+
+      const who = cell(h.processed_by_name || h.processed_by_email || "—", "nowrap");
+      if (h.processed_by_email) who.title = h.processed_by_email;
+      tr.append(
+        cell(new Date(h.processed_at).toLocaleString(), "nowrap"),
+        cell(h.mailbox_address || "—"),
+        cell(h.subject || "(no subject)", "msg"),
+        who,
+        cell(TRIGGER_LABELS[h.trigger] || h.trigger, "nowrap"),
+        outcome,
+      );
+      return tr;
+    }
+
     function badgeCell(text, className) {
       const td = document.createElement("td");
       const span = document.createElement("span");
@@ -144,18 +244,31 @@
       return td;
     }
 
-    // Two independent tab groups: what kind of entry (errors / steps) and where it came from (UI / API).
+    // Tabs follow the state; the UI / API tabs don't apply to email processing.
+    function syncTabs() {
+      document.querySelectorAll("#kind-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.kind === kind));
+      document.querySelectorAll("#source-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.source === source));
+      document.getElementById("source-tabs").hidden = kind === "emails";
+    }
+
+    // Two independent tab groups: what kind of entry (errors / steps / emails) and where it came from (UI / API).
     for (const group of ["kind-tabs", "source-tabs"]) {
-      const tabs = document.querySelectorAll(`#${group} .tab`);
-      for (const tab of tabs) {
+      for (const tab of document.querySelectorAll(`#${group} .tab`)) {
         tab.addEventListener("click", () => {
-          tabs.forEach((t) => t.classList.toggle("active", t === tab));
           if (group === "kind-tabs") kind = tab.dataset.kind;
           else source = tab.dataset.source;
+          syncTabs();
           loadLogs();
         });
       }
     }
+
+    filtersForm.addEventListener("change", loadLogs);
+    filtersForm.addEventListener("submit", (ev) => ev.preventDefault());
+    document.getElementById("filters-clear").addEventListener("click", () => {
+      filtersForm.reset();
+      loadLogs();
+    });
 
     document.getElementById("run-clear").addEventListener("click", () => {
       run = "";
@@ -164,8 +277,9 @@
 
     document.getElementById("refresh").addEventListener("click", loadLogs);
 
+    // Clears only the caller's own logs (also when viewing others'); the email processing history is kept.
     document.getElementById("clear").addEventListener("click", async () => {
-      if (!confirm("Delete all of your logs?")) return;
+      if (!confirm("Delete all of your logs? The email processing history is kept.")) return;
       const { error } = await callApi("logs", { method: "DELETE" });
       if (error) return showMessage(`Could not clear logs: ${error}`, "error");
       await loadLogs();
