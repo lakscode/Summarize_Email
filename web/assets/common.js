@@ -198,7 +198,6 @@ const NAV = [
   { page: "profile", label: "Profile" },
 ];
 
-const SIDEBAR_COLLAPSED_KEY = "sidebar-collapsed";
 
 function icon(name) {
   const span = document.createElement("span");
@@ -214,15 +213,10 @@ function labelled(iconName, text) {
   return [icon(iconName), label];
 }
 
-function readCollapsed() {
-  try { return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1"; } catch { return false; }
-}
-
 function setCollapsed(shell, toggle, collapsed) {
   shell.classList.toggle("sidebar-collapsed", collapsed);
   toggle.title = collapsed ? "Expand menu" : "Collapse menu";
   toggle.setAttribute("aria-label", toggle.title);
-  try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0"); } catch {}
 }
 
 function renderSidebar(active, session) {
@@ -242,7 +236,9 @@ function renderSidebar(active, session) {
   toggle.append(icon("collapse"));
   toggle.addEventListener("click", () =>
     setCollapsed(shell, toggle, !shell.classList.contains("sidebar-collapsed")));
-  setCollapsed(shell, toggle, readCollapsed());
+  // Every page opens with the menu expanded; collapsing lasts until the next page. (Earlier versions remembered it.)
+  try { localStorage.removeItem("sidebar-collapsed"); } catch {}
+  setCollapsed(shell, toggle, false);
   brand.append(logo, name, toggle);
 
   const nav = document.createElement("nav");

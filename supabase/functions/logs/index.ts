@@ -1,8 +1,9 @@
-// GET    ?source=ui|api&kind=problems|steps|emails&run=<id>&mailbox=&user=&from=&to=&limit=200 -> { logs: [...] }
-//        newest first; a single run (?run=) is returned oldest first so its steps read in order.
+// GET    ?source=ui|api&kind=problems|steps|emails&run=<id>&email=<id>&mailbox=&user=&from=&to=&limit=200 -> { logs }
+//        newest first; a single run (?run=) or email (?email=, a processed email id) is returned oldest first so
+//        its steps read in order.
 //        kind=emails: the email processing history (email_processing_log) instead of app_logs.
 //        mailbox: an address; user: a user id; from / to: ISO times (from inclusive, to exclusive).
-// GET    ?filters=1 -> { users, mailboxes, others } the choices for the filters
+// GET    ?filters=1 -> { users, mailboxes, others } the choices for the filters (mailboxes: the caller's own)
 //        Whose logs: everyone's for a super admin, the organization's members' for an organization admin, otherwise
 //        only the caller's own (others: false).
 // POST   { level, message, location, context } -> record a UI error for the caller
@@ -49,11 +50,9 @@ Deno.serve(async (req) => {
       const visible = await visibleUsers(user.id);
       const db = adminClient();
       let users = db.from("profiles").select("id").order("email").limit(1000);
-      let boxes = db.from("mailboxes").select("email_address").order("email_address").limit(1000);
-      if (visible) {
-        users = users.in("id", visible);
-        boxes = boxes.in("owner_user_id", visible);
-      }
+      // Mailboxes: only the caller's own (connected under their account, shared ones included), also for admins.
+      const boxes = db.from("mailboxes").select("email_address").eq("owner_user_id", user.id).order("email_address");
+      if (visible) users = users.in("id", visible);
       const [u, b] = await Promise.all([users, boxes]);
       if (u.error || b.error) return await fail("logs/filters", (u.error ?? b.error)!.message, 500, { userId: user.id });
       const byId = await names(u.data.map((r) => r.id));
@@ -67,6 +66,9 @@ Deno.serve(async (req) => {
     if (req.method === "GET") {
       const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 200, 1), 1000);
       const run = url.searchParams.get("run");
+      const emailId = url.searchParams.get("email");
+      if (emailId && !UUID.test(emailId)) return json({ error: "email must be an email id" }, 400);
+      const ordered = !!run || !!emailId;
       const kind = url.searchParams.get("kind");
       const mailbox = url.searchParams.get("mailbox") || null;
       const userFilter = url.searchParams.get("user");
@@ -83,8 +85,9 @@ Deno.serve(async (req) => {
       if (kind === "emails") {
         let query = db.from("email_processing_log")
           .select("id, processed_at, mailbox_address, subject, processed_email_id, owner_user_id, processed_by, processed_by_name, processed_by_email, trigger, run_id, status, category, action, error")
-          .order("processed_at", { ascending: false })
+          .order("processed_at", { ascending: ordered })
           .limit(limit);
+        if (emailId) query = query.eq("processed_email_id", emailId);
         if (visible) query = query.in("owner_user_id", visible);
         if (userFilter) query = query.eq("processed_by", userFilter);
         if (mailbox) query = query.eq("mailbox_address", mailbox);
@@ -99,9 +102,10 @@ Deno.serve(async (req) => {
       let query = db
         .from("app_logs")
         .select("id, user_id, source, level, location, message, context, created_at")
-        .order("created_at", { ascending: !!run })
-        .order("id", { ascending: !!run })
+        .order("created_at", { ascending: ordered })
+        .order("id", { ascending: ordered })
         .limit(limit);
+      if (emailId) query = query.eq("context->>email_id", emailId);
       const source = url.searchParams.get("source");
       if (source === "ui" || source === "api") query = query.eq("source", source);
       if (kind === "problems") query = query.in("level", ["error", "warn"]);

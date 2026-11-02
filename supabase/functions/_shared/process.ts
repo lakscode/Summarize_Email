@@ -355,7 +355,8 @@ async function processMessage(
   const subject = msg.subject || "(no subject)";
   const rowId = await claim(db, userId, mailbox, msg, existing);
   if (!rowId) {
-    await step(run, "process/email", `Skipped "${subject}": already being processed by another run`);
+    await step(run, "process/email", `Skipped "${subject}": already being processed by another run`,
+      { email_id: existing?.id ?? null, subject });
     return null;
   }
   const from = msg.from?.emailAddress ?? {};
@@ -393,7 +394,7 @@ async function processMessage(
     await step(run, "process/classify", `Classified "${subject}" as ${c.category} (${c.confidence} confidence): ${c.summary}`,
       { ...email, category: c.category, confidence: c.confidence, vendor: c.vendor, amount: c.amount, next_step: c.next_step });
 
-    const { status, action } = await takeAction(run, mailbox, client, msg, c);
+    const { status, action } = await takeAction(run, mailbox, client, msg, c, email);
     await step(run, "process/action", `"${subject}" → ${status.replace("_", " ")}${action ? `: ${action}` : ""}`, { ...email, status });
 
     const { error } = await db.from("processed_emails").update({
@@ -453,8 +454,10 @@ async function logProcessing(
 }
 
 // The only automatic action: forward confident emails in the mailbox's forward_categories to its destination address.
-// The recipient always comes from settings, never from the email or the model.
-async function takeAction(run: Run, mailbox: Mailbox, client: MailClient, msg: MailMessage, c: Classification) {
+// The recipient always comes from settings, never from the email or the model. `email`: the log context of the email.
+async function takeAction(
+  run: Run, mailbox: Mailbox, client: MailClient, msg: MailMessage, c: Classification, email: Record<string, unknown>,
+) {
   const userId = run.userId;
   const label = c.category.replace("_", " ");
   if (c.category === "other") return { status: "no_action", action: null };
@@ -468,7 +471,7 @@ async function takeAction(run: Run, mailbox: Mailbox, client: MailClient, msg: M
     await client.forwardMessage(msg.id, mailbox.smart_ap_address, `Forwarded automatically by ${APP_NAME}: ${label}${details ? ` (${details})` : ""}.`);
     return { status: "done", action: `Forwarded to ${mailbox.smart_ap_address}` };
   } catch (err) {
-    await logApi("inbox/forward", err, { userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, subject: msg.subject } });
+    await logApi("inbox/forward", err, { userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, ...email } });
     const hint = !String(err).includes("403") ? ""
       : mailbox.auth_type === "app" ? " Give the organization's Azure app the Mail.Send application permission." : " Reconnect the mailbox to allow sending.";
     return { status: "action_needed", action: `Forward failed; forward it manually.${hint}` };

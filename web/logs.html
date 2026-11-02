@@ -77,6 +77,7 @@
     let source = initial.get("source") || "";
     let kind = initial.get("kind") || "";
     let run = initial.get("run") || "";
+    let email = initial.get("email") || ""; // one processed email (from the Inbox's "View logs")
     let others = false; // whether the caller can see other users' logs (shows the User filter and column)
     const filtersForm = document.getElementById("log-filters");
 
@@ -122,6 +123,7 @@
       if (source && kind !== "emails") state.set("source", source);
       if (kind) state.set("kind", kind);
       if (run) state.set("run", run);
+      if (email) state.set("email", email);
       for (const key of ["mailbox", "user", "from", "to"]) if (f[key]) state.set(key, f[key]);
       history.replaceState(null, "", state.size ? `?${state}` : location.pathname);
       document.getElementById("filters-clear").hidden = !["mailbox", "user", "from", "to"].some((k) => f[k]);
@@ -137,9 +139,6 @@
         params.set("to", end.toISOString());
       }
 
-      document.getElementById("run-banner").hidden = !run;
-      document.getElementById("run-label").textContent = !run ? ""
-        : kind === "emails" ? `Showing the emails of run ${run}.` : `Showing every step of run ${run}, in order.`;
       const { data, error } = await callApi(`logs?${params}`, { method: "GET" });
       if (error) {
         // Not via showMessage(..., "error"): if the logs API is down, logging that would fail too.
@@ -150,6 +149,16 @@
         return;
       }
       document.getElementById("message").hidden = true;
+
+      document.getElementById("run-banner").hidden = !run && !email;
+      if (email) {
+        const subject = data.logs.map((l) => l.subject ?? l.context?.subject).find(Boolean);
+        document.getElementById("run-label").textContent =
+          `Showing the ${kind === "emails" ? "processing history" : "logs"} of one email${subject ? `, "${subject}"` : ""}, in order.`;
+      } else {
+        document.getElementById("run-label").textContent = !run ? ""
+          : kind === "emails" ? `Showing the emails of run ${run}.` : `Showing every step of run ${run}, in order.`;
+      }
       const columns = kind === "emails"
         ? ["Time", "Mailbox", "Email", "Processed by", "How", "Outcome"]
         : ["Time", ...(others ? ["User"] : []), "Source", "Level", "Where", "Message"];
@@ -272,6 +281,7 @@
 
     document.getElementById("run-clear").addEventListener("click", () => {
       run = "";
+      email = "";
       loadLogs();
     });
 

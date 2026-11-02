@@ -7,7 +7,7 @@
 //   POST  {action: "preview", mailbox_id, lookback_hours} -> { new, already_processed, ... } to confirm a re-check first
 //   PATCH {id, status: "done" | "action_needed"}       -> employee marks an item handled / reopens it
 import { corsHeaders, json } from "../_shared/cors.ts";
-import { fail, logApi } from "../_shared/log.ts";
+import { fail, logApi, logStep } from "../_shared/log.ts";
 import { previewEmail, previewMailbox, processMailbox, processorOf, STATUSES } from "../_shared/process.ts";
 import { isNotFound } from "../_shared/mail.ts";
 import { adminClient, callerUser } from "../_shared/supabase.ts";
@@ -29,7 +29,7 @@ Deno.serve(async (req) => {
       } catch (err) {
         // Gone from the inbox: deleted, or moved (Outlook gives a moved message a new id).
         if (isNotFound(err)) {
-          return await fail("inbox/preview", "This email is no longer in the inbox. It may have been moved or deleted.", 404, { userId: user.id, context: { id } });
+          return await fail("inbox/preview", "This email is no longer in the inbox. It may have been moved or deleted.", 404, { userId: user.id, context: { email_id: id } });
         }
         throw err;
       }
@@ -70,7 +70,7 @@ Deno.serve(async (req) => {
         .eq("id", body.id)
         .select("id, status, mailbox_id, owner_user_id, subject, mailboxes(email_address)")
         .maybeSingle();
-      if (error) return await fail("inbox/update", error.message, 500, { userId: user.id, context: { id: body.id } });
+      if (error) return await fail("inbox/update", error.message, 500, { userId: user.id, context: { email_id: body.id } });
       if (!data) return json({ error: "Email not found" }, 404);
       // Marking done / reopening counts as processing it: this user and time become the email's "last processed".
       const db = adminClient();
@@ -78,11 +78,13 @@ Deno.serve(async (req) => {
       const by = { processed_by: user.id, processed_by_email: processor.email ?? user.email ?? null, processed_by_name: processor.name ?? user.email ?? null };
       const processedAt = new Date().toISOString();
       const { error: byError } = await db.from("processed_emails").update({ ...by, processed_at: processedAt }).eq("id", data.id);
-      if (byError) await logApi("inbox/update", byError.message, { userId: user.id, level: "warn", context: { id: data.id } });
+      const mailboxAddress = (data.mailboxes as { email_address?: string } | null)?.email_address ?? null;
+      const logContext = { email_id: data.id, subject: data.subject, mailbox: mailboxAddress };
+      if (byError) await logApi("inbox/update", byError.message, { userId: user.id, level: "warn", context: logContext });
       const { error: logError } = await db.from("email_processing_log").insert({
         processed_email_id: data.id,
         mailbox_id: data.mailbox_id,
-        mailbox_address: (data.mailboxes as { email_address?: string } | null)?.email_address ?? null,
+        mailbox_address: mailboxAddress,
         subject: data.subject,
         owner_user_id: data.owner_user_id,
         ...by,
@@ -91,7 +93,9 @@ Deno.serve(async (req) => {
         status: data.status,
         action: data.status === "done" ? "Marked done" : "Reopened",
       });
-      if (logError) await logApi("inbox/update", logError.message, { userId: user.id, level: "warn", context: { id: data.id } });
+      if (logError) await logApi("inbox/update", logError.message, { userId: user.id, level: "warn", context: logContext });
+      await logStep("inbox/update", `"${data.subject || "(no subject)"}" ${data.status === "done" ? "marked done" : "reopened"} by ${by.processed_by_name ?? "unknown"}`,
+        user.id, { ...logContext, status: data.status });
       return json({ email: { id: data.id, status: data.status } });
     }
 

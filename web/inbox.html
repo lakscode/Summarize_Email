@@ -461,7 +461,10 @@
         cell.colSpan = 7;
         const dl = el("dl", "facts");
         for (const [k, v] of facts) dl.append(el("dt", null, k), el("dd", null, v));
-        cell.append(dl);
+        // Every app log of this email (reading, classifying, forwarding, errors, marked done...) on the Logs page.
+        const logsLink = el("a", "link-button", "View logs");
+        logsLink.href = `logs.html?${new URLSearchParams({ email: e.id })}`;
+        cell.append(dl, logsLink);
         detailRow.append(cell);
         rows.push(detailRow);
 
