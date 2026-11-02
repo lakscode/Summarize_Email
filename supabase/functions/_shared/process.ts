@@ -33,7 +33,8 @@ const TEXT_TYPES = ["text/plain", "text/csv", "text/tab-separated-values", "text
 const TEXT_EXTENSION = /\.(txt|csv|tsv|html?|xml|json)$/i;
 
 // Every step of a run is logged (Logs > Steps) with the same run id, so one run can be followed end to end.
-interface Run { id: string; userId: string; mailbox: string; trigger: string }
+// userEmail: who processed, recorded on each email and in email_processing_log (the owner, also for scheduled runs).
+interface Run { id: string; userId: string; userEmail: string | null; mailbox: string; trigger: "manual" | "schedule" }
 const step = (run: Run, location: string, message: string, context: Record<string, unknown> = {}) =>
   logStep(location, message, run.userId, { run: run.id, mailbox: run.mailbox, trigger: run.trigger, ...context });
 
@@ -53,7 +54,10 @@ export async function processMailbox(
     throw new Error(`Access to ${mailbox.email_address} has expired. Reconnect it on the dashboard.`);
   }
 
-  const run: Run = { id: crypto.randomUUID().slice(0, 8), userId, mailbox: mailbox.email_address, trigger };
+  const { data: profile } = await db.from("profiles").select("email").eq("id", userId).maybeSingle();
+  const run: Run = {
+    id: crypto.randomUUID().slice(0, 8), userId, userEmail: profile?.email ?? null, mailbox: mailbox.email_address, trigger,
+  };
   const started = Date.now();
   await step(run, "process/start",
     `Run started (${trigger === "schedule" ? "scheduled" : "manual"}) for ${mailbox.email_address}: last ${hours}h${reprocess ? ", re-checking processed emails" : ""}`);
@@ -302,16 +306,42 @@ async function processMessage(
       next_step: c.next_step,
       action_taken: action,
       status,
+      ...processedBy(run),
       updated_at: new Date().toISOString(),
     }).eq("id", rowId);
     if (error) throw new Error(error.message);
+    await logProcessing(db, run, mailbox, rowId, { status, category: c.category, action });
     return { ...item, category: c.category, summary: c.summary, next_step: c.next_step, action, status };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await logApi("inbox/process", err, { userId, context: { run: run.id, mailbox: mailbox.email_address, ...email } });
-    await db.from("processed_emails").update({ status: "error", error: message, updated_at: new Date().toISOString() }).eq("id", rowId);
+    await db.from("processed_emails").update({ status: "error", error: message, ...processedBy(run), updated_at: new Date().toISOString() }).eq("id", rowId);
+    await logProcessing(db, run, mailbox, rowId, { status: "error", error: message });
     return { ...item, status: "error", action: message };
   }
+}
+
+const processedBy = (run: Run) => ({ processed_by: run.userId, processed_by_email: run.userEmail, processed_at: new Date().toISOString() });
+
+// One email_processing_log row per processed email. Never throws: a failure to log must not fail the email.
+async function logProcessing(
+  db: Db, run: Run, mailbox: Mailbox, rowId: string,
+  outcome: { status: string; category?: string; action?: string | null; error?: string },
+) {
+  const { error } = await db.from("email_processing_log").insert({
+    processed_email_id: rowId,
+    mailbox_id: mailbox.id,
+    owner_user_id: run.userId,
+    processed_by: run.userId,
+    processed_by_email: run.userEmail,
+    trigger: run.trigger,
+    run_id: run.id,
+    status: outcome.status,
+    category: outcome.category ?? null,
+    action: outcome.action ?? null,
+    error: outcome.error ?? null,
+  });
+  if (error) await logApi("process/log", error.message, { userId: run.userId, level: "warn", context: { run: run.id, email_id: rowId } });
 }
 
 // The only automatic action: forward confident emails in the mailbox's forward_categories to its destination address.

@@ -1,11 +1,12 @@
 // AP inbox processing for the signed-in user's connected mailboxes.
 //   GET   ?status=&mailbox_id=                          -> { emails: [...] } newest first
+//   GET   ?history=<email id>                           -> { history: [...] } who processed it and when, newest first
 //   POST  {action: "process", mailbox_id, lookback_hours, reprocess?} -> process now (see _shared/process.ts)
 //   PATCH {id, status: "done" | "action_needed"}       -> employee marks an item handled / reopens it
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
 import { processMailbox, STATUSES } from "../_shared/process.ts";
-import { callerUser } from "../_shared/supabase.ts";
+import { adminClient, callerUser } from "../_shared/supabase.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -16,10 +17,20 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
 
   try {
+    if (req.method === "GET" && url.searchParams.has("history")) {
+      const { data, error } = await sb.from("email_processing_log")
+        .select("processed_at, processed_by_email, trigger, run_id, status, category, action, error")
+        .eq("processed_email_id", url.searchParams.get("history"))
+        .order("processed_at", { ascending: false })
+        .limit(100);
+      if (error) return await fail("inbox/history", error.message, 500, { userId: user.id });
+      return json({ history: data });
+    }
+
     if (req.method === "GET") {
       let query = sb
         .from("processed_emails")
-        .select("id, mailbox_id, received_at, from_name, from_address, subject, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step, action_taken, status, error")
+        .select("id, mailbox_id, received_at, from_name, from_address, subject, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step, action_taken, status, error, processed_by_email, processed_at")
         .order("received_at", { ascending: false })
         .limit(300);
       const status = url.searchParams.get("status");
@@ -39,11 +50,22 @@ Deno.serve(async (req) => {
       const { data, error } = await sb.from("processed_emails")
         .update({ status: body.status, updated_at: new Date().toISOString() })
         .eq("id", body.id)
-        .select("id, status")
+        .select("id, status, mailbox_id, owner_user_id")
         .maybeSingle();
       if (error) return await fail("inbox/update", error.message, 500, { userId: user.id, context: { id: body.id } });
       if (!data) return json({ error: "Email not found" }, 404);
-      return json({ email: data });
+      const { error: logError } = await adminClient().from("email_processing_log").insert({
+        processed_email_id: data.id,
+        mailbox_id: data.mailbox_id,
+        owner_user_id: data.owner_user_id,
+        processed_by: user.id,
+        processed_by_email: user.email ?? null,
+        trigger: "user",
+        status: data.status,
+        action: data.status === "done" ? "Marked done" : "Reopened",
+      });
+      if (logError) await logApi("inbox/update", logError.message, { userId: user.id, level: "warn", context: { id: data.id } });
+      return json({ email: { id: data.id, status: data.status } });
     }
 
     if (req.method === "POST") {

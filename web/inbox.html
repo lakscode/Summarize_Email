@@ -404,6 +404,7 @@
         ["Next step", e.next_step],
         ["Action taken", e.action_taken],
         ["Error", e.error],
+        ["Processed", e.processed_at && `${new Date(e.processed_at).toLocaleString()}${e.processed_by_email ? ` by ${e.processed_by_email}` : ""}`],
       ].filter(([, v]) => v);
       const rows = [tr];
       if (facts.length) {
@@ -420,10 +421,15 @@
         const expand = el("button", "icon-button expand", "▸");
         expand.title = "Details";
         expand.setAttribute("aria-expanded", "false");
+        let historyLoaded = false;
         expand.addEventListener("click", () => {
           detailRow.hidden = !detailRow.hidden;
           expand.setAttribute("aria-expanded", String(!detailRow.hidden));
           tr.classList.toggle("open", !detailRow.hidden);
+          if (!detailRow.hidden && !historyLoaded) {
+            historyLoaded = true;
+            loadHistory(e.id, dl);
+          }
         });
         actions.append(expand);
       }
@@ -443,6 +449,22 @@
         actions.prepend(toggle);
       }
       return rows;
+    }
+
+    const TRIGGER_LABELS = { manual: "Process inbox", schedule: "Scheduled run", user: "By hand" };
+
+    // Appends the email's processing log (who processed it, when, and the outcome) to its details list.
+    async function loadHistory(id, dl) {
+      const { data, error } = await callApi(`inbox?${new URLSearchParams({ history: id })}`, { method: "GET" });
+      if (error || !data.history.length) return;
+      const list = el("dd");
+      for (const h of data.history) {
+        const outcome = [ACTION_LABELS[h.status] || h.status, h.category && (CATEGORY_LABELS[h.category] || h.category), h.action || h.error]
+          .filter(Boolean).join(" · ");
+        const who = h.processed_by_email ? ` by ${h.processed_by_email}` : "";
+        list.append(el("div", null, `${new Date(h.processed_at).toLocaleString()}${who} (${TRIGGER_LABELS[h.trigger] || h.trigger}): ${outcome}`));
+      }
+      dl.append(el("dt", null, "History"), list);
     }
 
     document.getElementById("process-form").addEventListener("submit", async (ev) => {
