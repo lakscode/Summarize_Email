@@ -45,6 +45,10 @@
               <option value="336">Last 14 days</option>
             </select>
           </label>
+          <label class="checkbox">
+            <input type="checkbox" name="reprocess" />
+            Re-check emails already processed (never forwards twice)
+          </label>
           <button type="submit" id="process-btn">Process inbox</button>
           <button type="button" class="secondary" id="process-stop" hidden>Stop</button>
         </form>
@@ -148,7 +152,7 @@
     </div>
   </dialog>
 
-  <!-- Asked before a run when the period has emails that were already processed. -->
+  <!-- Asked before a run with "Re-check emails already processed" when the period has emails already processed. -->
   <dialog class="dialog" id="reprocess-dialog" aria-labelledby="reprocess-title">
     <form method="dialog">
       <h2 id="reprocess-title">Process emails again?</h2>
@@ -703,25 +707,28 @@
     document.getElementById("process-form").addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const form = ev.currentTarget;
-      const { mailbox_id, lookback_hours } = Object.fromEntries(new FormData(form));
+      const { mailbox_id, lookback_hours, reprocess: recheck } = Object.fromEntries(new FormData(form));
       const button = document.getElementById("process-btn");
       setBusy(form, true);
-      button.textContent = "Checking…";
-      const preview = await callApi("inbox", { body: { action: "preview", mailbox_id, lookback_hours: Number(lookback_hours) } });
-      if (preview.error) {
-        setBusy(form, false);
-        button.textContent = "Process inbox";
-        return showMessage(`Could not read the inbox: ${preview.error}`, "error");
-      }
+      // Unchecked: only new emails, no questions. Checked: confirm first when the period has already processed emails.
       let reprocess = false;
-      if (preview.data.already_processed) {
-        const choice = await askReprocess(preview.data);
-        if (choice === "cancel") {
+      if (recheck === "on") {
+        button.textContent = "Checking…";
+        const preview = await callApi("inbox", { body: { action: "preview", mailbox_id, lookback_hours: Number(lookback_hours) } });
+        if (preview.error) {
           setBusy(form, false);
           button.textContent = "Process inbox";
-          return;
+          return showMessage(`Could not read the inbox: ${preview.error}`, "error");
         }
-        reprocess = choice === "all";
+        if (preview.data.already_processed) {
+          const choice = await askReprocess(preview.data);
+          if (choice === "cancel") {
+            setBusy(form, false);
+            button.textContent = "Process inbox";
+            return;
+          }
+          reprocess = choice === "all";
+        }
       }
       // Every email of the period, one batch per call (each call stays inside the server's time limit), until none
       // remain or Stop is pressed. The summary email goes out once, with the last batch.
