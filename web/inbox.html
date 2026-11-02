@@ -122,6 +122,23 @@
     </main>
   </div>
 
+  <!-- Opened by clicking an email's subject: the message read live from the mailbox. -->
+  <dialog class="dialog dialog-preview" id="preview-dialog" aria-labelledby="preview-subject">
+    <div class="preview-head">
+      <h2 id="preview-subject"></h2>
+      <button type="button" class="icon-button" id="preview-close" aria-label="Close">✕</button>
+    </div>
+    <dl class="preview-meta" id="preview-meta"></dl>
+    <div class="preview-attachments" id="preview-attachments"></div>
+    <p class="preview-status" id="preview-status"></p>
+    <!-- No allow-scripts / allow-same-origin: the email can't run code or reach the app. -->
+    <iframe class="preview-frame" id="preview-frame" title="Email content" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="preview-images" hidden>Show images</button>
+      <a class="button-link" id="preview-open" target="_blank" rel="noopener" hidden>Open in mailbox</a>
+    </div>
+  </dialog>
+
   <!-- Asked before a run when the period has emails that were already processed. -->
   <dialog class="dialog" id="reprocess-dialog" aria-labelledby="reprocess-title">
     <form method="dialog">
@@ -378,13 +395,18 @@
       const dateCell = el("td", "email-date");
       if (date) dateCell.append(el("div", null, date.toLocaleDateString()), el("div", null, date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })));
 
-      const subject = e.web_link ? el("a", "email-subject") : el("div", "email-subject");
-      subject.textContent = e.subject || "(no subject)";
+      // Click opens the preview; Ctrl / Cmd / middle click still opens the email in Outlook or Gmail.
+      const subject = el("a", "email-subject", e.subject || "(no subject)");
+      subject.href = e.web_link || "#";
       if (e.web_link) {
-        subject.href = e.web_link;
         subject.target = "_blank";
         subject.rel = "noopener";
       }
+      subject.addEventListener("click", (ev) => {
+        if (e.web_link && (ev.ctrlKey || ev.metaKey || ev.shiftKey)) return;
+        ev.preventDefault();
+        openPreview(e);
+      });
       const summary = el("div", "email-oneline clamp", e.summary || (e.status === "processing" ? "Classifying…" : "No summary."));
       summary.title = e.summary || "";
       const emailCell = el("td", "email-main");
@@ -461,6 +483,88 @@
       }
       return rows;
     }
+
+    // --- Email preview ---------------------------------------------------------------------------
+    const previewDialog = document.getElementById("preview-dialog");
+    const previewFrame = document.getElementById("preview-frame");
+    let previewRequest = 0;
+
+    async function openPreview(e) {
+      const request = ++previewRequest;
+      const status = document.getElementById("preview-status");
+      document.getElementById("preview-subject").textContent = e.subject || "(no subject)";
+      document.getElementById("preview-meta").replaceChildren();
+      document.getElementById("preview-attachments").replaceChildren();
+      document.getElementById("preview-images").hidden = true;
+      const open = document.getElementById("preview-open");
+      open.hidden = !e.web_link;
+      if (e.web_link) open.href = e.web_link;
+      status.textContent = "Loading the email…";
+      status.hidden = false;
+      previewFrame.hidden = true;
+      previewFrame.srcdoc = "";
+      if (!previewDialog.open) previewDialog.showModal();
+
+      const { data, error } = await callApi(`inbox?${new URLSearchParams({ preview: e.id })}`, { method: "GET" });
+      if (request !== previewRequest) return;
+      if (error) {
+        status.textContent = `Could not load the email: ${error}`;
+        return;
+      }
+      const m = data.email;
+      document.getElementById("preview-subject").textContent = m.subject || "(no subject)";
+      const meta = [["From", m.from], ["To", m.to], ["Cc", m.cc], ["Date", m.received && new Date(m.received).toLocaleString()]]
+        .filter(([, v]) => v);
+      document.getElementById("preview-meta").replaceChildren(...meta.flatMap(([k, v]) => [el("dt", null, k), el("dd", null, v)]));
+      document.getElementById("preview-attachments").replaceChildren(
+        ...m.attachments.map((a) => el("span", "badge", `📎 ${a.name}${a.size ? ` (${formatSize(a.size)})` : ""}`)));
+      if (m.web_link) {
+        open.href = m.web_link;
+        open.hidden = false;
+      }
+
+      // Remote images stay blocked (they tell the sender the email was opened) until asked for.
+      const images = document.getElementById("preview-images");
+      images.hidden = !m.html || !REMOTE_CONTENT.test(m.html);
+      images.onclick = () => {
+        images.hidden = true;
+        previewFrame.srcdoc = previewDocument(m, true);
+      };
+      status.hidden = true;
+      previewFrame.hidden = false;
+      previewFrame.srcdoc = previewDocument(m, false);
+    }
+
+    const REMOTE_CONTENT = /(src|background)\s*=\s*["']?https?:|url\(\s*["']?https?:/i;
+
+    // The email as a standalone page. The CSP blocks scripts and, unless remote is set, anything loaded from the web.
+    function previewDocument(m, remote) {
+      const web = remote ? " https: http:" : "";
+      const csp = `default-src 'none'; img-src data:${web}; style-src 'unsafe-inline'${web}; font-src data:${web}`;
+      const escape = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+      return `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank">` +
+        "<style>body{margin:16px;font:14px/1.5 system-ui,sans-serif;color:#1c2230;background:#fff;overflow-wrap:anywhere}" +
+        "img{max-width:100%;height:auto}pre{white-space:pre-wrap;font:inherit;margin:0}</style>" +
+        (m.html ?? `<pre>${escape(m.text || "(This email has no text.)")}</pre>`);
+    }
+
+    function formatSize(bytes) {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+      return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    }
+
+    document.getElementById("preview-close").addEventListener("click", () => previewDialog.close());
+    // A click on the backdrop closes it (the dialog's own padding is also the dialog, so compare with its box).
+    previewDialog.addEventListener("click", (ev) => {
+      const r = previewDialog.getBoundingClientRect();
+      const outside = ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom;
+      if (ev.target === previewDialog && outside) previewDialog.close();
+    });
+    previewDialog.addEventListener("close", () => {
+      previewRequest++;
+      previewFrame.srcdoc = "";
+    });
 
     const TRIGGER_LABELS = { manual: "Process inbox", schedule: "Scheduled run", user: "By hand" };
 

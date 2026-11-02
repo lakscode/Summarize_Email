@@ -1,8 +1,10 @@
 // Microsoft Graph access for connected Outlook / Microsoft 365 mailboxes: delegated OAuth (a user signed in), or
 // API keys (app-only client credentials from the customer's own Azure app registration).
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { decodeBase64 } from "./base64.ts";
 import {
-  isEmailAttachment, type MailAttachment, type MailboxRow, type MailClient, type MailMessage, readRefreshToken, saveRefreshToken,
+  contentIdOf, type FullMessage, type InlineImage, isEmailAttachment, type MailAttachment, type MailboxRow, type MailClient,
+  type MailMessage, MAX_INLINE_IMAGE_BYTES, readRefreshToken, saveRefreshToken,
 } from "./mail.ts";
 import { env } from "./supabase.ts";
 
@@ -42,6 +44,7 @@ export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): 
   return {
     listInbox: (since, top) => listInbox(token, box, since, top),
     listAttachments: (messageId) => listAttachments(token, box, messageId),
+    getMessage: (messageId) => getMessage(token, box, messageId),
     attachmentBytes: (messageId, attachmentId) => attachmentBytes(token, box, messageId, attachmentId),
     // Delegated: always from the signed-in user's own mailbox, so a shared mailbox's summary needs no Send As rights.
     sendMail: (to, subject, html) => sendMail(token, app ? box : "/me", to, subject, html),
@@ -272,6 +275,57 @@ async function listAttachments(token: string, box: string, messageId: string): P
       isEmail: isItem || (isFile && isEmailAttachment(a.name, a.contentType)),
     };
   });
+}
+
+interface GraphRecipient { emailAddress?: { name?: string; address?: string } }
+interface GraphMessage {
+  subject?: string;
+  from?: GraphRecipient;
+  toRecipients?: GraphRecipient[];
+  ccRecipients?: GraphRecipient[];
+  receivedDateTime: string;
+  body?: { contentType?: "html" | "text"; content?: string };
+  hasAttachments?: boolean;
+  webLink?: string;
+}
+
+const recipients = (list: GraphRecipient[] = []) =>
+  list.map(({ emailAddress: e }) => e?.name && e.name !== e.address ? `${e.name} <${e.address}>` : e?.address ?? "")
+    .filter(Boolean).join(", ");
+
+// The whole message, body as HTML. hasAttachments ignores inline images, so attachments are also listed when the
+// body references cid: images; those are loaded (JSON, with contentId) within MAX_INLINE_IMAGE_BYTES.
+async function getMessage(token: string, box: string, messageId: string): Promise<FullMessage> {
+  const id = encodeURIComponent(messageId);
+  const m = await graph<GraphMessage>(token,
+    `${box}/messages/${id}?$select=subject,from,toRecipients,ccRecipients,receivedDateTime,body,hasAttachments,webLink`);
+  const body = m.body?.content ?? "";
+  const isHtml = m.body?.contentType === "html";
+  const all = m.hasAttachments || (isHtml && /cid:/i.test(body)) ? await listAttachments(token, box, messageId) : [];
+
+  const inlineImages: InlineImage[] = [];
+  let total = 0;
+  for (const a of all.filter((a) => a.isInline && a.isFile && a.contentType?.startsWith("image/"))) {
+    if (total + a.size > MAX_INLINE_IMAGE_BYTES) continue;
+    total += a.size;
+    const file = await graph<{ contentId?: string; contentBytes?: string }>(
+      token, `${box}/messages/${id}/attachments/${encodeURIComponent(a.id)}`);
+    const contentId = contentIdOf(file.contentId);
+    if (contentId && file.contentBytes) inlineImages.push({ contentId, contentType: a.contentType!, bytes: decodeBase64(file.contentBytes) });
+  }
+
+  return {
+    subject: m.subject,
+    from: recipients(m.from ? [m.from] : []),
+    to: recipients(m.toRecipients),
+    cc: recipients(m.ccRecipients),
+    received: m.receivedDateTime,
+    html: isHtml ? body : null,
+    text: isHtml ? "" : body,
+    attachments: all.filter((a) => !a.isInline),
+    inlineImages,
+    webLink: m.webLink,
+  };
 }
 
 // Raw bytes of a file attachment, or the MIME of an attached Outlook item.

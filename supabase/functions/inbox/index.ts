@@ -1,12 +1,13 @@
 // AP inbox processing for the signed-in user's connected mailboxes.
 //   GET   ?status=&mailbox_id=                          -> { emails: [...] } newest first
+//   GET   ?preview=<email id>                           -> { email: {...} } the message read live from the mailbox
 //   GET   ?history=<email id>                           -> { history: [...] } who processed it and when, newest first
 //   POST  {action: "process", mailbox_id, lookback_hours, reprocess?} -> process now (see _shared/process.ts)
 //   POST  {action: "preview", mailbox_id, lookback_hours} -> { new, already_processed, ... } to confirm a re-check first
 //   PATCH {id, status: "done" | "action_needed"}       -> employee marks an item handled / reopens it
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
-import { previewMailbox, processMailbox, STATUSES } from "../_shared/process.ts";
+import { previewEmail, previewMailbox, processMailbox, STATUSES } from "../_shared/process.ts";
 import { adminClient, callerUser } from "../_shared/supabase.ts";
 
 Deno.serve(async (req) => {
@@ -18,6 +19,20 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
 
   try {
+    if (req.method === "GET" && url.searchParams.has("preview")) {
+      const id = url.searchParams.get("preview")!;
+      try {
+        const email = await previewEmail(user.id, id);
+        return email ? json({ email }) : json({ error: "Email not found" }, 404);
+      } catch (err) {
+        // Gone from the inbox: deleted, or moved (Outlook gives a moved message a new id).
+        if (/failed: 404\b/.test(String(err))) {
+          return await fail("inbox/preview", "This email is no longer in the inbox. It may have been moved or deleted.", 404, { userId: user.id, context: { id } });
+        }
+        throw err;
+      }
+    }
+
     if (req.method === "GET" && url.searchParams.has("history")) {
       const { data, error } = await sb.from("email_processing_log")
         .select("processed_at, processed_by_email, trigger, run_id, status, category, action, error")

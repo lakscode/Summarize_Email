@@ -8,7 +8,9 @@ import { APP_NAME } from "./brand.ts";
 import PostalMime from "npm:postal-mime@3.0.1";
 import { type AttachmentFile, type AttachmentText, classifyEmail, type Classification, type MailboxType } from "./classify.ts";
 import { logApi, logStep } from "./log.ts";
-import { htmlToText, isEmailAttachment, type MailClient, mailClient, type MailMessage, type Provider } from "./mail.ts";
+import {
+  embedInlineImages, htmlToText, isEmailAttachment, type MailClient, mailClient, type MailMessage, type Provider,
+} from "./mail.ts";
 import { buildReport, type ReportItem } from "./report.ts";
 import { adminClient } from "./supabase.ts";
 
@@ -79,6 +81,28 @@ export async function previewMailbox(userId: string, mailboxId: string, hours: n
     new: messages.length - rows.length,
     already_processed: rows.filter(recheckable).length,
     handled: rows.filter((r) => !recheckable(r)).length,
+  };
+}
+
+// A processed email as the Inbox preview shows it, read live from the mailbox (null if it isn't the user's).
+export async function previewEmail(userId: string, emailId: string) {
+  const db = adminClient();
+  const { data: row, error } = await db.from("processed_emails").select("mailbox_id, message_id, web_link")
+    .eq("id", emailId).eq("owner_user_id", userId).maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!row) return null;
+  const mailbox = await loadMailbox(db, userId, row.mailbox_id);
+  const m = await (await mailClient(db, mailbox)).getMessage(row.message_id);
+  return {
+    subject: m.subject ?? "",
+    from: m.from ?? "",
+    to: m.to ?? "",
+    cc: m.cc ?? "",
+    received: m.received,
+    html: m.html === null ? null : embedInlineImages(m.html, m.inlineImages),
+    text: m.text,
+    attachments: m.attachments.map(({ name, size, contentType }) => ({ name, size, content_type: contentType ?? null })),
+    web_link: m.webLink ?? row.web_link,
   };
 }
 

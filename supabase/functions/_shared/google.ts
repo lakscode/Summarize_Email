@@ -4,7 +4,8 @@ import { decodeBase64Url, encodeBase64 } from "./base64.ts";
 import PostalMime from "npm:postal-mime@3.0.1";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import {
-  htmlToText, isEmailAttachment, type MailAttachment, type MailboxRow, type MailClient, type MailMessage, readRefreshToken,
+  contentIdOf, type FullMessage, htmlToText, type InlineImage, isEmailAttachment, type MailAttachment, type MailboxRow,
+  type MailClient, type MailMessage, MAX_INLINE_IMAGE_BYTES, readRefreshToken,
 } from "./mail.ts";
 import { env } from "./supabase.ts";
 
@@ -76,6 +77,42 @@ export async function googleClient(db: SupabaseClient, mailbox: MailboxRow): Pro
     },
 
     attachmentBytes: bytes,
+
+    // The HTML part (or the text part) as the body; parts with a Content-ID are the cid: images.
+    async getMessage(messageId): Promise<FullMessage> {
+      const msg = await full(messageId);
+      const header = (name: string) => headerValue(msg.payload, name);
+      const parts = flatten(msg.payload);
+      const bodies = parts.filter((p) => !p.filename && p.body?.data);
+      const html = bodies.find((p) => p.mimeType === "text/html");
+      const plain = bodies.find((p) => p.mimeType === "text/plain");
+
+      const inlineImages: InlineImage[] = [];
+      let total = 0;
+      for (const p of parts) {
+        const contentId = contentIdOf(headerValue(p, "Content-ID"));
+        const size = p.body?.size ?? 0;
+        if (!contentId || !p.mimeType?.startsWith("image/") || total + size > MAX_INLINE_IMAGE_BYTES) continue;
+        total += size;
+        const data = p.body?.data ? decodeBase64Url(p.body.data)
+          : p.body?.attachmentId ? await bytes(messageId, p.body.attachmentId) : null;
+        if (data) inlineImages.push({ contentId, contentType: p.mimeType, bytes: data });
+      }
+
+      const original = toMailMessage(msg, mailbox.email_address);
+      return {
+        subject: header("Subject"),
+        from: header("From"),
+        to: header("To"),
+        cc: header("Cc"),
+        received: original.receivedDateTime,
+        html: html ? decodeText(html) : null,
+        text: html ? "" : plain ? decodeText(plain) : "",
+        attachments: attachmentsOf(msg).filter((a) => !a.isInline),
+        inlineImages,
+        webLink: original.webLink,
+      };
+    },
 
     async sendMail(to, subject, html) {
       await send(token, [

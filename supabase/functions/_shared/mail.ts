@@ -1,6 +1,7 @@
 // Provider-neutral mailbox access used by process.ts. Messages use the Microsoft Graph shape (the first
 // provider); the Gmail adapter maps its messages into it.
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { encodeBase64 } from "./base64.ts";
 import { googleClient } from "./google.ts";
 import { microsoftClient } from "./microsoft.ts";
 
@@ -43,6 +44,26 @@ export interface MailAttachment {
   isEmail?: boolean;
 }
 
+// One message as the Inbox preview shows it: the HTML body when there is one (otherwise text), headers as display
+// strings, and its images referenced by cid: (already loaded, within MAX_INLINE_IMAGE_BYTES).
+export interface FullMessage {
+  subject?: string;
+  from?: string;
+  to?: string;
+  cc?: string;
+  received: string;
+  html: string | null;
+  text: string;
+  attachments: MailAttachment[];
+  inlineImages: InlineImage[];
+  webLink?: string;
+}
+export interface InlineImage { contentId: string; contentType: string; bytes: Uint8Array }
+
+// Total size of the cid: images loaded for one preview; bigger ones show as broken images.
+export const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+export const contentIdOf = (value: string | undefined) => value?.trim().replace(/^<|>$/g, "") || null;
+
 export const isEmailAttachment = (name: string, contentType?: string) =>
   (contentType ?? "").toLowerCase() === "message/rfc822" || name.toLowerCase().endsWith(".eml");
 
@@ -62,11 +83,22 @@ export interface MailClient {
   // Inbox messages received since `since`, newest first.
   listInbox(since: Date, top?: number): Promise<MailMessage[]>;
   listAttachments(messageId: string): Promise<MailAttachment[]>;
+  // The whole message for the Inbox preview.
+  getMessage(messageId: string): Promise<FullMessage>;
   attachmentBytes(messageId: string, attachmentId: string): Promise<Uint8Array>;
   // Sends an HTML email from the connected mailbox (kept in its sent mail).
   sendMail(to: string, subject: string, html: string): Promise<void>;
   // Forwards the message with its attachments, `comment` above the original.
   forwardMessage(messageId: string, to: string, comment: string): Promise<void>;
+}
+
+// Replaces cid: references in an HTML body with data: URLs of the message's inline images.
+export function embedInlineImages(html: string, images: InlineImage[]): string {
+  const byId = new Map(images.map((i) => [i.contentId.toLowerCase(), i]));
+  return html.replace(/cid:([^"'\s)>]+)/gi, (match, id: string) => {
+    const image = byId.get(decodeURIComponent(id).toLowerCase());
+    return image ? `data:${image.contentType};base64,${encodeBase64(image.bytes)}` : match;
+  });
 }
 
 export async function mailClient(db: SupabaseClient, mailbox: MailboxRow): Promise<MailClient> {
