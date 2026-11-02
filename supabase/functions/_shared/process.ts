@@ -38,12 +38,7 @@ interface Run { id: string; userId: string; userEmail: string | null; mailbox: s
 const step = (run: Run, location: string, message: string, context: Record<string, unknown> = {}) =>
   logStep(location, message, run.userId, { run: run.id, mailbox: run.mailbox, trigger: run.trigger, ...context });
 
-// appUrl: where the app is hosted, for the "Open the Inbox" link in the summary email (null leaves it out).
-export async function processMailbox(
-  userId: string, mailboxId: string, hours: number, reprocess: boolean,
-  trigger: "manual" | "schedule" = "manual", appUrl: string | null = null,
-) {
-  const db = adminClient();
+async function loadMailbox(db: Db, userId: string, mailboxId: string): Promise<Mailbox> {
   await db.rpc("expire_mailbox_access");
   const { data: mailbox, error } = await db.from("mailboxes")
     .select("id, provider, auth_type, connection_id, email_address, delegate_address, credentials_secret_id, smart_ap_address, access_expires_at, mailbox_type, forward_categories, send_summary, summary_address")
@@ -53,6 +48,47 @@ export async function processMailbox(
   if (!mailbox.credentials_secret_id && !mailbox.connection_id) {
     throw new Error(`Access to ${mailbox.email_address} has expired. Reconnect it on the dashboard.`);
   }
+  return mailbox;
+}
+
+// The inbox messages of the last `hours`, with the processed_emails row of those already processed.
+async function listInbox(db: Db, mailbox: Mailbox, client: MailClient, hours: number) {
+  const messages = await client.listInbox(new Date(Date.now() - hours * 3600_000));
+  const { data: seen, error } = messages.length
+    ? await db.from("processed_emails").select("id, message_id, status, action_taken")
+      .eq("mailbox_id", mailbox.id).in("message_id", messages.map((m) => m.id))
+    : { data: [], error: null };
+  if (error) throw new Error(error.message);
+  const seenById = new Map<string, ExistingRow>((seen as ExistingRow[] ?? []).map((r) => [r.message_id, r]));
+  return { messages, seenById };
+}
+
+// Already processed emails that a re-check classifies again: never ones that were forwarded or marked done.
+const recheckable = (row: ExistingRow) =>
+  RECHECKABLE.includes(row.status) && !(row.action_taken ?? "").startsWith("Forwarded");
+
+// What a run of the last `hours` would pick up, so the UI can ask before processing emails again.
+export async function previewMailbox(userId: string, mailboxId: string, hours: number) {
+  const db = adminClient();
+  const mailbox = await loadMailbox(db, userId, mailboxId);
+  const { messages, seenById } = await listInbox(db, mailbox, await mailClient(db, mailbox), hours);
+  const rows = [...seenById.values()];
+  return {
+    mailbox: mailbox.email_address,
+    scanned: messages.length,
+    new: messages.length - rows.length,
+    already_processed: rows.filter(recheckable).length,
+    handled: rows.filter((r) => !recheckable(r)).length,
+  };
+}
+
+// appUrl: where the app is hosted, for the "Open the Inbox" link in the summary email (null leaves it out).
+export async function processMailbox(
+  userId: string, mailboxId: string, hours: number, reprocess: boolean,
+  trigger: "manual" | "schedule" = "manual", appUrl: string | null = null,
+) {
+  const db = adminClient();
+  const mailbox = await loadMailbox(db, userId, mailboxId);
 
   const { data: profile } = await db.from("profiles").select("email").eq("id", userId).maybeSingle();
   const run: Run = {
@@ -63,16 +99,7 @@ export async function processMailbox(
     `Run started (${trigger === "schedule" ? "scheduled" : "manual"}) for ${mailbox.email_address}: last ${hours}h${reprocess ? ", re-checking processed emails" : ""}`);
 
   const client = await mailClient(db, mailbox);
-  const messages = await client.listInbox(new Date(Date.now() - hours * 3600_000));
-
-  const { data: seen, error: seenError } = messages.length
-    ? await db.from("processed_emails").select("id, message_id, status, action_taken")
-      .eq("mailbox_id", mailbox.id).in("message_id", messages.map((m) => m.id))
-    : { data: [], error: null };
-  if (seenError) throw new Error(seenError.message);
-  const seenById = new Map<string, ExistingRow>((seen as ExistingRow[] ?? []).map((r) => [r.message_id, r]));
-  const recheckable = (row: ExistingRow) =>
-    RECHECKABLE.includes(row.status) && !(row.action_taken ?? "").startsWith("Forwarded");
+  const { messages, seenById } = await listInbox(db, mailbox, client, hours);
   const fresh = messages.filter((m) => {
     const row = seenById.get(m.id);
     return !row || (reprocess && recheckable(row));
@@ -310,27 +337,30 @@ async function processMessage(
       updated_at: new Date().toISOString(),
     }).eq("id", rowId);
     if (error) throw new Error(error.message);
-    await logProcessing(db, run, mailbox, rowId, { status, category: c.category, action });
+    await logProcessing(db, run, mailbox, rowId, subject, { status, category: c.category, action });
     return { ...item, category: c.category, summary: c.summary, next_step: c.next_step, action, status };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await logApi("inbox/process", err, { userId, context: { run: run.id, mailbox: mailbox.email_address, ...email } });
     await db.from("processed_emails").update({ status: "error", error: message, ...processedBy(run), updated_at: new Date().toISOString() }).eq("id", rowId);
-    await logProcessing(db, run, mailbox, rowId, { status: "error", error: message });
+    await logProcessing(db, run, mailbox, rowId, subject, { status: "error", error: message });
     return { ...item, status: "error", action: message };
   }
 }
 
 const processedBy = (run: Run) => ({ processed_by: run.userId, processed_by_email: run.userEmail, processed_at: new Date().toISOString() });
 
-// One email_processing_log row per processed email. Never throws: a failure to log must not fail the email.
+// One email_processing_log row per processed email; a re-check adds another, so earlier outcomes are kept.
+// Never throws: a failure to log must not fail the email.
 async function logProcessing(
-  db: Db, run: Run, mailbox: Mailbox, rowId: string,
+  db: Db, run: Run, mailbox: Mailbox, rowId: string, subject: string,
   outcome: { status: string; category?: string; action?: string | null; error?: string },
 ) {
   const { error } = await db.from("email_processing_log").insert({
     processed_email_id: rowId,
     mailbox_id: mailbox.id,
+    mailbox_address: mailbox.email_address,
+    subject,
     owner_user_id: run.userId,
     processed_by: run.userId,
     processed_by_email: run.userEmail,

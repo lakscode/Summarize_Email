@@ -2,10 +2,11 @@
 //   GET   ?status=&mailbox_id=                          -> { emails: [...] } newest first
 //   GET   ?history=<email id>                           -> { history: [...] } who processed it and when, newest first
 //   POST  {action: "process", mailbox_id, lookback_hours, reprocess?} -> process now (see _shared/process.ts)
+//   POST  {action: "preview", mailbox_id, lookback_hours} -> { new, already_processed, ... } to confirm a re-check first
 //   PATCH {id, status: "done" | "action_needed"}       -> employee marks an item handled / reopens it
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi } from "../_shared/log.ts";
-import { processMailbox, STATUSES } from "../_shared/process.ts";
+import { previewMailbox, processMailbox, STATUSES } from "../_shared/process.ts";
 import { adminClient, callerUser } from "../_shared/supabase.ts";
 
 Deno.serve(async (req) => {
@@ -50,13 +51,15 @@ Deno.serve(async (req) => {
       const { data, error } = await sb.from("processed_emails")
         .update({ status: body.status, updated_at: new Date().toISOString() })
         .eq("id", body.id)
-        .select("id, status, mailbox_id, owner_user_id")
+        .select("id, status, mailbox_id, owner_user_id, subject, mailboxes(email_address)")
         .maybeSingle();
       if (error) return await fail("inbox/update", error.message, 500, { userId: user.id, context: { id: body.id } });
       if (!data) return json({ error: "Email not found" }, 404);
       const { error: logError } = await adminClient().from("email_processing_log").insert({
         processed_email_id: data.id,
         mailbox_id: data.mailbox_id,
+        mailbox_address: (data.mailboxes as { email_address?: string } | null)?.email_address ?? null,
+        subject: data.subject,
         owner_user_id: data.owner_user_id,
         processed_by: user.id,
         processed_by_email: user.email ?? null,
@@ -70,8 +73,11 @@ Deno.serve(async (req) => {
 
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
-      if (body.action !== "process" || !body.mailbox_id) return json({ error: "action 'process' and mailbox_id are required" }, 400);
+      if (!["process", "preview"].includes(body.action) || !body.mailbox_id) {
+        return json({ error: "action ('process' | 'preview') and mailbox_id are required" }, 400);
+      }
       const hours = Math.min(Math.max(Number(body.lookback_hours) || 24, 1), 24 * 14);
+      if (body.action === "preview") return json(await previewMailbox(user.id, body.mailbox_id, hours));
       const origin = req.headers.get("Origin");
       const appUrl = origin && /^https?:\/\/[^/]+$/.test(origin) ? origin : null;
       return json(await processMailbox(user.id, body.mailbox_id, hours, body.reprocess === true, "manual", appUrl));

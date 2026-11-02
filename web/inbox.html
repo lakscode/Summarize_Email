@@ -45,10 +45,6 @@
               <option value="336">Last 14 days</option>
             </select>
           </label>
-          <label class="checkbox">
-            <input type="checkbox" name="reprocess" />
-            Re-check emails already processed (never forwards twice)
-          </label>
           <button type="submit" id="process-btn">Process inbox</button>
         </form>
         <form id="schedule-form" class="schedule-form">
@@ -125,6 +121,21 @@
       </div>
     </main>
   </div>
+
+  <!-- Asked before a run when the period has emails that were already processed. -->
+  <dialog class="dialog" id="reprocess-dialog" aria-labelledby="reprocess-title">
+    <form method="dialog">
+      <h2 id="reprocess-title">Process emails again?</h2>
+      <p id="reprocess-text"></p>
+      <p class="hint">Their earlier results stay in each email's history. Emails already forwarded or marked done are
+        never processed again.</p>
+      <div class="dialog-actions">
+        <button type="submit" class="secondary" value="cancel">Cancel</button>
+        <button type="submit" class="secondary" value="new" id="reprocess-new">Only new emails</button>
+        <button type="submit" value="all">Process again</button>
+      </div>
+    </form>
+  </dialog>
 
   <script>
     const CATEGORY_LABELS = {
@@ -467,16 +478,47 @@
       dl.append(el("dt", null, "History"), list);
     }
 
+    // Resolves to "all" (process already processed emails again too), "new" (only new ones) or "cancel".
+    function askReprocess(p) {
+      const dialog = document.getElementById("reprocess-dialog");
+      const n = p.already_processed;
+      document.getElementById("reprocess-text").textContent =
+        `${n} email${n === 1 ? " was" : "s were"} already processed in this period` +
+        (p.new ? `, and ${p.new} ${p.new === 1 ? "is" : "are"} new.` : ", and there are no new emails.") +
+        ` Process the ${n === 1 ? "already processed one" : `${n} already processed ones`} again?`;
+      document.getElementById("reprocess-new").hidden = !p.new;
+      dialog.returnValue = "cancel";
+      dialog.showModal();
+      return new Promise((resolve) => dialog.addEventListener("close", () => resolve(dialog.returnValue || "cancel"), { once: true }));
+    }
+
     document.getElementById("process-form").addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const form = ev.currentTarget;
-      const { mailbox_id, lookback_hours, reprocess } = Object.fromEntries(new FormData(form));
+      const { mailbox_id, lookback_hours } = Object.fromEntries(new FormData(form));
       const button = document.getElementById("process-btn");
       setBusy(form, true);
+      button.textContent = "Checking…";
+      const preview = await callApi("inbox", { body: { action: "preview", mailbox_id, lookback_hours: Number(lookback_hours) } });
+      if (preview.error) {
+        setBusy(form, false);
+        button.textContent = "Process inbox";
+        return showMessage(`Could not read the inbox: ${preview.error}`, "error");
+      }
+      let reprocess = false;
+      if (preview.data.already_processed) {
+        const choice = await askReprocess(preview.data);
+        if (choice === "cancel") {
+          setBusy(form, false);
+          button.textContent = "Process inbox";
+          return;
+        }
+        reprocess = choice === "all";
+      }
       button.textContent = "Processing…";
       showMessage("Reading and classifying emails. This can take a minute.", "info");
       const { data, error } = await callApi("inbox", {
-        body: { action: "process", mailbox_id, lookback_hours: Number(lookback_hours), reprocess: reprocess === "on" },
+        body: { action: "process", mailbox_id, lookback_hours: Number(lookback_hours), reprocess },
       });
       setBusy(form, false);
       button.textContent = "Process inbox";
