@@ -46,6 +46,7 @@
             </select>
           </label>
           <button type="submit" id="process-btn">Process inbox</button>
+          <button type="button" class="secondary" id="process-stop" hidden>Stop</button>
         </form>
         <form id="schedule-form" class="schedule-form">
           <h2>Schedule</h2>
@@ -111,7 +112,7 @@
       <div class="panel log-panel">
         <table class="logs emails">
           <thead>
-            <tr><th>Status</th><th>Received</th><th>Email</th><th>Vendor / amount</th><th>Next step</th><th></th></tr>
+            <tr><th>Status</th><th>Received</th><th>Email</th><th>Vendor / amount</th><th>Next step</th><th>Processed</th><th></th></tr>
           </thead>
           <tbody id="email-list"></tbody>
         </table>
@@ -228,7 +229,7 @@
           el("span", `badge type-${m.mailbox_type || "ap"}`, m.mailbox_type === "ar" ? "AR" : "AP"));
         const sub = el("span", "mailbox-nav-sub",
           [m.display_name, m.schedule_enabled ? "Scheduled" : null,
-            m.last_processed_at ? `Processed ${new Date(m.last_processed_at).toLocaleDateString()}` : "Not processed yet"]
+            m.last_processed_at ? `Processed ${formatWhen(m.last_processed_at)}` : "Not processed yet"]
             .filter(Boolean).join(" · "));
         item.append(top, sub);
         item.addEventListener("click", () => selectMailbox(m.id));
@@ -246,6 +247,9 @@
         m.mailbox_type === "ar" ? "Accounts receivable" : "Accounts payable",
         m.delegate_address ? `shared, via ${m.delegate_address}` : m.connection_id ? "shared, via organization" : null,
         m.smart_ap_address ? `forwards to ${m.smart_ap_address}` : "no destination email",
+        m.last_processed_at
+          ? `last processed ${formatWhen(m.last_processed_at)}${m.last_processed_by_name ? ` by ${m.last_processed_by_name}` : ""}`
+          : "not processed yet",
       ].filter(Boolean).join(" · ");
     }
 
@@ -424,10 +428,20 @@
         nextCell.append(next);
       }
 
+      // When it was last processed (a run, or someone marking it done / reopening it) and by whom.
+      const processedCell = el("td", "email-processed");
+      const processedBy = e.processed_by_name || e.processed_by_email;
+      if (e.processed_at) processedCell.append(el("div", null, formatWhen(e.processed_at)));
+      if (e.processed_at && processedBy) {
+        const who = el("div", "who", processedBy);
+        who.title = e.processed_by_email || processedBy;
+        processedCell.append(who);
+      }
+
       const actions = el("div", "email-actions");
       const actionCell = el("td", "email-actions-cell");
       actionCell.append(actions);
-      tr.append(statusCell, dateCell, emailCell, vendorCell, nextCell, actionCell);
+      tr.append(statusCell, dateCell, emailCell, vendorCell, nextCell, processedCell, actionCell);
 
       const facts = [
         ["From", e.from_name ? `${e.from_name} <${e.from_address}>` : e.from_address],
@@ -437,14 +451,14 @@
         ["Next step", e.next_step],
         ["Action taken", e.action_taken],
         ["Error", e.error],
-        ["Processed", e.processed_at && `${new Date(e.processed_at).toLocaleString()}${e.processed_by_email ? ` by ${e.processed_by_email}` : ""}`],
+        ["Last processed", e.processed_at && `${formatWhen(e.processed_at)}${processedBy ? ` by ${processedBy}` : ""}`],
       ].filter(([, v]) => v);
       const rows = [tr];
       if (facts.length) {
         const detailRow = el("tr", "email-detail-row");
         detailRow.hidden = true;
         const cell = el("td");
-        cell.colSpan = 6;
+        cell.colSpan = 7;
         const dl = el("dl", "facts");
         for (const [k, v] of facts) dl.append(el("dt", null, k), el("dd", null, v));
         cell.append(dl);
@@ -548,6 +562,11 @@
         (m.html ?? `<pre>${escape(m.text || "(This email has no text.)")}</pre>`);
     }
 
+    // Date and time, short, in the viewer's locale and time zone.
+    function formatWhen(iso) {
+      return new Date(iso).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+    }
+
     function formatSize(bytes) {
       if (bytes < 1024) return `${bytes} B`;
       if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -576,11 +595,15 @@
       for (const h of data.history) {
         const outcome = [ACTION_LABELS[h.status] || h.status, h.category && (CATEGORY_LABELS[h.category] || h.category), h.action || h.error]
           .filter(Boolean).join(" · ");
-        const who = h.processed_by_email ? ` by ${h.processed_by_email}` : "";
-        list.append(el("div", null, `${new Date(h.processed_at).toLocaleString()}${who} (${TRIGGER_LABELS[h.trigger] || h.trigger}): ${outcome}`));
+        const name = h.processed_by_name || h.processed_by_email;
+        const who = name ? ` by ${name}` : "";
+        list.append(el("div", null, `${formatWhen(h.processed_at)}${who} (${TRIGGER_LABELS[h.trigger] || h.trigger}): ${outcome}`));
       }
       dl.append(el("dt", null, "History"), list);
     }
+
+    // Safety net for Process inbox: at most this many batches (of 15) per click.
+    const MAX_BATCHES = 40;
 
     // Resolves to "all" (process already processed emails again too), "new" (only new ones) or "cancel".
     function askReprocess(p) {
@@ -619,25 +642,57 @@
         }
         reprocess = choice === "all";
       }
+      // Every email of the period, one batch per call (each call stays inside the server's time limit), until none
+      // remain or Stop is pressed. The summary email goes out once, with the last batch.
+      const stop = document.getElementById("process-stop");
+      let stopped = false;
+      stop.onclick = () => {
+        stopped = true;
+        stop.disabled = true;
+        stop.textContent = "Stopping after this batch…";
+      };
+      stop.textContent = "Stop";
+      stop.hidden = false;
+      stop.disabled = false;
       button.textContent = "Processing…";
-      showMessage("Reading and classifying emails. This can take a minute.", "info");
-      const { data, error } = await callApi("inbox", {
-        body: { action: "process", mailbox_id, lookback_hours: Number(lookback_hours), reprocess },
-      });
+      showMessage("Reading and classifying emails. This can take a few minutes for a long period.", "info");
+
+      const counts = {};
+      let done = 0, data = null, error = null, startedAt = null;
+      for (let batch = 0; batch < MAX_BATCHES && !stopped; batch++) {
+        ({ data, error } = await callApi("inbox", {
+          body: { action: "process", mailbox_id, lookback_hours: Number(lookback_hours), reprocess, all: true, started_at: startedAt },
+        }));
+        if (error) break;
+        startedAt = data.started_at;
+        done += data.processed;
+        for (const [k, n] of Object.entries(data.counts)) counts[k] = (counts[k] ?? 0) + n;
+        if (!data.remaining || !data.processed) break; // all done, or the rest is held by another run
+        showMessage(`Processed ${done} of ${done + data.remaining} emails…`, "info");
+        loadEmails();
+      }
+      stop.hidden = true;
       setBusy(form, false);
       button.textContent = "Process inbox";
-      if (error) return showMessage(`Processing failed: ${error}`, "error");
 
-      const parts = Object.entries(data.counts).map(([k, n]) => `${n} ${(STATUS_LABELS[k] || k).toLowerCase()}`);
-      let text = data.processed
-        ? `Processed ${data.processed} new email${data.processed === 1 ? "" : "s"} from ${data.mailbox}: ${parts.join(", ")}.`
-        : `No new emails in ${data.mailbox} for that period.`;
-      if (data.remaining) text += ` ${data.remaining} more waiting. Run again to continue.`;
-      if (data.report === "sent") text += ` Summary emailed to ${data.mailbox}.`;
+      const parts = Object.entries(counts).map(([k, n]) => `${n} ${(STATUS_LABELS[k] || k).toLowerCase()}`);
+      const mailbox = data?.mailbox ?? "this mailbox";
+      let text = done
+        ? `Processed ${done} email${done === 1 ? "" : "s"} from ${mailbox}: ${parts.join(", ")}.`
+        : `No new emails in ${mailbox} for that period.`;
+      if (error) {
+        showMessage(`${done ? `${text} Then processing ` : "Processing "}failed: ${error}`, "error");
+        return await Promise.all([loadEmails(), loadMailboxes()]);
+      }
+      if (data.remaining) {
+        text += ` ${data.remaining} not processed yet${stopped ? " (stopped)" : ""}. Process inbox again to continue.`;
+      }
+      if (data.report === "pending") text += " No summary email until the rest is processed.";
+      if (data.report === "sent") text += ` Summary emailed to ${mailbox}.`;
       if (data.report === "failed") text += " The summary email could not be sent (see Logs).";
       if (data.report === "off") text += " No summary email (turned off in this mailbox's settings).";
       if (data.report === "no_recipient") text += " No summary email (no summary address set, and your account has no email address).";
-      showMessage(text, data.counts.error ? "error" : "ok");
+      showMessage(text, counts.error ? "error" : "ok");
       await Promise.all([loadEmails(), loadMailboxes()]);
     });
 

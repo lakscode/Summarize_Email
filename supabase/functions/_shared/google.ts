@@ -4,8 +4,8 @@ import { decodeBase64Url, encodeBase64 } from "./base64.ts";
 import PostalMime from "npm:postal-mime@3.0.1";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import {
-  contentIdOf, type FullMessage, htmlToText, type InlineImage, isEmailAttachment, type MailAttachment, type MailboxRow,
-  type MailClient, type MailMessage, MAX_INLINE_IMAGE_BYTES, readRefreshToken,
+  contentIdOf, type FullMessage, htmlToText, type InlineImage, isEmailAttachment, isNotFound, type MailAttachment,
+  type MailboxRow, type MailClient, mapLimit, type MailMessage, MAX_INLINE_IMAGE_BYTES, readRefreshToken,
 } from "./mail.ts";
 import { env } from "./supabase.ts";
 
@@ -33,7 +33,7 @@ interface GmailMessage { id: string; threadId: string; internalDate: string; pay
 
 export async function googleClient(db: SupabaseClient, mailbox: MailboxRow): Promise<MailClient> {
   const token = await googleToken(db, mailbox);
-  // Full messages fetched by listInbox, reused for attachments and forwarding.
+  // Full messages fetched by getMessages, reused for attachments, forwarding and the preview.
   const cache = new Map<string, GmailMessage>();
   const full = async (id: string) => {
     let msg = cache.get(id);
@@ -60,16 +60,31 @@ export async function googleClient(db: SupabaseClient, mailbox: MailboxRow): Pro
   };
 
   return {
-    async listInbox(since, top = 50) {
-      const params = new URLSearchParams({ labelIds: "INBOX", q: `after:${Math.floor(since.getTime() / 1000)}`, maxResults: String(top) });
-      const list = await gmail<{ messages?: { id: string }[] }>(token, `/messages?${params}`);
-      const ids = (list.messages ?? []).map((m) => m.id);
-      const queue = [...ids];
-      await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, queue.length) }, async () => {
-        for (let id = queue.shift(); id; id = queue.shift()) await full(id);
-      }));
-      return ids.map((id) => toMailMessage(cache.get(id)!, mailbox.email_address))
-        .sort((a, b) => b.receivedDateTime.localeCompare(a.receivedDateTime));
+    async listInboxIds(since, max) {
+      const ids: string[] = [];
+      let pageToken: string | undefined;
+      do {
+        const params = new URLSearchParams({
+          labelIds: "INBOX", q: `after:${Math.floor(since.getTime() / 1000)}`, maxResults: String(Math.min(max - ids.length, 500)),
+        });
+        if (pageToken) params.set("pageToken", pageToken);
+        const list = await gmail<{ messages?: { id: string }[]; nextPageToken?: string }>(token, `/messages?${params}`);
+        ids.push(...(list.messages ?? []).map((m) => m.id));
+        pageToken = list.nextPageToken;
+      } while (pageToken && ids.length < max);
+      return ids.slice(0, max);
+    },
+
+    async getMessages(ids) {
+      const messages = await mapLimit(ids, FETCH_CONCURRENCY, async (id) => {
+        try {
+          return toMailMessage(await full(id), mailbox.email_address);
+        } catch (err) {
+          if (isNotFound(err)) return null;
+          throw err;
+        }
+      });
+      return messages.filter((m): m is MailMessage => m !== null);
     },
 
     async listAttachments(messageId) {

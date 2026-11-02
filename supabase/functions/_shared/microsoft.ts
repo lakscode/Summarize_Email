@@ -3,8 +3,8 @@
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { decodeBase64 } from "./base64.ts";
 import {
-  contentIdOf, type FullMessage, type InlineImage, isEmailAttachment, type MailAttachment, type MailboxRow, type MailClient,
-  type MailMessage, MAX_INLINE_IMAGE_BYTES, readRefreshToken, saveRefreshToken,
+  contentIdOf, type FullMessage, type InlineImage, isEmailAttachment, isNotFound, type MailAttachment, type MailboxRow,
+  type MailClient, mapLimit, type MailMessage, MAX_INLINE_IMAGE_BYTES, readRefreshToken, saveRefreshToken,
 } from "./mail.ts";
 import { env } from "./supabase.ts";
 
@@ -42,7 +42,8 @@ export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): 
   // App-only tokens have no "me"; they address the mailbox by its address.
   const box = mailboxPath(app || mailbox.delegate_address ? mailbox.email_address : null);
   return {
-    listInbox: (since, top) => listInbox(token, box, since, top),
+    listInboxIds: (since, max) => listInboxIds(token, box, since, max),
+    getMessages: (ids) => getMessages(token, box, ids),
     listAttachments: (messageId) => listAttachments(token, box, messageId),
     getMessage: (messageId) => getMessage(token, box, messageId),
     attachmentBytes: (messageId, attachmentId) => attachmentBytes(token, box, messageId, attachmentId),
@@ -233,18 +234,39 @@ async function graph<T>(token: string, path: string, init: RequestInit = {}, ext
   }
 }
 
-// Inbox messages received since `since`, newest first, bodies as plain text.
-async function listInbox(token: string, box: string, since: Date, top = 50): Promise<MailMessage[]> {
+const FETCH_CONCURRENCY = 4;
+
+// Ids of the inbox messages received since `since`, newest first, following Graph's pages up to `max`.
+async function listInboxIds(token: string, box: string, since: Date, max: number): Promise<string[]> {
   const params = new URLSearchParams({
     $filter: `receivedDateTime ge ${since.toISOString()}`,
     $orderby: "receivedDateTime desc",
-    $top: String(top),
-    $select: "id,internetMessageId,subject,receivedDateTime,from,body,hasAttachments,webLink",
+    $top: String(Math.min(max, 500)),
+    $select: "id",
   });
-  const data = await graph<{ value: MailMessage[] }>(token, `${box}/mailFolders/inbox/messages?${params}`, {}, {
-    Prefer: 'outlook.body-content-type="text"',
+  const ids: string[] = [];
+  let next: string | undefined = `${box}/mailFolders/inbox/messages?${params}`;
+  while (next && ids.length < max) {
+    const page: { value: { id: string }[]; "@odata.nextLink"?: string } = await graph(token, next);
+    ids.push(...page.value.map((m) => m.id));
+    next = page["@odata.nextLink"];
+  }
+  return ids.slice(0, max);
+}
+
+// The messages, bodies as plain text.
+async function getMessages(token: string, box: string, ids: string[]): Promise<MailMessage[]> {
+  const messages = await mapLimit(ids, FETCH_CONCURRENCY, async (id) => {
+    try {
+      return await graph<MailMessage>(token,
+        `${box}/messages/${encodeURIComponent(id)}?$select=id,internetMessageId,subject,receivedDateTime,from,body,hasAttachments,webLink`,
+        {}, { Prefer: 'outlook.body-content-type="text"' });
+    } catch (err) {
+      if (isNotFound(err)) return null;
+      throw err;
+    }
   });
-  return data.value;
+  return messages.filter((m): m is MailMessage => m !== null);
 }
 
 interface GraphAttachment {

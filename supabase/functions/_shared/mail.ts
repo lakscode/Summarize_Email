@@ -80,8 +80,10 @@ export function htmlToText(html: string): string {
 }
 
 export interface MailClient {
-  // Inbox messages received since `since`, newest first.
-  listInbox(since: Date, top?: number): Promise<MailMessage[]>;
+  // Ids of the inbox messages received since `since`, newest first, at most `max` (cheap: no contents).
+  listInboxIds(since: Date, max: number): Promise<string[]>;
+  // Those messages, in the same order; ones no longer in the mailbox (moved, deleted) are left out.
+  getMessages(ids: string[]): Promise<MailMessage[]>;
   listAttachments(messageId: string): Promise<MailAttachment[]>;
   // The whole message for the Inbox preview.
   getMessage(messageId: string): Promise<FullMessage>;
@@ -91,6 +93,19 @@ export interface MailClient {
   // Forwards the message with its attachments, `comment` above the original.
   forwardMessage(messageId: string, to: string, comment: string): Promise<void>;
 }
+
+// fn over items, at most `limit` at a time; results in the items' order.
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (let i = next++; i < items.length; i = next++) results[i] = await fn(items[i]);
+  }));
+  return results;
+}
+
+// Whether a provider error means the message is gone (deleted, or moved: Outlook gives a moved message a new id).
+export const isNotFound = (err: unknown) => /failed: 404\b/.test(String(err));
 
 // Replaces cid: references in an HTML body with data: URLs of the message's inline images.
 export function embedInlineImages(html: string, images: InlineImage[]): string {

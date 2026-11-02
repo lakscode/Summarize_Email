@@ -14,11 +14,16 @@ import {
 import { buildReport, type ReportItem } from "./report.ts";
 import { adminClient } from "./supabase.ts";
 
-// Keeps one run well inside the Edge Function time limit; the UI offers to run again when more remain.
+// Keeps one call well inside the Edge Function time limit; the UI calls again until none remain (see `untilDone`).
 const MAX_PER_RUN = 15;
+// Most inbox emails one look-back period covers.
+const MAX_INBOX = 500;
 const CONCURRENCY = 4;
 export const STATUSES = ["processing", "action_needed", "done", "no_action", "error"];
 const RECHECKABLE = ["no_action", "error", "action_needed"];
+// A claim older than this is from a run that was cut off (e.g. the Edge Function hit its time limit): the email
+// counts as not processed and the next run takes it over. A batch never takes this long.
+const STALE_CLAIM_MS = 15 * 60_000;
 
 // Attachments sent to Claude. Small images are usually logos / signatures and are skipped.
 const MAX_FILES = 4;
@@ -35,8 +40,18 @@ const TEXT_TYPES = ["text/plain", "text/csv", "text/tab-separated-values", "text
 const TEXT_EXTENSION = /\.(txt|csv|tsv|html?|xml|json)$/i;
 
 // Every step of a run is logged (Logs > Steps) with the same run id, so one run can be followed end to end.
-// userEmail: who processed, recorded on each email and in email_processing_log (the owner, also for scheduled runs).
-interface Run { id: string; userId: string; userEmail: string | null; mailbox: string; trigger: "manual" | "schedule" }
+// userEmail / userName: who processed, recorded on each email, its mailbox and in email_processing_log (the owner,
+// also for scheduled runs).
+interface Run {
+  id: string; userId: string; userEmail: string | null; userName: string | null; mailbox: string; trigger: "manual" | "schedule";
+}
+
+// A user's email and display name (profile name, else email) for the "processed by" fields.
+export async function processorOf(db: Db, userId: string) {
+  const { data } = await db.from("profiles").select("email, full_name").eq("id", userId).maybeSingle();
+  const email = data?.email ?? null;
+  return { email, name: data?.full_name?.trim() || email };
+}
 const step = (run: Run, location: string, message: string, context: Record<string, unknown> = {}) =>
   logStep(location, message, run.userId, { run: run.id, mailbox: run.mailbox, trigger: run.trigger, ...context });
 
@@ -53,32 +68,35 @@ async function loadMailbox(db: Db, userId: string, mailboxId: string): Promise<M
   return mailbox;
 }
 
-// The inbox messages of the last `hours`, with the processed_emails row of those already processed.
+// The ids of the inbox messages of the last `hours`, with the processed_emails row of those already processed.
 async function listInbox(db: Db, mailbox: Mailbox, client: MailClient, hours: number) {
-  const messages = await client.listInbox(new Date(Date.now() - hours * 3600_000));
-  const { data: seen, error } = messages.length
-    ? await db.from("processed_emails").select("id, message_id, status, action_taken")
-      .eq("mailbox_id", mailbox.id).in("message_id", messages.map((m) => m.id))
-    : { data: [], error: null };
-  if (error) throw new Error(error.message);
-  const seenById = new Map<string, ExistingRow>((seen as ExistingRow[] ?? []).map((r) => [r.message_id, r]));
-  return { messages, seenById };
+  const ids = await client.listInboxIds(new Date(Date.now() - hours * 3600_000), MAX_INBOX);
+  const seen: ExistingRow[] = [];
+  for (let i = 0; i < ids.length; i += 100) { // keeps the request URL short
+    const { data, error } = await db.from("processed_emails").select("id, message_id, status, action_taken, processed_at, updated_at")
+      .eq("mailbox_id", mailbox.id).in("message_id", ids.slice(i, i + 100));
+    if (error) throw new Error(error.message);
+    seen.push(...data as ExistingRow[]);
+  }
+  return { ids, seenById: new Map(seen.map((r) => [r.message_id, r])) };
 }
 
 // Already processed emails that a re-check classifies again: never ones that were forwarded or marked done.
 const recheckable = (row: ExistingRow) =>
   RECHECKABLE.includes(row.status) && !(row.action_taken ?? "").startsWith("Forwarded");
+const staleClaim = (row: ExistingRow) =>
+  row.status === "processing" && Date.now() - new Date(row.updated_at).getTime() > STALE_CLAIM_MS;
 
 // What a run of the last `hours` would pick up, so the UI can ask before processing emails again.
 export async function previewMailbox(userId: string, mailboxId: string, hours: number) {
   const db = adminClient();
   const mailbox = await loadMailbox(db, userId, mailboxId);
-  const { messages, seenById } = await listInbox(db, mailbox, await mailClient(db, mailbox), hours);
-  const rows = [...seenById.values()];
+  const { ids, seenById } = await listInbox(db, mailbox, await mailClient(db, mailbox), hours);
+  const rows = [...seenById.values()].filter((r) => !staleClaim(r));
   return {
     mailbox: mailbox.email_address,
-    scanned: messages.length,
-    new: messages.length - rows.length,
+    scanned: ids.length,
+    new: ids.length - rows.length,
     already_processed: rows.filter(recheckable).length,
     handled: rows.filter((r) => !recheckable(r)).length,
   };
@@ -107,32 +125,39 @@ export async function previewEmail(userId: string, emailId: string) {
 }
 
 // appUrl: where the app is hosted, for the "Open the Inbox" link in the summary email (null leaves it out).
+// untilDone: the caller (the Inbox page) calls again while `remaining` > 0, passing back the `started_at` of the first
+// call. Emails processed since then aren't re-checked again, and the one summary email goes out with the last call.
 export async function processMailbox(
   userId: string, mailboxId: string, hours: number, reprocess: boolean,
   trigger: "manual" | "schedule" = "manual", appUrl: string | null = null,
+  untilDone: { startedAt: string | null } | null = null,
 ) {
   const db = adminClient();
   const mailbox = await loadMailbox(db, userId, mailboxId);
 
-  const { data: profile } = await db.from("profiles").select("email").eq("id", userId).maybeSingle();
+  const processor = await processorOf(db, userId);
   const run: Run = {
-    id: crypto.randomUUID().slice(0, 8), userId, userEmail: profile?.email ?? null, mailbox: mailbox.email_address, trigger,
+    id: crypto.randomUUID().slice(0, 8), userId, userEmail: processor.email, userName: processor.name,
+    mailbox: mailbox.email_address, trigger,
   };
   const started = Date.now();
+  const startedAt = untilDone?.startedAt ?? new Date(started).toISOString();
   await step(run, "process/start",
     `Run started (${trigger === "schedule" ? "scheduled" : "manual"}) for ${mailbox.email_address}: last ${hours}h${reprocess ? ", re-checking processed emails" : ""}`);
 
   const client = await mailClient(db, mailbox);
-  const { messages, seenById } = await listInbox(db, mailbox, client, hours);
-  const fresh = messages.filter((m) => {
-    const row = seenById.get(m.id);
-    return !row || (reprocess && recheckable(row));
+  const { ids, seenById } = await listInbox(db, mailbox, client, hours);
+  const doneThisRun = (row: ExistingRow) => !!row.processed_at && new Date(row.processed_at) >= new Date(startedAt);
+  const fresh = ids.filter((id) => {
+    const row = seenById.get(id);
+    return !row || staleClaim(row) || (reprocess && recheckable(row) && !doneThisRun(row));
   });
-  const batch = fresh.slice(0, MAX_PER_RUN);
+  const batch = await client.getMessages(fresh.slice(0, MAX_PER_RUN));
+  const remaining = Math.max(fresh.length - MAX_PER_RUN, 0);
   await step(run, "process/fetch",
-    `Found ${messages.length} email${messages.length === 1 ? "" : "s"} in the inbox; ${fresh.length} to process` +
-      (fresh.length > batch.length ? ` (${batch.length} now, ${fresh.length - batch.length} in the next run)` : ""),
-    { skipped_already_processed: messages.length - fresh.length });
+    `Found ${ids.length} email${ids.length === 1 ? "" : "s"} in the inbox; ${fresh.length} to process` +
+      (remaining ? ` (${batch.length} now, ${remaining} in the next batch)` : ""),
+    { skipped_already_processed: ids.length - fresh.length });
 
   const counts: Record<string, number> = {};
   const items: ReportItem[] = [];
@@ -146,23 +171,47 @@ export async function processMailbox(
     }
   }));
 
-  await db.from("mailboxes").update({ last_processed_at: new Date().toISOString() }).eq("id", mailbox.id);
-  const remaining = fresh.length - batch.length;
+  await db.from("mailboxes").update({
+    last_processed_at: new Date().toISOString(), last_processed_by: userId, last_processed_by_name: run.userName,
+  }).eq("id", mailbox.id);
   // Only when the mailbox's "Send summary email" setting is on, it has a recipient, and there is something to report.
-  const to = mailbox.send_summary ? await summaryRecipient(db, userId, mailbox) : null;
-  const report = !mailbox.send_summary ? "off" : !to ? "no_recipient"
-    : items.length ? await sendReport(run, mailbox, client, to, items, remaining, appUrl) : "skipped";
+  // Run until done: only with the last batch, covering every batch of the run.
+  const pending = !!untilDone && remaining > 0;
+  const reportItems = untilDone && !pending ? await itemsSince(db, mailbox.id, startedAt) : items;
+  const to = mailbox.send_summary && !pending ? await summaryRecipient(db, userId, mailbox) : null;
+  const report = !mailbox.send_summary ? "off" : pending ? "pending" : !to ? "no_recipient"
+    : reportItems.length ? await sendReport(run, mailbox, client, to, reportItems, remaining, appUrl) : "skipped";
   const result = {
     mailbox: mailbox.email_address,
-    scanned: messages.length,
+    scanned: ids.length,
     processed: batch.length,
     remaining,
     counts,
     report,
+    started_at: startedAt,
   };
   const summary = Object.entries(counts).map(([k, n]) => `${n} ${k.replace("_", " ")}`).join(", ") || "nothing new";
   await step(run, "process/finish", `Run finished in ${Math.round((Date.now() - started) / 1000)}s: ${summary}`, result);
   return result;
+}
+
+// The emails of a run-until-done (processed since its first batch started), for its summary email.
+async function itemsSince(db: Db, mailboxId: string, since: string): Promise<ReportItem[]> {
+  const { data, error } = await db.from("processed_emails")
+    .select("subject, from_name, from_address, category, summary, next_step, action_taken, status, error, web_link")
+    .eq("mailbox_id", mailboxId).gte("processed_at", since).neq("status", "processing")
+    .order("received_at", { ascending: false }).limit(MAX_INBOX);
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((r) => ({
+    subject: r.subject || "(no subject)",
+    from: r.from_name ? `${r.from_name} <${r.from_address}>` : r.from_address ?? "unknown",
+    category: r.category,
+    summary: r.summary,
+    next_step: r.next_step,
+    action: r.status === "error" ? r.error : r.action_taken,
+    status: r.status,
+    web_link: r.web_link,
+  }));
 }
 
 // Where the summary goes: the mailbox's summary address if set; otherwise an own mailbox gets it itself, and a shared
@@ -201,7 +250,9 @@ interface Mailbox {
   mailbox_type: MailboxType; forward_categories: string[]; send_summary: boolean;
   summary_address: string | null;
 }
-interface ExistingRow { id: string; message_id: string; status: string; action_taken: string | null }
+interface ExistingRow {
+  id: string; message_id: string; status: string; action_taken: string | null; processed_at: string | null; updated_at: string;
+}
 
 // Claims the message for this run: inserts a new row, or (re-check) flips an existing row back to processing
 // only if it is still in the status we read, so two runs never work on the same email.
@@ -372,7 +423,9 @@ async function processMessage(
   }
 }
 
-const processedBy = (run: Run) => ({ processed_by: run.userId, processed_by_email: run.userEmail, processed_at: new Date().toISOString() });
+const processedBy = (run: Run) => ({
+  processed_by: run.userId, processed_by_email: run.userEmail, processed_by_name: run.userName, processed_at: new Date().toISOString(),
+});
 
 // One email_processing_log row per processed email; a re-check adds another, so earlier outcomes are kept.
 // Never throws: a failure to log must not fail the email.
@@ -388,6 +441,7 @@ async function logProcessing(
     owner_user_id: run.userId,
     processed_by: run.userId,
     processed_by_email: run.userEmail,
+    processed_by_name: run.userName,
     trigger: run.trigger,
     run_id: run.id,
     status: outcome.status,

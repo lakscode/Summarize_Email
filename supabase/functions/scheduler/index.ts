@@ -1,7 +1,9 @@
 // Runs scheduled mailbox processing. Called every 5 minutes by pg_cron (see migrations *_schedules.sql, *_schedule_interval.sql) with the
 // shared secret from Vault in the x-cron-secret header; not callable from the browser.
-// For each mailbox whose schedule is due it processes mail received since the previous scheduled run. If a
-// mailbox has more mail than one batch, it stays due and the next tick continues where this one stopped.
+// For each mailbox whose schedule is due it processes every email not processed yet that arrived since the mailbox
+// was connected (at most the last 14 days; older mail predates the app and is left alone). Batches of one mailbox
+// run back to back while time allows; if mail is left over, the mailbox stays due and the next tick continues the
+// same run, so the summary email goes out once, when the run is finished.
 import { json } from "../_shared/cors.ts";
 import { logApi } from "../_shared/log.ts";
 import { processMailbox } from "../_shared/process.ts";
@@ -14,6 +16,9 @@ const TIME_BUDGET_MS = 100_000;
 // mailboxes on the same schedule are worked through in a few ticks.
 const MAILBOX_CONCURRENCY = 3;
 const MAX_LOOKBACK_HOURS = 24 * 14;
+// An unfinished run is continued only if its last tick was this recent; otherwise (e.g. the schedule was off for a
+// while) a new run starts.
+const CONTINUE_WITHIN_MS = 60 * 60_000;
 
 // Link target for the summary email. Ignored if APP_URL points at Supabase rather than the hosted UI.
 const appUrl = (() => {
@@ -33,7 +38,7 @@ Deno.serve(async (req) => {
   const started = Date.now();
   await db.rpc("expire_mailbox_access");
   const { data: due, error } = await db.from("mailboxes")
-    .select("id, owner_user_id, email_address, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_anchor, schedule_interval, schedule_interval_unit, schedule_last_run_at, schedule_next_run_at")
+    .select("id, owner_user_id, email_address, created_at, schedule_last_result, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_anchor, schedule_interval, schedule_interval_unit, schedule_last_run_at, schedule_next_run_at")
     .eq("schedule_enabled", true)
     // Own credentials (sign-in), or an organization connection's API keys.
     .or("credentials_secret_id.not.is.null,connection_id.not.is.null")
@@ -50,7 +55,7 @@ Deno.serve(async (req) => {
   await Promise.all(Array.from({ length: Math.min(MAILBOX_CONCURRENCY, queue.length) }, async () => {
     for (let m = queue.shift(); m; m = queue.shift()) {
       if (Date.now() - started > TIME_BUDGET_MS) return;
-      const since = m.schedule_last_run_at ? new Date(m.schedule_last_run_at) : new Date(Date.now() - 24 * 3600_000);
+      const since = new Date(m.created_at);
       const hours = Math.min(Math.max(Math.ceil((Date.now() - since.getTime()) / 3600_000) + 1, 24), MAX_LOOKBACK_HOURS);
       const now = new Date();
       const following = nextRun({
@@ -64,14 +69,31 @@ Deno.serve(async (req) => {
       }, now);
 
       try {
-        const result = await processMailbox(m.owner_user_id, m.id, hours, false, "schedule", appUrl);
+        // A run the previous tick left unfinished continues (same started_at, so one summary email at the end).
+        const previous = m.schedule_last_result as { at?: string; remaining?: number; started_at?: string } | null;
+        const recent = !!previous?.at && Date.now() - new Date(previous.at).getTime() < CONTINUE_WITHIN_MS;
+        let startedAt = recent && previous?.remaining && previous.started_at ? previous.started_at : null;
+        let result: Awaited<ReturnType<typeof processMailbox>>;
+        let processed = 0, batchMs = 0;
+        const counts: Record<string, number> = {};
+        do {
+          const batchStart = Date.now();
+          result = await processMailbox(m.owner_user_id, m.id, hours, false, "schedule", appUrl, { startedAt });
+          batchMs = Date.now() - batchStart;
+          startedAt = result.started_at;
+          processed += result.processed;
+          for (const [k, n] of Object.entries(result.counts)) counts[k] = (counts[k] ?? 0) + n;
+          // Another batch only if it should finish inside the budget (judged by how long this one took), and not
+          // when nothing could be taken (the rest is held by another run).
+        } while (result.remaining > 0 && result.processed > 0 && Date.now() - started + batchMs < TIME_BUDGET_MS);
+
         const finished = result.remaining === 0;
         await db.from("mailboxes").update({
-          // Unfinished batches keep the run due (and last_run_at unchanged) so the next tick continues.
+          // Unfinished runs stay due (and last_run_at unchanged) so the next tick continues.
           ...(finished ? { schedule_last_run_at: now.toISOString(), schedule_next_run_at: following.toISOString() } : {}),
-          schedule_last_result: { at: now.toISOString(), ...result },
+          schedule_last_result: { at: now.toISOString(), ...result, processed, counts },
         }).eq("id", m.id);
-        results.push(result);
+        results.push({ ...result, processed, counts });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await logApi("scheduler/run", err, { userId: m.owner_user_id, context: { mailbox: m.email_address } });
