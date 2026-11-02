@@ -361,6 +361,7 @@ async function processMessage(
   }
   const from = msg.from?.emailAddress ?? {};
   const email = { email_id: rowId, subject, from: from.address };
+  let attachmentNames: string[] = [];
   const item: ReportItem = {
     subject,
     from: from.name ? `${from.name} <${from.address}>` : from.address ?? "unknown",
@@ -374,6 +375,7 @@ async function processMessage(
 
   try {
     const attachments = await gatherAttachments(client, msg);
+    attachmentNames = attachments.names;
     await step(run, "process/email",
       `Reading "${subject}" from ${from.address ?? "unknown"}` +
         (attachments.names.length
@@ -413,13 +415,17 @@ async function processMessage(
       updated_at: new Date().toISOString(),
     }).eq("id", rowId);
     if (error) throw new Error(error.message);
-    await logProcessing(db, run, mailbox, rowId, subject, { status, category: c.category, action });
+    await logProcessing(db, run, mailbox, rowId, msg, {
+      status, action, category: c.category, confidence: c.confidence, attachment_names: attachments.names,
+      vendor: c.vendor || null, invoice_number: c.invoice_number || null, amount: c.amount || null, due_date: c.due_date || null,
+      summary: c.summary, next_step: c.next_step,
+    });
     return { ...item, category: c.category, summary: c.summary, next_step: c.next_step, action, status };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await logApi("inbox/process", err, { userId, context: { run: run.id, mailbox: mailbox.email_address, ...email } });
     await db.from("processed_emails").update({ status: "error", error: message, ...processedBy(run), updated_at: new Date().toISOString() }).eq("id", rowId);
-    await logProcessing(db, run, mailbox, rowId, subject, { status: "error", error: message });
+    await logProcessing(db, run, mailbox, rowId, msg, { status: "error", error: message, attachment_names: attachmentNames });
     return { ...item, status: "error", action: message };
   }
 }
@@ -428,24 +434,35 @@ const processedBy = (run: Run) => ({
   processed_by: run.userId, processed_by_email: run.userEmail, processed_by_name: run.userName, processed_at: new Date().toISOString(),
 });
 
-// One email_processing_log row per processed email; a re-check adds another, so earlier outcomes are kept.
+// One email_processing_log row per processed email; a re-check adds another, so earlier outcomes are kept. Each row
+// is a full snapshot: the email (sender, dates), what was extracted, the outcome, who processed it, when and where.
 // Never throws: a failure to log must not fail the email.
 async function logProcessing(
-  db: Db, run: Run, mailbox: Mailbox, rowId: string, subject: string,
-  outcome: { status: string; category?: string; action?: string | null; error?: string },
+  db: Db, run: Run, mailbox: Mailbox, rowId: string, msg: MailMessage,
+  outcome: {
+    status: string; category?: string; action?: string | null; error?: string; confidence?: string;
+    attachment_names?: string[]; vendor?: string | null; invoice_number?: string | null; amount?: string | null;
+    due_date?: string | null; summary?: string | null; next_step?: string | null;
+  },
 ) {
+  const from = msg.from?.emailAddress ?? {};
   const { error } = await db.from("email_processing_log").insert({
     processed_email_id: rowId,
     mailbox_id: mailbox.id,
     mailbox_address: mailbox.email_address,
-    subject,
+    message_id: msg.id,
+    subject: msg.subject || "(no subject)",
+    received_at: msg.receivedDateTime,
+    from_name: from.name ?? null,
+    from_address: from.address?.toLowerCase() ?? null,
+    web_link: msg.webLink ?? null,
     owner_user_id: run.userId,
     processed_by: run.userId,
     processed_by_email: run.userEmail,
     processed_by_name: run.userName,
     trigger: run.trigger,
     run_id: run.id,
-    status: outcome.status,
+    ...outcome,
     category: outcome.category ?? null,
     action: outcome.action ?? null,
     error: outcome.error ?? null,

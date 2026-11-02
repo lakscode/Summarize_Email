@@ -84,7 +84,7 @@ Deno.serve(async (req) => {
 
       if (kind === "emails") {
         let query = db.from("email_processing_log")
-          .select("id, processed_at, mailbox_address, subject, processed_email_id, owner_user_id, processed_by, processed_by_name, processed_by_email, trigger, run_id, status, category, action, error")
+          .select("id, processed_at, mailbox_address, subject, processed_email_id, owner_user_id, processed_by, processed_by_name, processed_by_email, trigger, run_id, status, category, action, error, message_id, received_at, from_name, from_address, web_link, attachment_names, confidence, vendor, invoice_number, amount, due_date, summary, next_step")
           .order("processed_at", { ascending: ordered })
           .limit(limit);
         if (emailId) query = query.eq("processed_email_id", emailId);

@@ -81,6 +81,11 @@
     let others = false; // whether the caller can see other users' logs (shows the User filter and column)
     const filtersForm = document.getElementById("log-filters");
 
+    const CATEGORY_LABELS = {
+      invoice: "Invoice", utility_bill: "Utility bill", vendor_info: "Vendor info", statement: "Statement",
+      remittance: "Remittance", purchase_order: "Purchase order", customer_inquiry: "Customer inquiry", other: "Other",
+      not_relevant: "Not relevant",
+    };
     const TRIGGER_LABELS = { manual: "Process inbox", schedule: "Scheduled run", user: "By hand" };
     const STATUS_LABELS = {
       action_needed: "Action needed", done: "Done", no_action: "No action needed", processing: "Processing", error: "Error",
@@ -231,12 +236,43 @@
       if (detail) outcome.append(Object.assign(document.createElement("div"), { textContent: detail }));
       if (h.run_id && !run) outcome.append(runLink(h.run_id, `Show run ${h.run_id} steps`, "steps"));
 
+      // The email as this processing left it (a snapshot: later processing doesn't change it).
+      const facts = [
+        ["Received", h.received_at && new Date(h.received_at).toLocaleString()],
+        ["Category", h.category && `${CATEGORY_LABELS[h.category] || h.category}${h.confidence ? ` (${h.confidence} confidence)` : ""}`],
+        ["Vendor", h.vendor], ["Invoice #", h.invoice_number], ["Amount", h.amount], ["Due", h.due_date],
+        ["Attachments", h.attachment_names?.join(", ")],
+        ["Summary", h.summary],
+        ["Next step", h.next_step],
+      ].filter(([, v]) => v);
+      if (facts.length || h.web_link) {
+        const details = document.createElement("details");
+        details.append(Object.assign(document.createElement("summary"), { textContent: "Details" }));
+        const dl = document.createElement("dl");
+        dl.className = "facts";
+        for (const [k, v] of facts) {
+          dl.append(Object.assign(document.createElement("dt"), { textContent: k }), Object.assign(document.createElement("dd"), { textContent: v }));
+        }
+        details.append(dl);
+        if (h.web_link) {
+          const open = Object.assign(document.createElement("a"), { href: h.web_link, target: "_blank", rel: "noopener", textContent: "Open in mailbox" });
+          details.append(open);
+        }
+        outcome.append(details);
+      }
+
+      const email = document.createElement("td");
+      email.className = "msg";
+      email.append(Object.assign(document.createElement("div"), { textContent: h.subject || "(no subject)" }));
+      const sender = h.from_name ? `${h.from_name} <${h.from_address}>` : h.from_address;
+      if (sender) email.append(Object.assign(document.createElement("div"), { className: "muted", textContent: sender }));
+
       const who = cell(h.processed_by_name || h.processed_by_email || "—", "nowrap");
       if (h.processed_by_email) who.title = h.processed_by_email;
       tr.append(
         cell(new Date(h.processed_at).toLocaleString(), "nowrap"),
         cell(h.mailbox_address || "—"),
-        cell(h.subject || "(no subject)", "msg"),
+        email,
         who,
         cell(TRIGGER_LABELS[h.trigger] || h.trigger, "nowrap"),
         outcome,

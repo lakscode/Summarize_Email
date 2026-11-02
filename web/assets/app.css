@@ -558,6 +558,8 @@ table.logs { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 table.logs th, table.logs td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 table.logs th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
 table.logs tr:last-child td { border-bottom: 0; }
+table.logs .muted { color: var(--muted); font-size: 0.85rem; }
+table.logs details .facts { margin: 8px 0; }
 .log-panel .empty { padding: 0 12px 16px; }
 .nowrap { white-space: nowrap; }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem; }

@@ -12,6 +12,11 @@ import { previewEmail, previewMailbox, processMailbox, processorOf, STATUSES } f
 import { isNotFound } from "../_shared/mail.ts";
 import { adminClient, callerUser } from "../_shared/supabase.ts";
 
+// The email's details copied into its email_processing_log row (a full snapshot, as process.ts writes); also in the
+// PATCH select below.
+const SNAPSHOT_COLUMNS =
+  "message_id, received_at, from_name, from_address, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step";
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -68,7 +73,7 @@ Deno.serve(async (req) => {
       const { data, error } = await sb.from("processed_emails")
         .update({ status: body.status, updated_at: new Date().toISOString() })
         .eq("id", body.id)
-        .select("id, status, mailbox_id, owner_user_id, subject, mailboxes(email_address)")
+        .select("id, status, mailbox_id, owner_user_id, subject, mailboxes(email_address), message_id, received_at, from_name, from_address, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step")
         .maybeSingle();
       if (error) return await fail("inbox/update", error.message, 500, { userId: user.id, context: { email_id: body.id } });
       if (!data) return json({ error: "Email not found" }, 404);
@@ -85,6 +90,7 @@ Deno.serve(async (req) => {
         processed_email_id: data.id,
         mailbox_id: data.mailbox_id,
         mailbox_address: mailboxAddress,
+        ...Object.fromEntries(SNAPSHOT_COLUMNS.split(", ").map((c) => [c, (data as Record<string, unknown>)[c]])),
         subject: data.subject,
         owner_user_id: data.owner_user_id,
         ...by,
