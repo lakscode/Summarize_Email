@@ -109,9 +109,11 @@
           <button class="tab" data-status="no_action">No action</button>
           <button class="tab" data-status="error">Errors</button>
           <button class="tab" data-status="">All</button>
-          <button class="tab" data-status="history">History</button>
         </div>
-        <button class="secondary" id="refresh">Refresh</button>
+        <div class="toolbar-actions">
+          <a class="button-link secondary" id="history-link" href="logs.html?kind=emails">Processing history</a>
+          <button class="secondary" id="refresh">Refresh</button>
+        </div>
       </div>
 
       <div class="panel log-panel">
@@ -120,13 +122,6 @@
             <tr><th>Status</th><th>Received</th><th>Email</th><th>Vendor / amount</th><th>Next step</th><th>Processed</th><th></th></tr>
           </thead>
           <tbody id="email-list"></tbody>
-        </table>
-        <!-- History tab: every processing of this mailbox's emails, with the details as that processing left them. -->
-        <table class="logs" id="history-table" hidden>
-          <thead>
-            <tr><th>Processed</th><th>By</th><th>How</th><th>Email</th><th>Vendor / amount</th><th>Outcome</th></tr>
-          </thead>
-          <tbody id="history-list"></tbody>
         </table>
         <p class="empty" id="email-empty" hidden>Nothing here.</p>
       </div>
@@ -157,8 +152,8 @@
     <form method="dialog">
       <h2 id="reprocess-title">Process emails again?</h2>
       <p id="reprocess-text"></p>
-      <p class="hint">Their earlier results stay in each email's history. Emails already forwarded or marked done are
-        never processed again.</p>
+      <p class="hint">Their earlier results stay in the processing history (Logs). Emails already forwarded or marked
+        done are never processed again.</p>
       <div class="dialog-actions">
         <button type="submit" class="secondary" value="cancel">Cancel</button>
         <button type="submit" class="secondary" value="new" id="reprocess-new">Only new emails</button>
@@ -255,6 +250,9 @@
       const m = mailboxes.find((x) => x.id === document.getElementById("mailbox-select").value);
       if (!m) return;
       document.getElementById("detail-title").textContent = m.email_address;
+      // The mailbox's processing history is on the Logs page.
+      document.getElementById("history-link").href =
+        `logs.html?${new URLSearchParams({ kind: "emails", mailbox: m.email_address })}`;
       document.getElementById("detail-meta").textContent = [
         m.mailbox_type === "ar" ? "Accounts receivable" : "Accounts payable",
         m.delegate_address ? `shared, via ${m.delegate_address}` : m.connection_id ? "shared, via organization" : null,
@@ -370,82 +368,12 @@
         document.getElementById("email-empty").hidden = false;
         return;
       }
-      const history = status === "history";
-      document.getElementById("email-table").hidden = history;
-      document.getElementById("history-table").hidden = !history;
-      if (history) {
-        const { data, error } = await callApi(`inbox?${new URLSearchParams({ log: mailboxId })}`, { method: "GET" });
-        if (request !== emailsRequest) return;
-        if (error) return showMessage(`Could not load the history: ${error}`, "error");
-        document.getElementById("history-list").replaceChildren(...data.log.map(historyRow));
-        document.getElementById("email-empty").hidden = data.log.length > 0;
-        return;
-      }
       const query = new URLSearchParams({ mailbox_id: mailboxId, ...(status ? { status } : {}) });
       const { data, error } = await callApi(`inbox?${query}`, { method: "GET" });
       if (request !== emailsRequest) return;
       if (error) return showMessage(`Could not load emails: ${error}`, "error");
       document.getElementById("email-list").replaceChildren(...data.emails.flatMap(emailRows));
       document.getElementById("email-empty").hidden = data.emails.length > 0;
-    }
-
-    // One processing of an email (History tab): when, who, how, the email, and what came of it, with the details
-    // (as that processing left them) under "Details".
-    function historyRow(h) {
-      const tr = el("tr");
-      const when = el("td", "nowrap", formatWhen(h.processed_at));
-      const who = el("td", "nowrap", h.processed_by_name || h.processed_by_email || "—");
-      if (h.processed_by_email) who.title = h.processed_by_email;
-      const how = el("td", "nowrap", TRIGGER_LABELS[h.trigger] || h.trigger);
-
-      const email = el("td", "msg");
-      const subject = el("a", "email-subject", h.subject || "(no subject)");
-      subject.href = "#";
-      subject.addEventListener("click", (ev) => {
-        if (!h.processed_email_id) return ev.preventDefault();
-        ev.preventDefault();
-        openPreview({ id: h.processed_email_id, subject: h.subject, web_link: h.web_link });
-      });
-      email.append(subject);
-      const sender = h.from_name ? `${h.from_name} <${h.from_address}>` : h.from_address;
-      if (sender) email.append(el("div", "email-oneline", sender));
-
-      const vendor = el("td", "email-vendor");
-      if (h.vendor) vendor.append(el("div", null, h.vendor));
-      if (h.amount) vendor.append(el("div", "email-amount", h.amount));
-
-      const outcome = el("td", "msg");
-      const badges = el("div", "badges");
-      badges.append(el("span", `pill action-${h.status}`, ACTION_LABELS[h.status] || h.status));
-      if (h.category) badges.append(el("span", `badge cat-${h.category}`, CATEGORY_LABELS[h.category] || h.category));
-      outcome.append(badges);
-      if (h.error || h.action) outcome.append(el("div", h.error ? "error-text" : null, h.error || h.action));
-
-      const facts = [
-        ["Received", h.received_at && formatWhen(h.received_at)],
-        ["Confidence", h.confidence],
-        ["Invoice #", h.invoice_number], ["Due", h.due_date],
-        ["Attachments", h.attachment_names?.join(", ")],
-        ["Summary", h.summary],
-        ["Next step", h.next_step],
-        ["Run", h.run_id],
-      ].filter(([, v]) => v);
-      if (facts.length) {
-        const details = el("details");
-        details.append(el("summary", null, "Details"));
-        const dl = el("dl", "facts");
-        for (const [k, v] of facts) dl.append(el("dt", null, k), el("dd", null, v));
-        details.append(dl);
-        if (h.processed_email_id) {
-          const logs = el("a", "link-button", "View logs");
-          logs.href = `logs.html?${new URLSearchParams({ email: h.processed_email_id })}`;
-          details.append(logs);
-        }
-        outcome.append(details);
-      }
-
-      tr.append(when, who, how, email, vendor, outcome);
-      return tr;
     }
 
     function el(tag, className, text) {
@@ -543,25 +471,25 @@
         cell.colSpan = 7;
         const dl = el("dl", "facts");
         for (const [k, v] of facts) dl.append(el("dt", null, k), el("dd", null, v));
-        // Every app log of this email (reading, classifying, forwarding, errors, marked done...) on the Logs page.
+        // On the Logs page: every processing of this email (who, when, the details as each left them), and every
+        // app log of it (reading, classifying, forwarding, errors, marked done...).
+        const links = el("div", "detail-links");
+        const historyLink = el("a", "link-button", "Processing history");
+        historyLink.href = `logs.html?${new URLSearchParams({ kind: "emails", email: e.id })}`;
         const logsLink = el("a", "link-button", "View logs");
         logsLink.href = `logs.html?${new URLSearchParams({ email: e.id })}`;
-        cell.append(dl, logsLink);
+        links.append(historyLink, logsLink);
+        cell.append(dl, links);
         detailRow.append(cell);
         rows.push(detailRow);
 
         const expand = el("button", "icon-button expand", "▸");
         expand.title = "Details";
         expand.setAttribute("aria-expanded", "false");
-        let historyLoaded = false;
         expand.addEventListener("click", () => {
           detailRow.hidden = !detailRow.hidden;
           expand.setAttribute("aria-expanded", String(!detailRow.hidden));
           tr.classList.toggle("open", !detailRow.hidden);
-          if (!detailRow.hidden && !historyLoaded) {
-            historyLoaded = true;
-            loadHistory(e.id, dl);
-          }
         });
         actions.append(expand);
       }
@@ -669,23 +597,6 @@
       previewRequest++;
       previewFrame.srcdoc = "";
     });
-
-    const TRIGGER_LABELS = { manual: "Process inbox", schedule: "Scheduled run", user: "By hand" };
-
-    // Appends the email's processing log (who processed it, when, and the outcome) to its details list.
-    async function loadHistory(id, dl) {
-      const { data, error } = await callApi(`inbox?${new URLSearchParams({ history: id })}`, { method: "GET" });
-      if (error || !data.history.length) return;
-      const list = el("dd");
-      for (const h of data.history) {
-        const outcome = [ACTION_LABELS[h.status] || h.status, h.category && (CATEGORY_LABELS[h.category] || h.category), h.action || h.error]
-          .filter(Boolean).join(" · ");
-        const name = h.processed_by_name || h.processed_by_email;
-        const who = name ? ` by ${name}` : "";
-        list.append(el("div", null, `${formatWhen(h.processed_at)}${who} (${TRIGGER_LABELS[h.trigger] || h.trigger}): ${outcome}`));
-      }
-      dl.append(el("dt", null, "History"), list);
-    }
 
     // Safety net for Process inbox: at most this many batches (of 15) per click.
     const MAX_BATCHES = 40;

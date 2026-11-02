@@ -1,9 +1,6 @@
 // AP inbox processing for the signed-in user's connected mailboxes.
 //   GET   ?status=&mailbox_id=                          -> { emails: [...] } newest first
 //   GET   ?preview=<email id>                           -> { email: {...} } the message read live from the mailbox
-//   GET   ?log=<mailbox id>                             -> { log: [...] } every processing of the mailbox's emails
-//         (email_processing_log: details, who, when), newest first
-//   GET   ?history=<email id>                           -> { history: [...] } who processed it and when, newest first
 //   POST  {action: "process", mailbox_id, lookback_hours, reprocess?, all?, started_at?} -> process a batch now
 //         (see _shared/process.ts); with all, the page calls again until remaining is 0
 //   POST  {action: "preview", mailbox_id, lookback_hours} -> { new, already_processed, ... } to confirm a re-check first
@@ -40,26 +37,6 @@ Deno.serve(async (req) => {
         }
         throw err;
       }
-    }
-
-    if (req.method === "GET" && url.searchParams.has("log")) {
-      const { data, error } = await sb.from("email_processing_log")
-        .select("id, processed_email_id, processed_at, processed_by_name, processed_by_email, trigger, run_id, status, action, error, subject, received_at, from_name, from_address, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step")
-        .eq("mailbox_id", url.searchParams.get("log"))
-        .order("processed_at", { ascending: false })
-        .limit(500);
-      if (error) return await fail("inbox/log", error.message, 500, { userId: user.id });
-      return json({ log: data });
-    }
-
-    if (req.method === "GET" && url.searchParams.has("history")) {
-      const { data, error } = await sb.from("email_processing_log")
-        .select("processed_at, processed_by_email, processed_by_name, trigger, run_id, status, category, action, error")
-        .eq("processed_email_id", url.searchParams.get("history"))
-        .order("processed_at", { ascending: false })
-        .limit(100);
-      if (error) return await fail("inbox/history", error.message, 500, { userId: user.id });
-      return json({ history: data });
     }
 
     if (req.method === "GET") {
