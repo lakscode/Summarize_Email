@@ -105,16 +105,24 @@
           <button class="tab" data-status="no_action">No action</button>
           <button class="tab" data-status="error">Errors</button>
           <button class="tab" data-status="">All</button>
+          <button class="tab" data-status="history">History</button>
         </div>
         <button class="secondary" id="refresh">Refresh</button>
       </div>
 
       <div class="panel log-panel">
-        <table class="logs emails">
+        <table class="logs emails" id="email-table">
           <thead>
             <tr><th>Status</th><th>Received</th><th>Email</th><th>Vendor / amount</th><th>Next step</th><th>Processed</th><th></th></tr>
           </thead>
           <tbody id="email-list"></tbody>
+        </table>
+        <!-- History tab: every processing of this mailbox's emails, with the details as that processing left them. -->
+        <table class="logs" id="history-table" hidden>
+          <thead>
+            <tr><th>Processed</th><th>By</th><th>How</th><th>Email</th><th>Vendor / amount</th><th>Outcome</th></tr>
+          </thead>
+          <tbody id="history-list"></tbody>
         </table>
         <p class="empty" id="email-empty" hidden>Nothing here.</p>
       </div>
@@ -358,12 +366,82 @@
         document.getElementById("email-empty").hidden = false;
         return;
       }
+      const history = status === "history";
+      document.getElementById("email-table").hidden = history;
+      document.getElementById("history-table").hidden = !history;
+      if (history) {
+        const { data, error } = await callApi(`inbox?${new URLSearchParams({ log: mailboxId })}`, { method: "GET" });
+        if (request !== emailsRequest) return;
+        if (error) return showMessage(`Could not load the history: ${error}`, "error");
+        document.getElementById("history-list").replaceChildren(...data.log.map(historyRow));
+        document.getElementById("email-empty").hidden = data.log.length > 0;
+        return;
+      }
       const query = new URLSearchParams({ mailbox_id: mailboxId, ...(status ? { status } : {}) });
       const { data, error } = await callApi(`inbox?${query}`, { method: "GET" });
       if (request !== emailsRequest) return;
       if (error) return showMessage(`Could not load emails: ${error}`, "error");
       document.getElementById("email-list").replaceChildren(...data.emails.flatMap(emailRows));
       document.getElementById("email-empty").hidden = data.emails.length > 0;
+    }
+
+    // One processing of an email (History tab): when, who, how, the email, and what came of it, with the details
+    // (as that processing left them) under "Details".
+    function historyRow(h) {
+      const tr = el("tr");
+      const when = el("td", "nowrap", formatWhen(h.processed_at));
+      const who = el("td", "nowrap", h.processed_by_name || h.processed_by_email || "—");
+      if (h.processed_by_email) who.title = h.processed_by_email;
+      const how = el("td", "nowrap", TRIGGER_LABELS[h.trigger] || h.trigger);
+
+      const email = el("td", "msg");
+      const subject = el("a", "email-subject", h.subject || "(no subject)");
+      subject.href = "#";
+      subject.addEventListener("click", (ev) => {
+        if (!h.processed_email_id) return ev.preventDefault();
+        ev.preventDefault();
+        openPreview({ id: h.processed_email_id, subject: h.subject, web_link: h.web_link });
+      });
+      email.append(subject);
+      const sender = h.from_name ? `${h.from_name} <${h.from_address}>` : h.from_address;
+      if (sender) email.append(el("div", "email-oneline", sender));
+
+      const vendor = el("td", "email-vendor");
+      if (h.vendor) vendor.append(el("div", null, h.vendor));
+      if (h.amount) vendor.append(el("div", "email-amount", h.amount));
+
+      const outcome = el("td", "msg");
+      const badges = el("div", "badges");
+      badges.append(el("span", `pill action-${h.status}`, ACTION_LABELS[h.status] || h.status));
+      if (h.category) badges.append(el("span", `badge cat-${h.category}`, CATEGORY_LABELS[h.category] || h.category));
+      outcome.append(badges);
+      if (h.error || h.action) outcome.append(el("div", h.error ? "error-text" : null, h.error || h.action));
+
+      const facts = [
+        ["Received", h.received_at && formatWhen(h.received_at)],
+        ["Confidence", h.confidence],
+        ["Invoice #", h.invoice_number], ["Due", h.due_date],
+        ["Attachments", h.attachment_names?.join(", ")],
+        ["Summary", h.summary],
+        ["Next step", h.next_step],
+        ["Run", h.run_id],
+      ].filter(([, v]) => v);
+      if (facts.length) {
+        const details = el("details");
+        details.append(el("summary", null, "Details"));
+        const dl = el("dl", "facts");
+        for (const [k, v] of facts) dl.append(el("dt", null, k), el("dd", null, v));
+        details.append(dl);
+        if (h.processed_email_id) {
+          const logs = el("a", "link-button", "View logs");
+          logs.href = `logs.html?${new URLSearchParams({ email: h.processed_email_id })}`;
+          details.append(logs);
+        }
+        outcome.append(details);
+      }
+
+      tr.append(when, who, how, email, vendor, outcome);
+      return tr;
     }
 
     function el(tag, className, text) {
