@@ -92,6 +92,9 @@ export interface MailClient {
   sendMail(to: string[], subject: string, html: string): Promise<void>;
   // Forwards the message with its attachments, `comment` above the original.
   forwardMessage(messageId: string, to: string, comment: string): Promise<void>;
+  // Of these messages, the ones someone has forwarded (e.g. manually in Outlook), with when. Only where the provider
+  // records it on the message (Microsoft 365); messages no longer in the mailbox are left out.
+  forwardedAt?(messageIds: string[]): Promise<Map<string, string>>;
 }
 
 // fn over items, at most `limit` at a time; results in the items' order.

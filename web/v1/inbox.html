@@ -408,6 +408,9 @@
       badges.append(el("span", `pill action-${e.status}`, ACTION_LABELS[e.status] || e.status));
       if (e.category) badges.append(el("span", `badge cat-${e.category}`, CATEGORY_LABELS[e.category] || e.category));
       if (e.confidence === "low") badges.append(el("span", "badge", "Low confidence"));
+      // Someone forwarded it themselves in Outlook, so the app marked it done (see _shared/process.ts).
+      const manuallyForwarded = e.status === "done" && e.action_taken === "Manually forwarded";
+      if (manuallyForwarded) badges.append(el("span", "badge status-done", "Manually forwarded"));
       statusCell.append(badges);
 
       const date = e.received_at ? new Date(e.received_at) : null;
@@ -437,6 +440,7 @@
 
       const nextCell = el("td", "email-next");
       if (e.error) nextCell.append(el("div", "clamp error-text", e.error));
+      else if (manuallyForwarded) nextCell.append(el("div", "clamp", "Nothing to do: manually forwarded in Outlook."));
       else if (e.next_step) {
         const next = el("div", "clamp", e.next_step);
         next.title = e.next_step;

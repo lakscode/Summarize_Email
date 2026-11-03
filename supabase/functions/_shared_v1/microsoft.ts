@@ -50,6 +50,7 @@ export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): 
     // Delegated: always from the signed-in user's own mailbox, so a shared mailbox's summary needs no Send As rights.
     sendMail: (to, subject, html) => sendMail(token, app ? box : "/me", to, subject, html),
     forwardMessage: (messageId, to, comment) => forwardMessage(token, box, messageId, to, comment),
+    forwardedAt: (ids) => forwardedAt(token, box, ids),
   };
 }
 
@@ -235,6 +236,30 @@ async function graph<T>(token: string, path: string, init: RequestInit = {}, ext
 }
 
 const FETCH_CONCURRENCY = 4;
+
+// Outlook records the last thing done to a message (reply, reply all, forward) as PidTagLastVerbExecuted (0x1081), and
+// when as PidTagLastVerbExecutionTime (0x1082); 104 is forward. Read through Graph as extended properties.
+const LAST_VERB = "Integer 0x1081";
+const LAST_VERB_TIME = "SystemTime 0x1082";
+const VERB_FORWARD = "104";
+
+async function forwardedAt(token: string, box: string, ids: string[]): Promise<Map<string, string>> {
+  const expand = `singleValueExtendedProperties($filter=id eq '${LAST_VERB}' or id eq '${LAST_VERB_TIME}')`;
+  const found = new Map<string, string>();
+  await mapLimit(ids, FETCH_CONCURRENCY, async (id) => {
+    try {
+      const m = await graph<{ singleValueExtendedProperties?: { id: string; value: string }[] }>(
+        token, `${box}/messages/${id}?$select=id&$expand=${encodeURIComponent(expand)}`);
+      const props = new Map((m.singleValueExtendedProperties ?? []).map((p) => [p.id.toLowerCase(), p.value]));
+      if (props.get(LAST_VERB.toLowerCase()) === VERB_FORWARD) {
+        found.set(id, props.get(LAST_VERB_TIME.toLowerCase()) ?? new Date().toISOString());
+      }
+    } catch (err) {
+      if (!isNotFound(err)) throw err; // moved or deleted: can't tell
+    }
+  });
+  return found;
+}
 
 // Ids of the inbox messages received since `since`, newest first, following Graph's pages up to `max`.
 async function listInboxIds(token: string, box: string, since: Date, max: number): Promise<string[]> {
