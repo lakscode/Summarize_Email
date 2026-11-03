@@ -64,13 +64,19 @@ function renderSsoButtons({ only = false } = {}) {
         '<rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>' +
         '<rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>');
     }
-    button.append(label);
+    const text = document.createTextNode(label);
+    button.append(text);
+    // While the provider's page loads: spinner and "Opening … sign-in…", so nobody clicks again.
     button.addEventListener("click", async () => {
       showMessage("");
       for (const b of buttons) b.disabled = true;
+      button.classList.add("busy");
+      text.data = `Opening ${label.replace(/^Continue with /, "")} sign-in…`;
       const { error } = await sb.auth.signInWithOAuth({ provider, options: { redirectTo: pageUrl("login"), scopes } });
       if (error) {
         for (const b of buttons) b.disabled = false;
+        button.classList.remove("busy");
+        text.data = label;
         showMessage(error.message, "error");
       }
     });

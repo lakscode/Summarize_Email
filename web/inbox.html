@@ -231,13 +231,27 @@
         const item = el("button", m.id === selected ? "mailbox-nav-item active" : "mailbox-nav-item");
         item.type = "button";
         if (m.id === selected) item.setAttribute("aria-current", "true");
+        // Hovering shows the full address, schedule and exact time.
+        item.title = [m.email_address, m.schedule_enabled ? "Runs on a schedule" : null,
+          m.last_processed_at ? `Processed ${formatWhen(m.last_processed_at)}` : "Not processed yet"].filter(Boolean).join("\n");
         const top = el("span", "mailbox-nav-top");
-        top.append(el("span", "mailbox-nav-email", m.email_address),
+        // The full address; one too long for the column wraps after the "@" (the <wbr>), not mid-word.
+        const address = el("span", "mailbox-nav-email");
+        const at = m.email_address.indexOf("@");
+        if (at > 0) address.append(m.email_address.slice(0, at + 1), document.createElement("wbr"), m.email_address.slice(at + 1));
+        else address.textContent = m.email_address;
+        top.append(address,
           el("span", `badge type-${m.mailbox_type || "ap"}`, m.mailbox_type === "ar" ? "AR" : "AP"));
-        const sub = el("span", "mailbox-nav-sub",
-          [m.display_name, m.schedule_enabled ? "Scheduled" : null,
-            m.last_processed_at ? `Processed ${formatWhen(m.last_processed_at)}` : "Not processed yet"]
-            .filter(Boolean).join(" · "));
+        // One line: a clock when it runs on a schedule, then the owner and how long ago it was processed.
+        const sub = el("span", "mailbox-nav-sub");
+        if (m.schedule_enabled) {
+          sub.insertAdjacentHTML("beforeend",
+            '<svg class="nav-clock" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>');
+        }
+        sub.append(el("span", "mailbox-nav-sub-text",
+          [m.schedule_enabled ? "Scheduled" : null, m.display_name,
+            m.last_processed_at ? `Processed ${formatAgo(m.last_processed_at)}` : "Not processed yet"]
+            .filter(Boolean).join(" · ")));
         item.append(top, sub);
         item.addEventListener("click", () => selectMailbox(m.id));
         const li = el("li");
@@ -587,6 +601,18 @@
     // Date and time, short, in the viewer's locale and time zone.
     function formatWhen(iso) {
       return new Date(iso).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+    }
+
+    // "just now", "5 min ago", "2h ago", "yesterday", "3 days ago", then the date ("28 Oct").
+    function formatAgo(iso) {
+      const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+      if (minutes < 1) return "just now";
+      if (minutes < 60) return `${minutes} min ago`;
+      if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}h ago`;
+      const days = Math.floor(minutes / (24 * 60));
+      if (days === 1) return "yesterday";
+      if (days < 7) return `${days} days ago`;
+      return new Date(iso).toLocaleDateString([], { day: "numeric", month: "short" });
     }
 
     function formatSize(bytes) {

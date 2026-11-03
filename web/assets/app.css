@@ -135,7 +135,8 @@ button.secondary[aria-expanded="true"] {
   font-size: 0.9rem;
 }
 .loading[hidden] { display: none; }
-form.busy :is(button:not([type]), button[type="submit"])::before {
+form.busy :is(button:not([type]), button[type="submit"])::before,
+.sso-button.busy::before {
   content: "";
   display: inline-block;
   width: 12px;
@@ -154,6 +155,12 @@ form.busy :is(button:not([type]), button[type="submit"])::before {
 /* White tile so the logo's colours read on the blue primary button. */
 .sso-logo { width: 22px; height: 22px; padding: 3px; box-sizing: border-box; background: #fff; border-radius: 4px; flex: none; }
 .sso-hint { margin: 0 0 10px; text-align: center; color: var(--muted); font-size: 0.85rem; line-height: 1.5; }
+.sso-button.busy::before { margin-right: 0; }
+.sso-button.busy:disabled { opacity: 1; }
+.sso-button.busy .sso-logo { display: none; }
+/* Microsoft-only sign-in: one centred column. */
+.card.sso-only { text-align: center; }
+.card.sso-only .auth-logo { margin-left: auto; margin-right: auto; }
 .divider { display: flex; align-items: center; gap: 10px; margin-top: 4px; color: var(--muted); font-size: 0.85rem; }
 .divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
 
@@ -408,13 +415,15 @@ select {
 /* The panel never grows past the window; a longer list scrolls inside it. */
 .mailbox-nav { position: sticky; top: 16px; display: flex; flex-direction: column; max-height: calc(100vh - 32px); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
 .mailbox-nav h2 { margin: 4px 6px 8px; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
-.mailbox-nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+.mailbox-nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
 .mailbox-nav-item { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; text-align: left; background: transparent; color: var(--text); border: 0; border-radius: 8px; padding: 8px 10px; font-weight: 400; }
 .mailbox-nav-item:hover { background: var(--bg); }
 .mailbox-nav-item.active { background: var(--bg); box-shadow: inset 3px 0 0 var(--accent); }
 .mailbox-nav-top { display: flex; align-items: center; gap: 6px; }
 .mailbox-nav-email { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; font-size: 0.9rem; }
-.mailbox-nav-sub { color: var(--muted); font-size: 0.78rem; }
+.mailbox-nav-sub { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--muted); font-size: 0.78rem; }
+.mailbox-nav-sub-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-clock { width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .mailbox-detail { min-width: 0; }
 .mailbox-detail-head h2 { margin: 0; font-size: 1.2rem; overflow-wrap: anywhere; }
 .mailbox-detail-head .sub { margin: 2px 0 0; }

@@ -42,6 +42,7 @@
     document.getElementById("login-form").hidden = !SHOW_EMAIL_LOGIN;
     document.getElementById("signup-link").hidden = !SHOW_EMAIL_LOGIN;
     document.getElementById("sso-hint").hidden = SHOW_EMAIL_LOGIN;
+    document.querySelector(".card").classList.toggle("sso-only", !SHOW_EMAIL_LOGIN);
 
     const params = new URLSearchParams(location.search);
     if (params.has("confirm")) showMessage("Check your email to confirm your account, then log in.", "ok");

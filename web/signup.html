@@ -43,6 +43,7 @@
     renderSsoButtons({ only: !SHOW_EMAIL_LOGIN });
     document.getElementById("signup-form").hidden = !SHOW_EMAIL_LOGIN;
     document.getElementById("sso-hint").hidden = SHOW_EMAIL_LOGIN;
+    document.querySelector(".card").classList.toggle("sso-only", !SHOW_EMAIL_LOGIN);
 
     const form = document.getElementById("signup-form");
     form.addEventListener("submit", async (e) => {
