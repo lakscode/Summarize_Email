@@ -963,7 +963,7 @@
       // Where forwarded emails end up (supabase/functions/_shared/process.ts, fileForwarded).
       const filing = el("p", "hint");
       const describeFiling = () => (filing.textContent =
-        `Forwarded emails (by the app or manually in Outlook) are moved to the "${typeSelect.value === "ar" ? "AR" : "AP"} Invoices" folder of this mailbox.`);
+        `Forwarded emails (by the app or manually in Outlook) are moved to a folder per ${typeSelect.value === "ar" ? "customer" : "vendor"} under "${typeSelect.value === "ar" ? "AR" : "AP"} Invoices" in this mailbox (e.g. "${typeSelect.value === "ar" ? "AR" : "AP"} Invoices/Acme Corp").`);
       typeSelect.addEventListener("change", describeFiling);
       describeFiling();
       form.append(typeLabel, destLabel, forward, summaryLabel, summaryToLabel, save, status, filing);

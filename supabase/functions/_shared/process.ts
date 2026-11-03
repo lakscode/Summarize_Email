@@ -5,7 +5,7 @@
 // classified are classified again unless they were forwarded or marked done, so nothing is forwarded twice.
 // Invoices and utility bills left as action needed are marked done once someone forwards them manually in Outlook
 // (checked at the end of each run, see markManuallyForwarded). Forwarded emails (either way) are then moved to the
-// mailbox's "AP Invoices" or "AR Invoices" folder (see fileForwarded).
+// vendor's subfolder of the mailbox's "AP Invoices" or "AR Invoices" folder (see fileForwarded).
 import { encodeBase64 } from "./base64.ts";
 import { APP_NAME } from "./brand.ts";
 import PostalMime from "npm:postal-mime@3.0.1";
@@ -189,6 +189,8 @@ export async function processMailbox(
   const pending = !!untilDone && remaining > 0;
   // Once per run (the last batch): emails manually forwarded since they were processed, this run's included.
   const manuallyForwarded = pending ? 0 : await markManuallyForwarded(db, run, mailbox, client);
+  // Then forwarded emails still in the Inbox from before (or a failed move) are filed.
+  const filedBacklog = pending ? 0 : await fileForwardedBacklog(db, run, mailbox, client);
   const reportItems = (untilDone && !pending) || manuallyForwarded ? await itemsSince(db, mailbox.id, startedAt) : items;
   const to = mailbox.send_summary && !pending ? await summaryRecipients(db, mailbox) : null;
   const report = !mailbox.send_summary ? "off" : pending ? "pending" : !to ? "no_recipient"
@@ -200,12 +202,14 @@ export async function processMailbox(
     remaining,
     counts,
     manually_forwarded: manuallyForwarded,
+    filed: filedBacklog,
     report,
     started_at: startedAt,
   };
   const summary = [
     ...Object.entries(counts).map(([k, n]) => `${n} ${k.replace("_", " ")}`),
     ...(manuallyForwarded ? [`${manuallyForwarded} manually forwarded, now done`] : []),
+    ...(filedBacklog ? [`${filedBacklog} forwarded earlier, now filed`] : []),
   ].join(", ") || "nothing new";
   await step(run, "process/finish", `Run finished in ${Math.round((Date.now() - started) / 1000)}s: ${summary}`, result);
   return result;
@@ -246,7 +250,7 @@ async function markManuallyForwarded(db: Db, run: Run, mailbox: Mailbox, client:
       if (!updated?.length) continue;
       marked++;
       // Filed like the ones the app forwards; the new id and link replace the old ones.
-      const filed = await fileForwarded(run, mailbox, client, row.message_id, { email_id: row.id });
+      const filed = await fileForwarded(run, mailbox, client, row.message_id, row.vendor, { email_id: row.id });
       const action = `${MANUALLY_FORWARDED}${filed.note}`;
       if (filed.moved) row.message_id = filed.moved.id;
       if (filed.moved?.webLink) row.web_link = filed.moved.webLink;
@@ -273,6 +277,45 @@ async function markManuallyForwarded(db: Db, run: Run, mailbox: Mailbox, client:
     return marked;
   } catch (err) {
     await logApi("process/forwarded", err, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address } });
+    return 0;
+  }
+}
+
+// Forwarded emails (by the app or manually) still in the Inbox because they were forwarded before emails were filed, or
+// the move failed (e.g. before the mailbox was reconnected with Mail.ReadWrite): filed now, most recent first, up to
+// MAX_FILE_BACKLOG a run. Ones no longer in the Inbox (filed by hand or deleted) are left where they are and noted so,
+// so they aren't checked again. Returns how many were moved; never fails the run.
+const MAX_FILE_BACKLOG = 50;
+const NOT_IN_INBOX = " · not moved: no longer in the Inbox";
+
+async function fileForwardedBacklog(db: Db, run: Run, mailbox: Mailbox, client: MailClient): Promise<number> {
+  if (!client.moveToFolder || !client.inInbox) return 0;
+  try {
+    const { data: rows, error } = await db.from("processed_emails").select("id, subject, message_id, web_link, vendor, action_taken")
+      .eq("mailbox_id", mailbox.id).eq("status", "done").in("category", DONE_WHEN_FORWARDED)
+      .or(`action_taken.like."Forwarded to %",action_taken.like."${MANUALLY_FORWARDED}%"`)
+      .not("action_taken", "like", "% · moved to %").not("action_taken", "like", `%${NOT_IN_INBOX}`)
+      .order("received_at", { ascending: false }).limit(MAX_FILE_BACKLOG);
+    if (error) throw new Error(error.message);
+    if (!rows?.length) return 0;
+    const inInbox = await client.inInbox(rows.map((r) => r.message_id));
+    let moved = 0;
+    for (const row of rows) {
+      const forwarded = (row.action_taken as string).split(" · ")[0];
+      const filed = inInbox.has(row.message_id)
+        ? await fileForwarded(run, mailbox, client, row.message_id, row.vendor, { email_id: row.id })
+        : { note: NOT_IN_INBOX, moved: undefined };
+      const { error: updateError } = await db.from("processed_emails").update({
+        action_taken: `${forwarded}${filed.note}`,
+        ...(filed.moved ? { message_id: filed.moved.id, web_link: filed.moved.webLink ?? row.web_link } : {}),
+      }).eq("id", row.id);
+      if (updateError) throw new Error(updateError.message);
+      if (filed.moved) moved++;
+    }
+    if (moved) await step(run, "process/file", `Filed ${moved} forwarded email${moved === 1 ? "" : "s"} still in the Inbox`, { moved });
+    return moved;
+  } catch (err) {
+    await logApi("process/file", err, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address } });
     return 0;
   }
 }
@@ -582,22 +625,37 @@ async function takeAction(
       : mailbox.auth_type === "app" ? " Give the organization's Azure app the Mail.Send application permission." : " Reconnect the mailbox to allow sending.";
     return { status: "action_needed", action: `Forward failed; forward it manually.${hint}` };
   }
-  const filed = await fileForwarded(run, mailbox, client, msg.id, email);
+  const filed = await fileForwarded(run, mailbox, client, msg.id, c.vendor, email);
   return { status: "done", action: `Forwarded to ${mailbox.smart_ap_address}${filed.note}`, moved: filed.moved };
 }
 
 // The folder forwarded emails are filed in, by the mailbox's type (Settings: AP or AR).
 export const invoicesFolder = (type: MailboxType) => `${type === "ar" ? "AR" : "AP"} Invoices`;
 
-// Moves a forwarded email to the mailbox's Invoices folder. Never fails the email: the forward stands, and `note` (added
-// to the action taken) says it was moved, or why not. Nothing happens where the provider has no folders (Gmail).
+// The vendor's subfolder name (the customer's, for AR), from the vendor the model read; null when it gave none. Kept to
+// what Outlook accepts in a folder name and trimmed of the punctuation the model sometimes varies ("Acme Corp." / "Acme
+// Corp"); folder names match regardless of case.
+const MAX_FOLDER_NAME = 100;
+export function vendorFolder(vendor: string | null | undefined): string | null {
+  if (/^\s*(unknown|n\/?a|none)\s*$/i.test(vendor ?? "")) return null;
+  const name = (vendor ?? "").replace(/[\u0000-\u001f\\/]+/g, " ").replace(/\s+/g, " ").replace(/^[\s.,;:-]+|[\s.,;:-]+$/g, "")
+    .slice(0, MAX_FOLDER_NAME).trim();
+  return name || null;
+}
+
+// Moves a forwarded email to the vendor's subfolder of the mailbox's Invoices folder ("AP Invoices/Acme Corp"), or to the
+// Invoices folder itself when the vendor isn't known. Never fails the email: the forward stands, and `note` (added to
+// the action taken) says where it was moved, or why not. Nothing happens where the provider has no folders (Gmail).
 async function fileForwarded(
-  run: Run, mailbox: Mailbox, client: MailClient, messageId: string, context: Record<string, unknown>,
+  run: Run, mailbox: Mailbox, client: MailClient, messageId: string, vendor: string | null | undefined,
+  context: Record<string, unknown>,
 ): Promise<{ moved?: { id: string; webLink: string | null }; note: string }> {
   if (!client.moveToFolder) return { note: "" };
-  const folder = invoicesFolder(mailbox.mailbox_type);
+  const sub = vendorFolder(vendor);
+  const path = sub ? [invoicesFolder(mailbox.mailbox_type), sub] : [invoicesFolder(mailbox.mailbox_type)];
+  const folder = path.join("/");
   try {
-    const moved = await client.moveToFolder(messageId, folder);
+    const moved = await client.moveToFolder(messageId, path);
     await step(run, "process/move", `Moved to ${folder}`, context);
     return { moved, note: ` · moved to ${folder}` };
   } catch (err) {

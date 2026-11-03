@@ -98,9 +98,11 @@ export interface MailClient {
   // Of these messages, the ones someone has forwarded (e.g. manually in Outlook), with when. Only where the provider
   // records it on the message (Microsoft 365); messages no longer in the mailbox are left out.
   forwardedAt?(messageIds: string[]): Promise<Map<string, string>>;
-  // Moves the message to the top-level folder `folder` (created if missing). Outlook gives a moved message a new id and
-  // link, returned here. Only where the provider has folders (Microsoft 365).
-  moveToFolder?(messageId: string, folder: string): Promise<{ id: string; webLink: string | null }>;
+  // Which of the messages are still in the Inbox (not filed elsewhere or deleted). Only where the provider has folders.
+  inInbox?(messageIds: string[]): Promise<Set<string>>;
+  // Moves the message to the folder at `path`, e.g. ["AP Invoices", "Acme Corp"] (folders created if missing). Outlook
+  // gives a moved message a new id and link, returned here. Only where the provider has folders (Microsoft 365).
+  moveToFolder?(messageId: string, path: string[]): Promise<{ id: string; webLink: string | null }>;
 }
 
 // fn over items, at most `limit` at a time; results in the items' order.

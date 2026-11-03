@@ -66,8 +66,8 @@ Until Azure is enabled in Supabase, clicking the button shows "Unsupported provi
    - Redirect URI (Web): `https://<project-ref>.supabase.co/functions/v1/mailboxes`
 2. Certificates & secrets > New client secret. Copy the **value**.
 3. API permissions > Microsoft Graph > Delegated: `offline_access`, `User.Read`, `Mail.Read`, `Mail.ReadWrite`,
-   `Mail.Send` (`Mail.Send` forwards invoices, `Mail.ReadWrite` moves forwarded emails to the AP / AR Invoices folder;
-   mailboxes connected before either was added must be reconnected).
+   `Mail.Send` (`Mail.Send` forwards invoices, `Mail.ReadWrite` moves forwarded emails to a per-vendor folder under AP /
+   AR Invoices, e.g. `AP Invoices/Acme Corp`; mailboxes connected before either was added must be reconnected).
    Also add `Mail.Read.Shared`, `Mail.ReadWrite.Shared` and `Mail.Send.Shared` (requested on every sign-in, for shared
    mailboxes).
    To list a signed-in user's shared mailboxes after sign-in, add Office 365 Exchange Online > Delegated >

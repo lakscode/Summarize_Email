@@ -51,7 +51,8 @@ export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): 
     sendMail: (to, subject, html) => sendFromMailbox(token, box, mailbox, to, subject, html),
     forwardMessage: (messageId, to, comment) => forwardMessage(token, box, messageId, to, comment),
     forwardedAt: (ids) => forwardedAt(token, box, ids),
-    moveToFolder: (messageId, folder) => moveToFolder(token, box, messageId, folder),
+    inInbox: (ids) => inInbox(token, box, ids),
+    moveToFolder: (messageId, path) => moveToFolder(token, box, messageId, path),
   };
 }
 
@@ -262,6 +263,21 @@ async function forwardedAt(token: string, box: string, ids: string[]): Promise<M
   return found;
 }
 
+// The messages whose folder is the Inbox (moved or deleted ones are left out).
+async function inInbox(token: string, box: string, ids: string[]): Promise<Set<string>> {
+  const inbox = await graph<{ id: string }>(token, `${box}/mailFolders/inbox?$select=id`);
+  const found = new Set<string>();
+  await mapLimit(ids, FETCH_CONCURRENCY, async (id) => {
+    try {
+      const m = await graph<{ parentFolderId?: string }>(token, `${box}/messages/${id}?$select=parentFolderId`);
+      if (m.parentFolderId === inbox.id) found.add(id);
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
+    }
+  });
+  return found;
+}
+
 // Ids of the inbox messages received since `since`, newest first, following Graph's pages up to `max`.
 async function listInboxIds(token: string, box: string, since: Date, max: number): Promise<string[]> {
   const params = new URLSearchParams({
@@ -425,9 +441,9 @@ async function sendMail(token: string, box: string, to: string[], subject: strin
   });
 }
 
-// Moves a message to the top-level folder `name` of the mailbox, creating the folder the first time.
-async function moveToFolder(token: string, box: string, messageId: string, name: string): Promise<{ id: string; webLink: string | null }> {
-  const folderId = await folderIdFor(token, box, name);
+// Moves a message to the folder at `path` (top-level folder first, then its subfolders), creating any missing folder.
+async function moveToFolder(token: string, box: string, messageId: string, path: string[]): Promise<{ id: string; webLink: string | null }> {
+  const folderId = await folderIdFor(token, box, path);
   const moved = await graph<{ id: string; webLink?: string }>(token, `${box}/messages/${messageId}/move`, {
     method: "POST",
     body: JSON.stringify({ destinationId: folderId }),
@@ -435,30 +451,34 @@ async function moveToFolder(token: string, box: string, messageId: string, name:
   return { id: moved.id, webLink: moved.webLink ?? null };
 }
 
-// Folder ids by mailbox and name, for the rest of this invocation (a run moves many emails to the same folder).
+// Folder ids by mailbox and path, for the rest of this invocation (a run moves many emails to the same folders).
+// Folder names match regardless of case, as in Outlook.
 const folderIds = new Map<string, Promise<string>>();
 
-function folderIdFor(token: string, box: string, name: string): Promise<string> {
-  const key = `${box}|${name.toLowerCase()}`;
+function folderIdFor(token: string, box: string, path: string[]): Promise<string> {
+  const key = `${box}|${path.join("/").toLowerCase()}`;
   let id = folderIds.get(key);
   if (!id) {
-    id = findOrCreateFolder(token, box, name);
+    const parent = path.length > 1 ? folderIdFor(token, box, path.slice(0, -1)) : Promise.resolve(null);
+    id = parent.then((parentId) => findOrCreateFolder(token, box, parentId, path[path.length - 1]));
     id.catch(() => folderIds.delete(key));
     folderIds.set(key, id);
   }
   return id;
 }
 
-async function findOrCreateFolder(token: string, box: string, name: string): Promise<string> {
+// The folder `name` directly under `parentId` (null: a top-level folder, next to Inbox).
+async function findOrCreateFolder(token: string, box: string, parentId: string | null, name: string): Promise<string> {
+  const folders = parentId ? `${box}/mailFolders/${encodeURIComponent(parentId)}/childFolders` : `${box}/mailFolders`;
   const find = async () => {
     const filter = encodeURIComponent(`displayName eq '${name.replace(/'/g, "''")}'`);
-    const found = await graph<{ value: { id: string }[] }>(token, `${box}/mailFolders?$filter=${filter}&$select=id`);
+    const found = await graph<{ value: { id: string }[] }>(token, `${folders}?$filter=${filter}&$select=id`);
     return found.value[0]?.id ?? null;
   };
   const existing = await find();
   if (existing) return existing;
   try {
-    const created = await graph<{ id: string }>(token, `${box}/mailFolders`, { method: "POST", body: JSON.stringify({ displayName: name }) });
+    const created = await graph<{ id: string }>(token, folders, { method: "POST", body: JSON.stringify({ displayName: name }) });
     return created.id;
   } catch (err) {
     // Created meanwhile (another run): use that one.
