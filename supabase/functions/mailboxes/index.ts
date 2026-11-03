@@ -4,11 +4,12 @@
 //                                            each mailbox has the caller's `role` and its `owner_name`; organization:
 //                                            the caller's {id, name, role} or null)
 //   Organization mailboxes (see migrations/*_organization_mailboxes.sql): the owner shares a mailbox with their
-//   organization; everyone in it then has a role on it: admin (settings, schedule, roles) or member (the default).
+//   organization; everyone in it then has a role on it: member (the default: everything, settings, schedule and
+//   reports included), admin (also roles and access) or none (no access).
 //   PATCH {id, org_shared: true | false}  -> owner: { mailbox } shared with their organization, or not any more
 //   GET ?access=<mailbox id>              -> { people: [{user_id, email, full_name, role, fixed, you}], manage }
 //                                            everyone in the mailbox's organization with their role on it
-//   POST {action: "set_mailbox_role", mailbox_id, user_id, role: "admin" | "member"} -> mailbox admins: { member }
+//   POST {action: "set_mailbox_role", mailbox_id, user_id, role: "admin" | "member" | "none"} -> mailbox admins: { member }
 //   POST {action: "connect", provider: "microsoft" | "google", access_days, popup, shared_mailbox?, login_hint?}
 //                                         -> { url } to start Microsoft or Google sign-in (OAuth). With
 //                                            shared_mailbox (Microsoft only), the user signs in with their own
@@ -215,8 +216,10 @@ Deno.serve(async (req) => {
 type MailboxRole = "owner" | "admin" | "member";
 // "none": no access (the mailbox is hidden from them, see migrations/*_mailbox_no_access_role.sql).
 const MAILBOX_ROLES = ["admin", "member", "none"];
+// Anyone with a role changes a mailbox's settings, schedule and reports; only admins (and the owner) change who has
+// which role or access.
 const canManage = (role: MailboxRole | null) => role === "owner" || role === "admin";
-const ONLY_ADMINS = "Only admins of this mailbox can change it. Ask the person who connected it or an organization admin.";
+const ONLY_ADMINS = "Only admins of this mailbox can change roles and access. Ask the person who connected it or an organization admin.";
 
 // The user's role on mailbox `id`, or null without access.
 async function mailboxRole(userId: string, id: unknown): Promise<MailboxRole | null> {
@@ -370,7 +373,6 @@ function parseAddresses(value: unknown, label: string): string[] | Response {
 async function saveForwardReport(userId: string, id: string, r: Record<string, unknown>): Promise<Response> {
   const role = await mailboxRole(userId, id);
   if (!role) return json({ error: "Mailbox not found" }, 404);
-  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
   const enabled = r.enabled === true;
   const time = String(r.time ?? "");
   const timezone = String(r.timezone ?? "");
@@ -398,7 +400,6 @@ async function saveForwardReport(userId: string, id: string, r: Record<string, u
 async function sendReportNow(userId: string, id: unknown): Promise<Response> {
   const role = await mailboxRole(userId, id);
   if (!role) return json({ error: "Mailbox not found" }, 404);
-  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
   const db = adminClient();
   const { data, error } = await db.from("mailboxes").select(REPORT_MAILBOX_COLUMNS).eq("id", id).single();
   if (error) return await fail("mailboxes/forward_report", error.message, 500, { userId, context: { id } });
@@ -430,7 +431,6 @@ async function addWeeklyReportSettings(userId: string, sb: SupabaseClient, mailb
 async function saveWeeklyReport(userId: string, id: string, r: Record<string, unknown>): Promise<Response> {
   const role = await mailboxRole(userId, id);
   if (!role) return json({ error: "Mailbox not found" }, 404);
-  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
   const enabled = r.enabled === true;
   const day = Number(r.day);
   const time = String(r.time ?? "");
@@ -459,7 +459,6 @@ async function saveWeeklyReport(userId: string, id: string, r: Record<string, un
 async function sendWeeklyReportNow(userId: string, id: unknown): Promise<Response> {
   const role = await mailboxRole(userId, id);
   if (!role) return json({ error: "Mailbox not found" }, 404);
-  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
   const db = adminClient();
   const { data, error } = await db.from("mailboxes").select(WEEKLY_REPORT_MAILBOX_COLUMNS).eq("id", id).single();
   if (error) return await fail("mailboxes/weekly_report", error.message, 500, { userId, context: { id } });
@@ -474,7 +473,6 @@ async function sendWeeklyReportNow(userId: string, id: unknown): Promise<Respons
 async function saveSchedule(userId: string, id: string, s: Record<string, unknown>): Promise<Response> {
   const role = await mailboxRole(userId, id);
   if (!role) return json({ error: "Mailbox not found" }, 404);
-  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
 
   const enabled = s.enabled === true;
   const frequency = String(s.frequency) as Frequency;
@@ -660,7 +658,6 @@ async function settingsFromOtherUsers(db: SupabaseClient, uid: string, address: 
 async function saveSettings(userId: string, body: Record<string, unknown>): Promise<Response> {
   const role = await mailboxRole(userId, body.id);
   if (!role) return json({ error: "Mailbox not found" }, 404);
-  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
   const db = adminClient();
   const { data: current, error: readError } = await db.from("mailboxes").select("id, mailbox_type").eq("id", body.id).maybeSingle();
   if (readError) return await fail("mailboxes/update", readError.message, 500, { userId, context: { id: body.id } });

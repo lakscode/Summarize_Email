@@ -309,10 +309,6 @@
       for (const box of document.querySelectorAll("#schedule-days input")) box.checked = days.includes(Number(box.value));
       toggleFrequencyFields();
       renderScheduleStatus(m);
-      // Members of an organization mailbox see its schedule; only its admins change it.
-      const readOnly = m.role === "member";
-      for (const c of document.getElementById("schedule-form").elements) c.disabled = readOnly;
-      if (readOnly) document.getElementById("schedule-status").append(el("div", null, "Only admins of this mailbox can change its schedule."));
     }
 
     function renderScheduleStatus(m) {

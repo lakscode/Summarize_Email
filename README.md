@@ -200,9 +200,9 @@ mailboxes joins an organization, theirs are shared, or merged into the organizat
 them sees them, their emails and history. The database enforces it (`migrations/*_personal_mailboxes_private.sql`).
 Everyone in the organization can use an organization mailbox, with a role per mailbox (**People and roles**). Roles:
 
-- **Member** (the default, also for people who join later): sees the mailbox, its emails and processing history,
-  processes its inbox and marks emails done.
-- **Admin**: also changes its settings, schedule and who is an admin. The person who connected it and organization
+- **Member** (the default, also for people who join later): everything with the mailbox: its emails and processing
+  history, processing its inbox, marking emails done, and changing its settings, schedule and reports.
+- **Admin**: also changes people's roles and access (People and roles). The person who connected it and organization
   admins are always admins. Only the person who connected it can reconnect, disconnect or stop sharing it.
 - **No access**: the mailbox is hidden from that person (its emails, history and reports too); an admin can give it
   back. Not available for the person who connected it or organization admins

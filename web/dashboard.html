@@ -697,11 +697,6 @@
           : "No invoices were forwarded since the last report, so nothing was sent.", r.error ? "error" : "ok");
       });
 
-      // Members see it; only the mailbox's admins change it.
-      if (!manages(m)) {
-        for (const c of form.elements) c.disabled = true;
-        save.hidden = sendNow.hidden = true;
-      }
       return form;
     }
 
@@ -810,11 +805,6 @@
           : "No invoices were forwarded in the past 7 days, so nothing was sent.", r.error ? "error" : "ok");
       });
 
-      // Members see it; only the mailbox's admins change it.
-      if (!manages(m)) {
-        for (const c of form.elements) c.disabled = true;
-        save.hidden = sendNow.hidden = true;
-      }
       return form;
     }
 
@@ -884,13 +874,12 @@
     }
 
     // --- Organization mailboxes: the owner shares a mailbox with their organization; everyone in it then has a role
-    // on it: Admin (settings, schedule and roles) or Member (uses it; the default). The owner and organization admins
-    // are always Admin. ---
+    // on it: Member (the default: everything, settings, schedule and reports included), Admin (also who has which
+    // role and access) or No access. The owner and organization admins are always Admin. ---
 
     const MAILBOX_ROLE_LABELS = { owner: "Admin", admin: "Admin", member: "Member", none: "No access" };
     // Mailboxes from an older API have no role: they are the caller's own.
     const owns = (m) => (m.role ?? "owner") === "owner";
-    const manages = (m) => owns(m) || m.role === "admin";
     // Read through someone's account or with organization API keys, rather than a personal mailbox.
     const isSharedMailbox = (m) => !!m.delegate_address || m.auth_type === "app";
 
@@ -1011,8 +1000,8 @@
         });
         cell.append(select);
       }
-      const hint = text("p", "hint", "Members see this mailbox and its emails, process its inbox and mark emails done. " +
-        "Admins can also change its settings, schedule and roles. No access hides the mailbox, its emails and reports from " +
+      const hint = text("p", "hint", "Members can do everything with this mailbox: its emails, inbox processing, settings, schedule and reports. " +
+        "Admins can also change people's roles and access. No access hides the mailbox, its emails and reports from " +
         "that person. People who join the organization later are members.");
       hint.style.padding = "0 12px 10px";
       wrap.replaceChildren(table, hint);
@@ -1100,12 +1089,6 @@
       form.append(typeLabel, destLabel, forward, summaryLabel, summaryToLabel, save, status, filing);
       saved = current();
       refresh();
-      // Members of an organization mailbox see its settings; only its admins change them.
-      if (!manages(m)) {
-        for (const c of form.elements) c.disabled = true;
-        save.hidden = true;
-        form.append(Object.assign(document.createElement("p"), { className: "hint", textContent: "Only admins of this mailbox can change its settings." }));
-      }
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
         const body = {
