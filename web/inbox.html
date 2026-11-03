@@ -143,6 +143,7 @@
     <iframe class="preview-frame" id="preview-frame" title="Email content" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
     <div class="dialog-actions">
       <button type="button" class="secondary" id="preview-images" hidden>Show images</button>
+      <button type="button" class="secondary" id="preview-text" hidden>View as plain text</button>
       <a class="button-link" id="preview-open" target="_blank" rel="noopener" hidden>Open in mailbox</a>
     </div>
   </dialog>
@@ -546,6 +547,7 @@
       document.getElementById("preview-meta").replaceChildren();
       document.getElementById("preview-attachments").replaceChildren();
       document.getElementById("preview-images").hidden = true;
+      document.getElementById("preview-text").hidden = true;
       const open = document.getElementById("preview-open");
       open.hidden = !e.web_link;
       if (e.web_link) open.href = e.web_link;
@@ -580,6 +582,17 @@
         images.hidden = true;
         previewFrame.srcdoc = previewDocument(m, true);
       };
+      // Plain text for an email whose formatted version shows blank or is hard to read; the button switches back.
+      const textButton = document.getElementById("preview-text");
+      let asText = false;
+      textButton.hidden = !m.html;
+      textButton.textContent = "View as plain text";
+      textButton.onclick = () => {
+        asText = !asText;
+        textButton.textContent = asText ? "View formatted" : "View as plain text";
+        images.hidden = asText || !REMOTE_CONTENT.test(m.html);
+        previewFrame.srcdoc = asText ? previewDocument({ html: null, text: m.text || htmlToText(m.html) }, false) : previewDocument(m, false);
+      };
       status.hidden = true;
       previewFrame.hidden = false;
       previewFrame.srcdoc = previewDocument(m, false);
@@ -596,6 +609,13 @@
         "<style>body{margin:16px;font:14px/1.5 system-ui,sans-serif;color:#1c2230;background:#fff;overflow-wrap:anywhere}" +
         "img{max-width:100%;height:auto}pre{white-space:pre-wrap;font:inherit;margin:0}</style>" +
         (m.html ?? `<pre>${escape(m.text || "(This email has no text.)")}</pre>`);
+    }
+
+    // The words of an HTML email, one block per line. DOMParser builds an inert document: no scripts run, nothing loads.
+    function htmlToText(html) {
+      const doc = new DOMParser().parseFromString(html.replace(/<(br|\/p|\/div|\/tr|\/li|\/h[1-6])\b[^>]*>/gi, (tag) => tag + "\n"), "text/html");
+      for (const n of doc.querySelectorAll("head, style, script")) n.remove();
+      return (doc.body?.textContent ?? "").replace(/[ \t ]+/g, " ").replace(/ *\n\s*/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
     }
 
     // Date and time, short, in the viewer's locale and time zone.
