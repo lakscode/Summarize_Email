@@ -772,7 +772,7 @@
     // on it: Admin (settings, schedule and roles) or Member (uses it; the default). The owner and organization admins
     // are always Admin. ---
 
-    const MAILBOX_ROLE_LABELS = { owner: "Admin", admin: "Admin", member: "Member" };
+    const MAILBOX_ROLE_LABELS = { owner: "Admin", admin: "Admin", member: "Member", none: "No access" };
     // Mailboxes from an older API have no role: they are the caller's own.
     const owns = (m) => (m.role ?? "owner") === "owner";
     const manages = (m) => owns(m) || m.role === "admin";
@@ -781,6 +781,15 @@
 
     function orgSection(m) {
       if (!m.org_id && !(owns(m) && organization)) return null;
+      if (owns(m) && !m.org_id && !isSharedMailbox(m)) {
+        // Personal mailboxes are never shared (see supabase/functions/mailboxes, shareMailbox).
+        const note = document.createElement("div");
+        note.className = "mailbox-org";
+        note.append(Object.assign(document.createElement("div"), {
+          className: "mailbox-org-row", textContent: "Personal mailbox: visible only to you. Only shared mailboxes are shared with your organization.",
+        }));
+        return note;
+      }
       const box = document.createElement("div");
       box.className = "mailbox-org";
       const row = document.createElement("div");
@@ -863,8 +872,12 @@
         }
         const select = document.createElement("select");
         select.setAttribute("aria-label", `Role of ${p.email} on ${m.email_address}`);
-        for (const r of ["member", "admin"]) select.add(new Option(MAILBOX_ROLE_LABELS[r], r, false, r === p.role));
+        for (const r of ["member", "admin", "none"]) select.add(new Option(MAILBOX_ROLE_LABELS[r], r, false, r === p.role));
         select.addEventListener("change", async () => {
+          if (select.value === "none" && p.you && !confirm(`Remove your own access to ${m.email_address}? You won't see it any more until another admin gives it back.`)) {
+            select.value = p.role;
+            return;
+          }
           select.disabled = true;
           const { error } = await callApi("mailboxes", {
             body: { action: "set_mailbox_role", mailbox_id: m.id, user_id: p.user_id, role: select.value },
@@ -875,14 +888,17 @@
             return showMessage(`Could not change the role: ${error}`, "error");
           }
           p.role = select.value;
-          showMessage(`${p.full_name || p.email} is now ${p.role === "admin" ? "an admin" : "a member"} of ${m.email_address}.`, "ok");
+          showMessage(p.role === "none"
+            ? `${p.full_name || p.email} can no longer see ${m.email_address}.`
+            : `${p.full_name || p.email} is now ${p.role === "admin" ? "an admin" : "a member"} of ${m.email_address}.`, "ok");
           // Changing your own role changes what you may do here.
           if (p.you) await loadMailboxes();
         });
         cell.append(select);
       }
       const hint = text("p", "hint", "Members see this mailbox and its emails, process its inbox and mark emails done. " +
-        "Admins can also change its settings, schedule and roles. People who join the organization later are members.");
+        "Admins can also change its settings, schedule and roles. No access hides the mailbox, its emails and reports from " +
+        "that person. People who join the organization later are members.");
       hint.style.padding = "0 12px 10px";
       wrap.replaceChildren(table, hint);
     }

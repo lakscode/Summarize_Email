@@ -203,7 +203,8 @@ Deno.serve(async (req) => {
 // See migrations/*_organization_mailboxes.sql. Rights come from mailbox_role(); writes use the service role.
 
 type MailboxRole = "owner" | "admin" | "member";
-const MAILBOX_ROLES = ["admin", "member"];
+// "none": no access (the mailbox is hidden from them, see migrations/*_mailbox_no_access_role.sql).
+const MAILBOX_ROLES = ["admin", "member", "none"];
 const canManage = (role: MailboxRole | null) => role === "owner" || role === "admin";
 const ONLY_ADMINS = "Only admins of this mailbox can change it. Ask the person who connected it or an organization admin.";
 
@@ -250,7 +251,8 @@ async function withRoles(userId: string, sb: SupabaseClient, rows: Record<string
 }
 
 // Shares the caller's own mailbox with their organization, or stops sharing it. Roles set on it are dropped when it
-// stops being shared. Shared mailboxes are always shared (one per organization), so only personal ones change here.
+// stops being shared. Shared mailboxes are always shared (one per organization) and personal ones never are, so in
+// practice only stopping to share a personal mailbox shared before that rule changes anything.
 async function shareMailbox(userId: string, body: Record<string, unknown>): Promise<Response> {
   if (typeof body.org_shared !== "boolean") return json({ error: "org_shared must be true or false" }, 400);
   const role = await mailboxRole(userId, body.id);
@@ -260,8 +262,13 @@ async function shareMailbox(userId: string, body: Record<string, unknown>): Prom
   const db = adminClient();
   const { data: box, error: boxError } = await db.from("mailboxes").select("delegate_address, auth_type").eq("id", body.id).single();
   if (boxError) return await fail("mailboxes/share", boxError.message, 500, { userId, context: { id: body.id } });
-  if (!body.org_shared && (box.delegate_address || box.auth_type === "app")) {
+  const sharedType = !!box.delegate_address || box.auth_type === "app";
+  if (!body.org_shared && sharedType) {
     return json({ error: "Shared mailboxes are always shared with your organization" }, 400);
+  }
+  // Personal mailboxes stay private (enforced in the database too: mailboxes_only_shared_in_organization).
+  if (body.org_shared && !sharedType) {
+    return json({ error: "Only shared mailboxes can be shared with your organization. Personal mailboxes are visible only to you." }, 400);
   }
   let orgId: string | null = null;
   if (body.org_shared) {
@@ -309,24 +316,27 @@ async function mailboxAccess(userId: string, id: string | null): Promise<Respons
       you: m.user_id === userId,
     };
   });
-  const rank = (p: { role: string }) => ["owner", "admin", "member"].indexOf(p.role);
+  const rank = (p: { role: string }) => ["owner", "admin", "member", "none"].indexOf(p.role);
   people.sort((a, b) => rank(a) - rank(b) || (a.full_name || a.email || "").localeCompare(b.full_name || b.email || ""));
   return json({ people, manage: canManage(role) });
 }
 
 async function setMailboxRole(userId: string, body: Record<string, unknown>): Promise<Response> {
   const role = String(body.role ?? "");
-  if (!MAILBOX_ROLES.includes(role)) return json({ error: "role must be admin or member" }, 400);
+  if (!MAILBOX_ROLES.includes(role)) return json({ error: "role must be admin, member or none" }, 400);
   const mine = await mailboxRole(userId, body.mailbox_id);
   if (!mine) return json({ error: "Mailbox not found" }, 404);
   if (!canManage(mine)) return json({ error: ONLY_ADMINS }, 403);
   const targetId = String(body.user_id ?? "");
-  const target = await mailboxRole(targetId, body.mailbox_id);
-  if (!target) return json({ error: "That person isn't in this mailbox's organization" }, 404);
-  if (target === "owner") return json({ error: "The person who connected the mailbox is always its admin" }, 400);
   const db = adminClient();
-  const { data: member, error: memberError } = await db.from("organization_members").select("role").eq("user_id", targetId).maybeSingle();
-  if (memberError) return await fail("mailboxes/set_role", memberError.message, 500, { userId });
+  // By organization, not mailbox_role: someone with no access has no role but can be given one back.
+  const [{ data: box, error: boxError }, { data: member, error: memberError }] = await Promise.all([
+    db.from("mailboxes").select("owner_user_id, org_id").eq("id", body.mailbox_id).single(),
+    db.from("organization_members").select("org_id, role").eq("user_id", targetId).maybeSingle(),
+  ]);
+  if (boxError || memberError) return await fail("mailboxes/set_role", (boxError ?? memberError)!.message, 500, { userId });
+  if (!box.org_id || member?.org_id !== box.org_id) return json({ error: "That person isn't in this mailbox's organization" }, 404);
+  if (box.owner_user_id === targetId) return json({ error: "The person who connected the mailbox is always its admin" }, 400);
   if (member?.role === "admin") return json({ error: "Organization admins are always admins of its mailboxes" }, 400);
   const { error } = await db.from("mailbox_members").upsert(
     { mailbox_id: body.mailbox_id, user_id: targetId, role, updated_by: userId, updated_at: new Date().toISOString() },

@@ -196,13 +196,17 @@ mailboxes: an organization has one copy of each, owned by whoever added it first
 organization. Adding one the organization already has is refused, naming who added it. When someone who has shared
 mailboxes joins an organization, theirs are shared, or merged into the organization's copy if it has one
 (`migrations/*_one_shared_mailbox_per_organization.sql`, which also merged the duplicates that existed before).
-**Personal mailboxes** stay private unless their owner ticks **Organization mailbox** under it on the Settings page.
+**Personal mailboxes** (connected by signing in to your own account) are always private: only the person who connected
+them sees them, their emails and history. The database enforces it (`migrations/*_personal_mailboxes_private.sql`).
 Everyone in the organization can use an organization mailbox, with a role per mailbox (**People and roles**). Roles:
 
 - **Member** (the default, also for people who join later): sees the mailbox, its emails and processing history,
   processes its inbox and marks emails done.
 - **Admin**: also changes its settings, schedule and who is an admin. The person who connected it and organization
   admins are always admins. Only the person who connected it can reconnect, disconnect or stop sharing it.
+- **No access**: the mailbox is hidden from that person (its emails, history and reports too); an admin can give it
+  back. Not available for the person who connected it or organization admins
+  (`migrations/*_mailbox_no_access_role.sql`).
 
 Only people in the mailbox's organization see it: roles are in `mailbox_members` and checked by `mailbox_role()`
 (`migrations/*_organization_mailboxes.sql`), which RLS and the edge functions use. When the owner leaves or moves to another
