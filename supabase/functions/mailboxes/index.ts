@@ -36,8 +36,9 @@
 //                                         -> { results: [{address, ok, error?}], warning? } discover_shared + add_shared
 //                                            for every shared mailbox found, run after signing in to the app with
 //                                            Microsoft so nothing has to be picked by hand
-//   A newly added shared mailbox (add_shared, auto_shared, a shared mailbox sign-in, add_mailboxes) is shared with the
-//   user's organization by default, unless the organization already has it from someone else.
+//   Shared mailboxes (add_shared, auto_shared, a shared mailbox sign-in, add_mailboxes): one copy in the whole app,
+//   owned by whoever added it first and always shared with everyone in their organization; adding one that anyone
+//   already has is refused (see migrations/*_one_shared_mailbox_per_organization.sql).
 //   A newly added mailbox that another member of the same organization already has takes that member's settings
 //   (type, forwarded categories, destination, summary); the schedule is not copied, so the same mailbox isn't
 //   processed twice.
@@ -241,7 +242,7 @@ async function withRoles(userId: string, sb: SupabaseClient, rows: Record<string
 }
 
 // Shares the caller's own mailbox with their organization, or stops sharing it. Roles set on it are dropped when it
-// stops being shared.
+// stops being shared. Shared mailboxes are always shared (one per organization), so only personal ones change here.
 async function shareMailbox(userId: string, body: Record<string, unknown>): Promise<Response> {
   if (typeof body.org_shared !== "boolean") return json({ error: "org_shared must be true or false" }, 400);
   const role = await mailboxRole(userId, body.id);
@@ -249,6 +250,11 @@ async function shareMailbox(userId: string, body: Record<string, unknown>): Prom
   if (role !== "owner") return json({ error: "Only the person who connected this mailbox can change who it is shared with" }, 403);
 
   const db = adminClient();
+  const { data: box, error: boxError } = await db.from("mailboxes").select("delegate_address, auth_type").eq("id", body.id).single();
+  if (boxError) return await fail("mailboxes/share", boxError.message, 500, { userId, context: { id: body.id } });
+  if (!body.org_shared && (box.delegate_address || box.auth_type === "app")) {
+    return json({ error: "Shared mailboxes are always shared with your organization" }, 400);
+  }
   let orgId: string | null = null;
   if (body.org_shared) {
     const { data: own, error } = await db.from("organization_members").select("org_id").eq("user_id", userId).maybeSingle();
@@ -258,6 +264,7 @@ async function shareMailbox(userId: string, body: Record<string, unknown>): Prom
   }
   const { data, error } = await db.from("mailboxes").update({ org_id: orgId, updated_at: new Date().toISOString() })
     .eq("id", body.id).select("id, org_id, email_address").single();
+  if (error && /mailboxes_org_address_key/.test(error.message)) return json({ error: "Your organization already has this mailbox" }, 400);
   if (error) return await fail("mailboxes/share", error.message, 500, { userId, context: { id: body.id } });
   if (!orgId) await db.from("mailbox_members").delete().eq("mailbox_id", data.id);
   await logApi("mailboxes/share", `${data.email_address} ${orgId ? "shared with organization" : "no longer shared"}`, {
@@ -431,9 +438,11 @@ async function saveMailbox(
   let id = existing?.id as string | undefined;
   if (!id) {
     const shared = await settingsFromOtherUsers(db, uid, fields.email_address);
-    // A shared mailbox (read through the user's account) is shared with their organization from the start.
-    const org = fields.delegate_address ? { org_id: await defaultOrgShare(db, uid, fields.email_address) } : {};
-    const { data, error } = await db.from("mailboxes").insert({ owner_user_id: uid, ...fields, ...shared, ...org }).select("id").single();
+    // A shared mailbox (read through the user's account): one copy in the whole app, shared with the organization.
+    const org = fields.delegate_address ? await organizationCopy(db, uid, fields.email_address) : null;
+    if (org?.refused) throw new ConnectError(org.refused);
+    const { data, error } = await db.from("mailboxes")
+      .insert({ owner_user_id: uid, ...fields, ...shared, ...(org?.orgId ? { org_id: org.orgId } : {}) }).select("id").single();
     if (error) throw new Error(error.message);
     id = data.id as string;
   }
@@ -456,17 +465,35 @@ async function saveMailbox(
   return id;
 }
 
-// The organization a newly added shared mailbox is shared with by default: the user's, unless the organization already
-// has that mailbox shared by someone else (it would show twice and could be processed twice). Null otherwise. The owner
-// can still stop sharing it.
-async function defaultOrgShare(db: SupabaseClient, uid: string, address: string): Promise<string | null> {
+// For a shared mailbox the user is adding: their organization (null if none), and why it can't be added (null if it
+// can). A shared mailbox exists once in the whole app: the first copy added is the one everyone uses (everyone in its
+// owner's organization; see migrations/*_one_shared_mailbox_per_organization.sql), so any other copy refuses the add.
+// Copies found by address whoever owns them and whether or not they are marked shared yet.
+async function organizationCopy(db: SupabaseClient, uid: string, address: string): Promise<{ orgId: string | null; refused: string | null }> {
   const { data: own, error } = await db.from("organization_members").select("org_id").eq("user_id", uid).maybeSingle();
   if (error) throw new Error(error.message);
-  if (!own) return null;
-  const { count, error: countError } = await db.from("mailboxes").select("id", { count: "exact", head: true })
-    .eq("org_id", own.org_id).eq("email_address", address);
-  if (countError) throw new Error(countError.message);
-  return count ? null : own.org_id;
+  const orgId: string | null = own?.org_id ?? null;
+  const { data: copies, error: copyError } = await db.from("mailboxes").select("owner_user_id")
+    .eq("email_address", address).neq("owner_user_id", uid)
+    .or("delegate_address.not.is.null,auth_type.eq.app,org_id.not.is.null").order("created_at").limit(50);
+  if (copyError) throw new Error(copyError.message);
+  if (!copies?.length) return { orgId, refused: null };
+
+  const owners = [...new Set(copies.map((c) => c.owner_user_id))];
+  const { data: colleagues, error: membersError } = orgId
+    ? await db.from("organization_members").select("user_id").eq("org_id", orgId).in("user_id", owners)
+    : { data: [], error: null };
+  if (membersError) throw new Error(membersError.message);
+  const colleague = owners.find((id) => (colleagues ?? []).some((c) => c.user_id === id));
+  if (!colleague) {
+    return {
+      orgId,
+      refused: `${address} is already connected by someone else. To use it, ask them to add you to their organization.`,
+    };
+  }
+  const owner = (await profilesOf([colleague])).get(colleague);
+  const by = owner?.full_name?.trim() || owner?.email || "a colleague";
+  return { orgId, refused: `${address} is already in your organization (added by ${by}). Find it under Organization mailboxes.` };
 }
 
 // Settings of the same mailbox as another member of the user's organization most recently configured it, for a
@@ -701,18 +728,19 @@ async function addMailboxes(userId: string, sb: SupabaseClient, body: Record<str
       credentials_secret_id: null, access_expires_at: null, mailbox_type: type, forward_categories: forward,
       ...(destination ? { smart_ap_address: destination } : {}), updated_at: new Date().toISOString(),
     };
-    // New ones are shared with the user's organization by default (see defaultOrgShare); existing ones keep their sharing.
+    // A new one: one copy in the whole app (see organizationCopy), shared with everyone in the organization.
     let saveError;
     if (existing) {
       ({ error: saveError } = await db.from("mailboxes").update(fields).eq("id", existing.id));
     } else {
-      let org_id: string | null;
+      let org: { orgId: string | null; refused: string | null };
       try {
-        org_id = await defaultOrgShare(db, userId, address);
+        org = await organizationCopy(db, userId, address);
       } catch (err) {
         return { address, ok: false, error: err instanceof Error ? err.message : String(err) };
       }
-      ({ error: saveError } = await db.from("mailboxes").insert({ owner_user_id: userId, email_address: address, ...fields, org_id }));
+      if (org.refused) return { address, ok: false, error: org.refused };
+      ({ error: saveError } = await db.from("mailboxes").insert({ owner_user_id: userId, email_address: address, ...fields, org_id: org.orgId }));
     }
     if (saveError) return { address, ok: false, error: saveError.message };
     // Its own sign-in token is no longer used.
@@ -759,9 +787,19 @@ async function discoverShared(userId: string, sb: SupabaseClient, body: Record<s
         "EWS.AccessAsUser.All permission). You can still add them by address.",
     });
   }
-  const { data: existing, error } = await sb.from("mailboxes").select("email_address");
+  // Left out: the user's own and organization's mailboxes, and shared mailboxes anyone else already has (one copy in
+  // the whole app, see organizationCopy).
+  const addresses = found.mailboxes.map((m) => m.address);
+  const [mine, taken] = await Promise.all([
+    sb.from("mailboxes").select("email_address"),
+    addresses.length
+      ? adminClient().from("mailboxes").select("email_address").in("email_address", addresses)
+        .or("delegate_address.not.is.null,auth_type.eq.app,org_id.not.is.null")
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  const error = mine.error ?? taken.error;
   if (error) return await fail("mailboxes/discover_shared", error.message, 500, { userId });
-  const have = new Set((existing ?? []).map((m) => m.email_address));
+  const have = new Set([...(mine.data ?? []), ...(taken.data ?? [])].map((m) => m.email_address));
   const mailboxes = found.mailboxes.filter((m) => !have.has(m.address));
   if (mailboxes.length) return json({ mailboxes });
 

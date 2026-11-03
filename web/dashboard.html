@@ -667,6 +667,8 @@
     // Mailboxes from an older API have no role: they are the caller's own.
     const owns = (m) => (m.role ?? "owner") === "owner";
     const manages = (m) => owns(m) || m.role === "admin";
+    // Read through someone's account or with organization API keys, rather than a personal mailbox.
+    const isSharedMailbox = (m) => !!m.delegate_address || m.auth_type === "app";
 
     function orgSection(m) {
       if (!m.org_id && !(owns(m) && organization)) return null;
@@ -676,7 +678,10 @@
       row.className = "mailbox-org-row";
       box.append(row);
 
-      if (owns(m) && organization) {
+      if (owns(m) && organization && isSharedMailbox(m)) {
+        // One copy per organization, always shared (see supabase/functions/mailboxes).
+        row.append(`Shared with everyone in ${organization.name}: shared mailboxes are always organization mailboxes.`);
+      } else if (owns(m) && organization) {
         const label = document.createElement("label");
         const share = document.createElement("input");
         share.type = "checkbox";
@@ -912,8 +917,8 @@
       }));
     }
 
-    // Added after new shared mailboxes: they are shared with the organization by default (the owner can untick it).
-    const sharedNote = (n) => n && organization ? ` ${n === 1 ? "It is" : "They are"} shared with ${organization.name}; untick Organization mailbox under one to keep it to yourself.` : "";
+    // Added after new shared mailboxes: they are always shared with the organization (one copy per organization).
+    const sharedNote = (n) => n && organization ? ` Everyone in ${organization.name} can use ${n === 1 ? "it" : "them"} under Organization mailboxes.` : "";
 
     const checkedForward = (form) => [...form.querySelectorAll('input[name="forward"]:checked')].map((i) => i.value);
 

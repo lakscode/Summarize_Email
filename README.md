@@ -188,12 +188,13 @@ organization domains can't be trusted: anyone typing an address at a domain woul
 
 ## Organization mailboxes
 
-The person who connected a mailbox can tick **Organization mailbox** under it on the Settings page. Everyone in their
-organization can then use it, with a role per mailbox (**People and roles**). Shared mailboxes (added through a
-signed-in account, a shared mailbox sign-in or API keys) are shared automatically: when someone in an organization adds
-them, when someone who has them joins an organization, and (once, `migrations/*_share_existing_shared_mailboxes.sql`)
-those added before this existed. One copy per address is shared, so the organization never has the same mailbox
-twice; personal mailboxes stay private. Roles:
+**Shared mailboxes** (added through a signed-in account, a shared mailbox sign-in or API keys) are organization
+mailboxes: an organization has one copy of each, owned by whoever added it first and visible to everyone in the
+organization. Adding one the organization already has is refused, naming who added it. When someone who has shared
+mailboxes joins an organization, theirs are shared, or merged into the organization's copy if it has one
+(`migrations/*_one_shared_mailbox_per_organization.sql`, which also merged the duplicates that existed before).
+**Personal mailboxes** stay private unless their owner ticks **Organization mailbox** under it on the Settings page.
+Everyone in the organization can use an organization mailbox, with a role per mailbox (**People and roles**). Roles:
 
 - **Member** (the default, also for people who join later): sees the mailbox, its emails and processing history,
   processes its inbox and marks emails done.
