@@ -211,7 +211,9 @@ organization, their mailboxes stop being shared and the roles on them are remove
 Each mailbox can email a daily list of the invoices and utility bills forwarded from it (by the app, or manually in
 Outlook): on the Settings page, open the mailbox, tick **Email a daily list of forwarded invoices**, pick the time and
 one or more recipients (comma-separated), and save. The scheduler sends it at that time in the time zone of whoever saved
-it, from the mailbox itself, covering everything forwarded since the previous report; days with nothing forwarded send
+it, from the mailbox itself (a shared mailbox read through someone's account needs **Send As** on it in Exchange;
+without it the report comes from that account and the Reports page says so), covering everything forwarded since the
+previous report; days with nothing forwarded send
 nothing. **Send now** sends it straight away. Owners and mailbox admins change it (`_shared/forward-report.ts`,
 `migrations/*_forwarded_invoices_report.sql`).
 

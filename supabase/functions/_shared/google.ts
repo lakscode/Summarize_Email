@@ -139,6 +139,7 @@ export async function googleClient(db: SupabaseClient, mailbox: MailboxRow): Pro
         "",
         wrap(encodeBase64(html)),
       ].join("\r\n"));
+      return { from: mailbox.email_address };
     },
 
     async forwardMessage(messageId, to, comment) {

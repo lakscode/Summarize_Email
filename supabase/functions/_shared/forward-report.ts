@@ -1,6 +1,6 @@
 // Daily "forwarded invoices" report of a mailbox (see migrations/*_forwarded_invoices_report.sql): the invoices and
 // utility bills forwarded since the previous report, by the app or manually in Outlook, emailed from the mailbox to
-// its report recipients. Sent by the scheduler at the time set on the Settings page; nothing is sent when nothing was
+// its report recipients (from the shared mailbox itself where Exchange allows it, see microsoft.ts). Sent by the scheduler at the time set on the Settings page; nothing is sent when nothing was
 // forwarded. Every run is kept in the report history (reports, shown on the Reports page). Subjects and vendors come
 // from email content, so everything inserted is HTML-escaped.
 import { APP_NAME } from "./brand.ts";
@@ -72,10 +72,12 @@ export async function sendForwardReport(db: Db, m: ReportMailbox, by: { id: stri
     } else {
       const report = buildForwardReport(m, rows, since, now);
       subject = report.subject;
-      await (await mailClient(db, m)).sendMail(to, report.subject, report.html);
-      result = { at: now.toISOString(), sent: true, count: rows.length, to };
-      await logStep("forward-report/sent", `Forwarded invoices report for ${m.email_address} sent to ${to.join(", ")}: ${rows.length} forwarded`,
-        m.owner_user_id, { mailbox: m.email_address, count: rows.length });
+      const sent = await (await mailClient(db, m)).sendMail(to, report.subject, report.html);
+      result = { at: now.toISOString(), sent: true, count: rows.length, to, from: sent.from, ...(sent.fallback ? { warning: sent.fallback } : {}) };
+      await logStep("forward-report/sent",
+        `Forwarded invoices report for ${m.email_address} sent from ${sent.from} to ${to.join(", ")}: ${rows.length} forwarded`,
+        m.owner_user_id, { mailbox: m.email_address, count: rows.length, from: sent.from });
+      if (sent.fallback) await logApi("forward-report", sent.fallback, { userId: m.owner_user_id, level: "warn", context: { mailbox: m.email_address } });
     }
   } catch (err) {
     await logApi("forward-report", err, { userId: m.owner_user_id, context: { mailbox: m.email_address } });
@@ -94,6 +96,7 @@ export async function sendForwardReport(db: Db, m: ReportMailbox, by: { id: stri
     period_end: now.toISOString(),
     status: result.error ? "failed" : result.sent ? "sent" : "empty",
     recipients: to,
+    sent_from: (result.from as string | undefined) ?? null,
     subject,
     item_count: rows.length,
     items: rows.map((r) => ({
@@ -102,7 +105,7 @@ export async function sendForwardReport(db: Db, m: ReportMailbox, by: { id: stri
       category: r.category, vendor: r.vendor, invoice_number: r.invoice_number, amount: r.amount, due_date: r.due_date,
       forwarded_to: forwardedTo(r), forwarded_at: r.processed_at, web_link: r.web_link,
     })),
-    error: (result.error as string | undefined) ?? null,
+    error: (result.error as string | undefined) ?? (result.warning as string | undefined) ?? null,
   });
   if (historyError) await logApi("forward-report/history", historyError.message, { userId: m.owner_user_id, level: "warn", context: { mailbox: m.email_address } });
   // A failed report isn't retried every tick: the next one covers the same period (since the last successful one).

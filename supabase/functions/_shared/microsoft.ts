@@ -4,7 +4,7 @@ import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { decodeBase64 } from "./base64.ts";
 import {
   contentIdOf, type FullMessage, type InlineImage, isEmailAttachment, isNotFound, type MailAttachment, type MailboxRow,
-  type MailClient, mapLimit, type MailMessage, MAX_INLINE_IMAGE_BYTES, readRefreshToken, saveRefreshToken,
+  type MailClient, mapLimit, type MailMessage, MAX_INLINE_IMAGE_BYTES, readRefreshToken, saveRefreshToken, type SentFrom,
 } from "./mail.ts";
 import { env } from "./supabase.ts";
 
@@ -47,8 +47,7 @@ export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): 
     listAttachments: (messageId) => listAttachments(token, box, messageId),
     getMessage: (messageId) => getMessage(token, box, messageId),
     attachmentBytes: (messageId, attachmentId) => attachmentBytes(token, box, messageId, attachmentId),
-    // Delegated: always from the signed-in user's own mailbox, so a shared mailbox's summary needs no Send As rights.
-    sendMail: (to, subject, html) => sendMail(token, app ? box : "/me", to, subject, html),
+    sendMail: (to, subject, html) => sendFromMailbox(token, box, mailbox, to, subject, html),
     forwardMessage: (messageId, to, comment) => forwardMessage(token, box, messageId, to, comment),
     forwardedAt: (ids) => forwardedAt(token, box, ids),
   };
@@ -386,6 +385,32 @@ async function attachmentBytes(token: string, box: string, messageId: string, at
 }
 
 // Sends an HTML email from the connected mailbox (saved to its Sent Items).
+// Reports and summaries go out from the mailbox itself: an API-key or own mailbox simply sends; a shared mailbox read
+// through someone's account sends as the shared mailbox, which needs Send As on it in Exchange (Mail.Send.Shared is
+// requested at sign-in). Without Send As, it goes from that account's own mailbox instead so it still arrives, and
+// `fallback` says why.
+async function sendFromMailbox(
+  token: string, box: string, mailbox: MailboxRow, to: string[], subject: string, html: string,
+): Promise<SentFrom> {
+  const delegated = mailbox.auth_type !== "app" && !!mailbox.delegate_address;
+  if (!delegated) {
+    await sendMail(token, mailbox.auth_type === "app" ? box : "/me", to, subject, html);
+    return { from: mailbox.email_address };
+  }
+  try {
+    await sendMail(token, box, to, subject, html);
+    return { from: mailbox.email_address };
+  } catch (err) {
+    if (!/failed: 403\b/.test(String(err))) throw err;
+    await sendMail(token, "/me", to, subject, html);
+    return {
+      from: mailbox.delegate_address!,
+      fallback: `${mailbox.delegate_address} has no Send As permission on ${mailbox.email_address}, so it was sent from ` +
+        `${mailbox.delegate_address}. Ask your Microsoft 365 admin to grant Send As to send it from the shared mailbox.`,
+    };
+  }
+}
+
 async function sendMail(token: string, box: string, to: string[], subject: string, html: string): Promise<void> {
   await graph<void>(token, `${box}/sendMail`, {
     method: "POST",

@@ -303,8 +303,8 @@ async function summaryRecipients(db: Db, mailbox: Mailbox): Promise<string[] | n
   return email ? [email] : null;
 }
 
-// Emails the run summary to the `to` addresses. Needs Mail.Send, like forwarding. For a shared mailbox connected by sign-in it is
-// sent from the signed-in user's own mailbox.
+// Emails the run summary to the `to` addresses. Needs Mail.Send, like forwarding. Sent from the mailbox itself (a shared
+// mailbox connected by sign-in needs Send As on it, else it comes from the signed-in account; see microsoft.ts).
 async function sendReport(
   run: Run, mailbox: Mailbox, client: MailClient, to: string[], items: ReportItem[], remaining: number, appUrl: string | null,
 ): Promise<"sent" | "failed"> {
@@ -312,8 +312,9 @@ async function sendReport(
   items.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   const { subject, html } = buildReport(mailbox.email_address, items, remaining, run.trigger, appUrl);
   try {
-    await client.sendMail(to, subject, html);
-    await step(run, "process/report", `Summary email sent to ${to.join(", ")}: "${subject}"`);
+    const sent = await client.sendMail(to, subject, html);
+    await step(run, "process/report", `Summary email sent from ${sent.from} to ${to.join(", ")}: "${subject}"`, { from: sent.from });
+    if (sent.fallback) await logApi("process/report", sent.fallback, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address } });
     return "sent";
   } catch (err) {
     await logApi("process/report", err, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, to } });

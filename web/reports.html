@@ -84,7 +84,7 @@
     async function load() {
       const filters = Object.fromEntries(new FormData(document.getElementById("report-filters")));
       let query = sb.from("reports")
-        .select("id, mailbox_address, trigger, sent_by_name, period_start, period_end, status, recipients, subject, item_count, items, error, created_at")
+        .select("id, mailbox_address, sent_from, trigger, sent_by_name, period_start, period_end, status, recipients, subject, item_count, items, error, created_at")
         .order("created_at", { ascending: false })
         .limit(MAX_ROWS);
       if (status) query = query.eq("status", status);
@@ -129,7 +129,7 @@
         el("td", "muted", `${when(r.period_start)} – ${when(r.period_end)}`),
         statusCell,
         el("td", null, String(r.item_count)),
-        el("td", "muted", r.recipients?.join(", ") || "—"),
+        sentToCell(r),
         el("td", "muted", r.trigger === "manual" ? `Send now${r.sent_by_name ? ` by ${r.sent_by_name}` : ""}` : "Daily"),
       );
       if (!r.items?.length) return [tr];
@@ -164,6 +164,13 @@
         tr.classList.toggle("open", !detail.hidden);
       });
       return [tr, detail];
+    }
+
+    // Recipients, and the sender when it wasn't the mailbox itself (a shared mailbox without Send As).
+    function sentToCell(r) {
+      const td = el("td", "muted", r.recipients?.join(", ") || "—");
+      if (r.sent_from && r.sent_from !== r.mailbox_address) td.append(el("div", "error-text", `Sent from ${r.sent_from}`));
+      return td;
     }
 
     for (const tab of document.querySelectorAll("#status-tabs .tab")) {
