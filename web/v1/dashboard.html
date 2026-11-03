@@ -527,7 +527,7 @@
       // Keep only the addresses that failed, so they can be fixed and retried.
       bulkForm.elements.addresses.value = failed.map((r) => r.address).join("\n");
       const added = data.results.length - failed.length;
-      showMessage(`Added ${added} mailbox${added === 1 ? "" : "es"}${failed.length ? `; ${failed.length} could not be added (see below)` : ""}.`,
+      showMessage(`Added ${added} mailbox${added === 1 ? "" : "es"}${failed.length ? `; ${failed.length} could not be added (see below)` : ""}.${sharedNote(added)}`,
         failed.length ? "error" : "ok");
       await loadMailboxes();
     });
@@ -815,9 +815,12 @@
 
       const shared = !!m.delegate_address || !!m.connection_id;
       const summaryToLabel = document.createElement("label");
-      summaryToLabel.textContent = "Summary to";
+      summaryToLabel.className = "summary-to";
+      summaryToLabel.textContent = "Summary to (separate addresses with commas)";
       const summaryTo = document.createElement("input");
+      // multiple: the browser accepts a comma-separated list of addresses.
       summaryTo.type = "email";
+      summaryTo.multiple = true;
       summaryTo.name = "summary_address";
       summaryTo.placeholder = !shared ? m.email_address
         : owns(m) ? (appUser?.email || "Your account email") : `${m.owner_name || "The owner"}'s account email`;
@@ -908,6 +911,9 @@
         return label;
       }));
     }
+
+    // Added after new shared mailboxes: they are shared with the organization by default (the owner can untick it).
+    const sharedNote = (n) => n && organization ? ` ${n === 1 ? "It is" : "They are"} shared with ${organization.name}; untick Organization mailbox under one to keep it to yourself.` : "";
 
     const checkedForward = (form) => [...form.querySelectorAll('input[name="forward"]:checked')].map((i) => i.value);
 
@@ -1059,7 +1065,7 @@
       const failed = data.results.filter((r) => !r.ok);
       showMessage(
         `Added ${added.length} shared mailbox${added.length === 1 ? "" : "es"} of ${account}` +
-          (failed.length ? `; could not add ${failed.map((r) => `${r.address} (${r.error})`).join(", ")}` : "") + ".",
+          (failed.length ? `; could not add ${failed.map((r) => `${r.address} (${r.error})`).join(", ")}` : "") + "." + sharedNote(added.length),
         failed.length ? "error" : "ok",
       );
       await loadMailboxes();
@@ -1123,7 +1129,7 @@
       if (!pickList.querySelector("input")) pickList.hidden = true;
       pickForm.elements.extra.value = data.results.filter((r) => !r.ok && !ticked.includes(r.address)).map((r) => r.address).join("\n");
       const failed = data.results.length - added.size;
-      showMessage(`Added ${added.size} shared mailbox${added.size === 1 ? "" : "es"}${failed ? `; ${failed} could not be added (see below)` : ""}.`,
+      showMessage(`Added ${added.size} shared mailbox${added.size === 1 ? "" : "es"}${failed ? `; ${failed} could not be added (see below)` : ""}.${sharedNote(added.size)}`,
         failed ? "error" : "ok");
       await loadMailboxes();
     });

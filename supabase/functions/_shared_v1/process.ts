@@ -185,7 +185,7 @@ export async function processMailbox(
   // Run until done: only with the last batch, covering every batch of the run.
   const pending = !!untilDone && remaining > 0;
   const reportItems = untilDone && !pending ? await itemsSince(db, mailbox.id, startedAt) : items;
-  const to = mailbox.send_summary && !pending ? await summaryRecipient(db, mailbox) : null;
+  const to = mailbox.send_summary && !pending ? await summaryRecipients(db, mailbox) : null;
   const report = !mailbox.send_summary ? "off" : pending ? "pending" : !to ? "no_recipient"
     : reportItems.length ? await sendReport(run, mailbox, client, to, reportItems, remaining, appUrl) : "skipped";
   const result = {
@@ -221,30 +221,32 @@ async function itemsSince(db: Db, mailboxId: string, since: string): Promise<Rep
   }));
 }
 
-// Where the summary goes: the mailbox's summary address if set; otherwise an own mailbox gets it itself, and a shared
-// mailbox (read through another account or an organization connection) goes to the owner's account email (also when
-// someone else in the organization ran it).
-async function summaryRecipient(db: Db, mailbox: Mailbox): Promise<string | null> {
-  if (mailbox.summary_address) return mailbox.summary_address;
+// Where the summary goes: the mailbox's summary addresses if set (comma-separated in summary_address); otherwise an own
+// mailbox gets it itself, and a shared mailbox (read through another account or an organization connection) goes to the
+// owner's account email (also when someone else in the organization ran it).
+async function summaryRecipients(db: Db, mailbox: Mailbox): Promise<string[] | null> {
+  const listed = (mailbox.summary_address ?? "").split(/[\s,;]+/).filter(Boolean);
+  if (listed.length) return listed;
   const shared = !!mailbox.delegate_address || mailbox.auth_type === "app";
-  if (!shared) return mailbox.email_address;
+  if (!shared) return [mailbox.email_address];
   const userId = mailbox.owner_user_id;
   const { data, error } = await db.auth.admin.getUserById(userId);
   if (error) await logApi("process/report", error.message, { userId, level: "warn", context: { mailbox: mailbox.email_address } });
-  return data?.user?.email?.toLowerCase() || null;
+  const email = data?.user?.email?.toLowerCase();
+  return email ? [email] : null;
 }
 
-// Emails the run summary to `to`. Needs Mail.Send, like forwarding. For a shared mailbox connected by sign-in it is
+// Emails the run summary to the `to` addresses. Needs Mail.Send, like forwarding. For a shared mailbox connected by sign-in it is
 // sent from the signed-in user's own mailbox.
 async function sendReport(
-  run: Run, mailbox: Mailbox, client: MailClient, to: string, items: ReportItem[], remaining: number, appUrl: string | null,
+  run: Run, mailbox: Mailbox, client: MailClient, to: string[], items: ReportItem[], remaining: number, appUrl: string | null,
 ): Promise<"sent" | "failed"> {
   const order = ["action_needed", "error", "done", "no_action"];
   items.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   const { subject, html } = buildReport(mailbox.email_address, items, remaining, run.trigger, appUrl);
   try {
     await client.sendMail(to, subject, html);
-    await step(run, "process/report", `Summary email sent to ${to}: "${subject}"`);
+    await step(run, "process/report", `Summary email sent to ${to.join(", ")}: "${subject}"`);
     return "sent";
   } catch (err) {
     await logApi("process/report", err, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, to } });

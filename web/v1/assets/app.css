@@ -645,3 +645,6 @@ a.button-link.secondary { background: transparent; color: var(--text); border: 1
 .mailbox-org .org-table-wrap { margin-top: 8px; }
 .mailbox-org .org-table-wrap[hidden] { display: none; }
 .badge.org { color: var(--ok-text); }
+/* Summary recipients: room for a few comma-separated addresses. */
+.settings-form .summary-to { flex: 1 1 320px; max-width: 520px; }
+.settings-form .summary-to input { width: 100%; min-width: 0; }

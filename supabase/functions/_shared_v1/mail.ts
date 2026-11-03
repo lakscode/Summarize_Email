@@ -88,8 +88,8 @@ export interface MailClient {
   // The whole message for the Inbox preview.
   getMessage(messageId: string): Promise<FullMessage>;
   attachmentBytes(messageId: string, attachmentId: string): Promise<Uint8Array>;
-  // Sends an HTML email from the connected mailbox (kept in its sent mail).
-  sendMail(to: string, subject: string, html: string): Promise<void>;
+  // Sends an HTML email to one or more addresses from the connected mailbox (kept in its sent mail).
+  sendMail(to: string[], subject: string, html: string): Promise<void>;
   // Forwards the message with its attachments, `comment` above the original.
   forwardMessage(messageId: string, to: string, comment: string): Promise<void>;
 }

@@ -131,7 +131,7 @@ export async function googleClient(db: SupabaseClient, mailbox: MailboxRow): Pro
 
     async sendMail(to, subject, html) {
       await send(token, [
-        `To: ${to}`,
+        `To: ${to.join(", ")}`,
         `Subject: ${encodeHeader(subject)}`,
         "MIME-Version: 1.0",
         "Content-Type: text/html; charset=UTF-8",

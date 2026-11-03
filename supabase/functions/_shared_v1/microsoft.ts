@@ -361,11 +361,13 @@ async function attachmentBytes(token: string, box: string, messageId: string, at
 }
 
 // Sends an HTML email from the connected mailbox (saved to its Sent Items).
-async function sendMail(token: string, box: string, to: string, subject: string, html: string): Promise<void> {
+async function sendMail(token: string, box: string, to: string[], subject: string, html: string): Promise<void> {
   await graph<void>(token, `${box}/sendMail`, {
     method: "POST",
     body: JSON.stringify({
-      message: { subject, body: { contentType: "HTML", content: html }, toRecipients: [{ emailAddress: { address: to } }] },
+      message: {
+        subject, body: { contentType: "HTML", content: html }, toRecipients: to.map((address) => ({ emailAddress: { address } })),
+      },
       saveToSentItems: true,
     }),
   });

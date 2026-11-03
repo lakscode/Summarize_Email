@@ -206,7 +206,9 @@ organization uses one; users in no organization use **v0**. A super admin picks 
 ## Organization mailboxes (v1)
 
 The person who connected a mailbox can tick **Organization mailbox** under it on the Settings page. Everyone in their
-organization can then use it, with a role per mailbox (**People and roles**):
+organization can then use it, with a role per mailbox (**People and roles**). Shared mailboxes (added through a
+signed-in account, a shared mailbox sign-in or API keys) are ticked automatically when someone in an organization adds
+them, unless the organization already has that mailbox; personal mailboxes are not. Roles:
 
 - **Member** (the default, also for people who join later): sees the mailbox, its emails and processing history,
   processes its inbox and marks emails done.

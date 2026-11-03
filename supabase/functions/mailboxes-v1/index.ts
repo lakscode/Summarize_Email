@@ -37,14 +37,17 @@
 //                                         -> { results: [{address, ok, error?}], warning? } discover_shared + add_shared
 //                                            for every shared mailbox found, run after signing in to the app with
 //                                            Microsoft so nothing has to be picked by hand
+//   A newly added shared mailbox (add_shared, auto_shared, a shared mailbox sign-in, add_mailboxes) is shared with the
+//   user's organization by default, unless the organization already has it from someone else.
 //   A newly added mailbox that another member of the same organization already has takes that member's settings
 //   (type, forwarded categories, destination, summary); the schedule is not copied, so the same mailbox isn't
 //   processed twice.
 //   PATCH {id, mailbox_type?, forward_categories?, smart_ap_address?, send_summary?, summary_address?}
 //                                         -> per-mailbox settings: AP or AR, which categories are forwarded, the
 //                                            destination address they go to ("" clears it), whether the run summary
-//                                            is emailed, and to which address ("" clears it: an own mailbox gets it
-//                                            itself, a shared mailbox sends it to the owner's account email)
+//                                            is emailed, and to which addresses (comma-separated; "" clears them: an
+//                                            own mailbox gets it itself, a shared mailbox sends it to the owner's
+//                                            account email)
 //   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
 //                                         -> scheduled processing (see _shared/schedule.ts)
 //   Settings and schedule: the owner or a mailbox admin.
@@ -76,6 +79,8 @@ const ACCESS_DAYS = [1, 7, 30, 90];
 const DEFAULT_ACCESS_DAYS = 30;
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Addresses the run summary may go to.
+const MAX_SUMMARY_RECIPIENTS = 20;
 // Mailboxes per add_mailboxes call, and how many are checked against Graph at once.
 const MAX_BULK = 100;
 const CHECK_CONCURRENCY = 5;
@@ -424,7 +429,9 @@ async function saveMailbox(
   let id = existing?.id as string | undefined;
   if (!id) {
     const shared = await settingsFromOtherUsers(db, uid, fields.email_address);
-    const { data, error } = await db.from("mailboxes").insert({ owner_user_id: uid, ...fields, ...shared }).select("id").single();
+    // A shared mailbox (read through the user's account) is shared with their organization from the start.
+    const org = fields.delegate_address ? { org_id: await defaultOrgShare(db, uid, fields.email_address) } : {};
+    const { data, error } = await db.from("mailboxes").insert({ owner_user_id: uid, ...fields, ...shared, ...org }).select("id").single();
     if (error) throw new Error(error.message);
     id = data.id as string;
   }
@@ -445,6 +452,19 @@ async function saveMailbox(
   }).eq("id", id);
   if (error) throw new Error(error.message);
   return id;
+}
+
+// The organization a newly added shared mailbox is shared with by default: the user's, unless the organization already
+// has that mailbox shared by someone else (it would show twice and could be processed twice). Null otherwise. The owner
+// can still stop sharing it.
+async function defaultOrgShare(db: SupabaseClient, uid: string, address: string): Promise<string | null> {
+  const { data: own, error } = await db.from("organization_members").select("org_id").eq("user_id", uid).maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!own) return null;
+  const { count, error: countError } = await db.from("mailboxes").select("id", { count: "exact", head: true })
+    .eq("org_id", own.org_id).eq("email_address", address);
+  if (countError) throw new Error(countError.message);
+  return count ? null : own.org_id;
 }
 
 // Settings of the same mailbox as another member of the user's organization most recently configured it, for a
@@ -487,11 +507,14 @@ async function saveSettings(userId: string, body: Record<string, unknown>): Prom
     if (typeof body.send_summary !== "boolean") return json({ error: "send_summary must be true or false" }, 400);
     update.send_summary = body.send_summary;
   }
-  // Summary recipient; "" clears it (own mailbox: itself, shared mailbox: the owner's account email).
+  // Summary recipients: one or more addresses (commas, semicolons or spaces between), stored comma-separated; ""
+  // clears them (own mailbox: itself, shared mailbox: the owner's account email).
   if (body.summary_address !== undefined) {
-    const address = String(body.summary_address ?? "").trim().toLowerCase();
-    if (address && !EMAIL.test(address)) return json({ error: "Summary email must be a valid email address" }, 400);
-    update.summary_address = address || null;
+    const addresses = [...new Set(String(body.summary_address ?? "").split(/[\s,;]+/).map((a) => a.trim().toLowerCase()).filter(Boolean))];
+    const bad = addresses.find((a) => !EMAIL.test(a));
+    if (bad) return json({ error: `Summary email: ${bad} is not a valid email address` }, 400);
+    if (addresses.length > MAX_SUMMARY_RECIPIENTS) return json({ error: `Send the summary to at most ${MAX_SUMMARY_RECIPIENTS} addresses` }, 400);
+    update.summary_address = addresses.join(", ") || null;
   }
   let type = current.mailbox_type as MailboxType;
   if (body.mailbox_type !== undefined) {
@@ -676,9 +699,19 @@ async function addMailboxes(userId: string, sb: SupabaseClient, body: Record<str
       credentials_secret_id: null, access_expires_at: null, mailbox_type: type, forward_categories: forward,
       ...(destination ? { smart_ap_address: destination } : {}), updated_at: new Date().toISOString(),
     };
-    const { error: saveError } = existing
-      ? await db.from("mailboxes").update(fields).eq("id", existing.id)
-      : await db.from("mailboxes").insert({ owner_user_id: userId, email_address: address, ...fields });
+    // New ones are shared with the user's organization by default (see defaultOrgShare); existing ones keep their sharing.
+    let saveError;
+    if (existing) {
+      ({ error: saveError } = await db.from("mailboxes").update(fields).eq("id", existing.id));
+    } else {
+      let org_id: string | null;
+      try {
+        org_id = await defaultOrgShare(db, userId, address);
+      } catch (err) {
+        return { address, ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+      ({ error: saveError } = await db.from("mailboxes").insert({ owner_user_id: userId, email_address: address, ...fields, org_id }));
+    }
     if (saveError) return { address, ok: false, error: saveError.message };
     // Its own sign-in token is no longer used.
     if (existing?.credentials_secret_id) await db.rpc("mailbox_secret_delete", { p_secret_id: existing.credentials_secret_id });
