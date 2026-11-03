@@ -573,6 +573,7 @@
       body.append(
         section("Processing", settingsForm(m, type, () => (summary.textContent = summaryText(m)))),
         section("Forwarded invoices report", reportForm(m, () => (summary.textContent = summaryText(m)))),
+        section("Weekly invoices report", weeklyReportForm(m, () => (summary.textContent = summaryText(m)))),
         section("Connection", connectionDetails(m, org, expired)),
       );
       const shared = orgSection(m);
@@ -704,6 +705,119 @@
       return form;
     }
 
+    // Weekly email listing the invoices forwarded in the past 7 days, with totals per vendor
+    // (supabase/functions/_shared/weekly-report.ts); separate from the daily report above. On or off, the day and local
+    // time, and one or more recipients; "Send now" sends it straight away. Only the mailbox's admins change it.
+    const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+    function weeklyReportForm(m, onSaved) {
+      const form = el("form", "inline-form settings-form");
+      const onLabel = el("label", "checkbox");
+      const on = el("input");
+      on.type = "checkbox";
+      on.checked = !!m.weekly_report_enabled;
+      onLabel.append(on, " Email a weekly list of forwarded invoices");
+
+      const dayLabel = el("label", null, "Every");
+      const day = el("select");
+      WEEKDAYS.forEach((name, i) => day.append(new Option(name, String(i))));
+      day.value = String(m.weekly_report_day ?? 1);
+      dayLabel.append(day);
+
+      const timeLabel = el("label", null, "At");
+      const time = el("input");
+      time.type = "time";
+      time.step = 300;
+      time.required = true;
+      time.value = String(m.weekly_report_time ?? "08:00").slice(0, 5);
+      timeLabel.append(time);
+
+      const toLabel = el("label", "summary-to", "Send to (separate addresses with commas)");
+      const to = el("input");
+      to.type = "email";
+      to.multiple = true;
+      to.placeholder = appUser?.email || "ap-team@yourcompany.com";
+      to.value = m.weekly_report_addresses || "";
+      toLabel.append(to);
+
+      const save = button("Save", "secondary", "submit");
+      const sendNow = button("Send now", "secondary");
+      const status = el("p", "hint");
+      const describe = () => {
+        const last = m.weekly_report_last_result;
+        const parts = [];
+        if (m.weekly_report_enabled && m.weekly_report_next_at) parts.push(`Next weekly report ${new Date(m.weekly_report_next_at).toLocaleString()}.`);
+        if (last?.at) {
+          const when = new Date(last.at).toLocaleString();
+          parts.push(last.error ? `Last weekly report ${when} failed: ${last.error}`
+            : last.sent ? `Last weekly report ${when}: ${last.count} invoice${last.count === 1 ? "" : "s"}, sent${last.from ? ` from ${last.from}` : ""} to ${last.to.join(", ")}.${last.warning ? ` ${last.warning}` : ""}`
+            : `Last weekly report ${when}: nothing forwarded that week, so no email was sent.`);
+        }
+        if (m.weekly_report_timezone && m.weekly_report_timezone !== timezone) parts.push(`Times are in ${m.weekly_report_timezone}.`);
+        status.textContent = parts.join(" ") || "Lists the invoices and utility bills forwarded in the past 7 days, with a total per vendor. Nothing is sent in a week without any.";
+      };
+      const showFields = () => (dayLabel.hidden = timeLabel.hidden = toLabel.hidden = !on.checked);
+      on.addEventListener("change", showFields);
+
+      const current = () => JSON.stringify([on.checked, day.value, time.value, to.value.trim()]);
+      let saved = current();
+      const refresh = () => {
+        const dirty = current() !== saved;
+        save.disabled = !dirty;
+        save.classList.toggle("secondary", !dirty);
+      };
+      form.addEventListener("input", refresh);
+      form.addEventListener("change", refresh);
+      form.append(onLabel, dayLabel, timeLabel, toLabel, save, sendNow, status);
+      showFields();
+      describe();
+      refresh();
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        if (!form.reportValidity()) return;
+        setBusy(form, true);
+        const { data, error } = await callApi("mailboxes", {
+          method: "PATCH",
+          body: { id: m.id, weekly_report: { enabled: on.checked, day: Number(day.value), time: time.value, timezone, addresses: to.value } },
+        });
+        setBusy(form, false);
+        if (error) return showMessage(`Could not save the weekly report: ${error}`, "error");
+        Object.assign(m, data.mailbox);
+        to.value = m.weekly_report_addresses || "";
+        saved = current();
+        refresh();
+        describe();
+        onSaved?.();
+        showMessage(m.weekly_report_enabled
+          ? `Saved. The weekly invoices report for ${m.email_address} goes to ${m.weekly_report_addresses} every ${WEEKDAYS[m.weekly_report_day]} at ${time.value}.`
+          : `Saved. No weekly report for ${m.email_address}.`, "ok");
+      });
+
+      sendNow.addEventListener("click", async () => {
+        if (!to.value.trim() && !m.weekly_report_addresses) return showMessage("Enter an address to send the weekly report to, and save.", "error");
+        if (current() !== saved) return showMessage("Save the weekly report settings first.", "error");
+        sendNow.disabled = true;
+        const { data, error } = await callApi("mailboxes", { body: { action: "send_weekly_report", mailbox_id: m.id } });
+        sendNow.disabled = false;
+        if (error) return showMessage(`Could not send the weekly report: ${error}`, "error");
+        const r = data.result;
+        m.weekly_report_last_result = r;
+        if (!r.error) m.weekly_report_last_at = r.at;
+        describe();
+        showMessage(r.error ? `Could not send the weekly report: ${r.error}`
+          : r.sent ? `Sent the weekly report (${r.count} invoice${r.count === 1 ? "" : "s"}) from ${r.from} to ${r.to.join(", ")}.${r.warning ? ` ${r.warning}` : ""}`
+          : "No invoices were forwarded in the past 7 days, so nothing was sent.", r.error ? "error" : "ok");
+      });
+
+      // Members see it; only the mailbox's admins change it.
+      if (!manages(m)) {
+        for (const c of form.elements) c.disabled = true;
+        save.hidden = sendNow.hidden = true;
+      }
+      return form;
+    }
+
     // One line under the address: what is forwarded where, and anything else worth knowing without opening it.
     function summaryText(m) {
       const cats = (m.forward_categories ?? []).map((c) => CATEGORY_LABELS[c] ?? c).join(", ");
@@ -712,6 +826,7 @@
         m.send_summary ? "summary email on" : null,
         m.schedule_enabled ? "scheduled" : null,
         m.forward_report_enabled ? `daily report at ${String(m.forward_report_time ?? "").slice(0, 5)}` : null,
+        m.weekly_report_enabled ? `weekly report ${(WEEKDAYS[m.weekly_report_day] ?? "").slice(0, 3)} ${String(m.weekly_report_time ?? "").slice(0, 5)}` : null,
         owns(m) ? null : `shared by ${m.owner_name || "a colleague"}, you: ${(MAILBOX_ROLE_LABELS[m.role] ?? "Member").toLowerCase()}`,
       ].filter(Boolean).join(" · ");
     }

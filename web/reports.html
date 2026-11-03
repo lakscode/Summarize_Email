@@ -18,7 +18,7 @@
     <main class="content">
       <div id="message" class="message" hidden></div>
       <h1>Reports</h1>
-      <p class="sub">Every forwarded invoices report of your mailboxes and your organization's: when it ran, the invoices it
+      <p class="sub">Every forwarded invoices report (daily and weekly) of your mailboxes and your organization's: when it ran, the invoices it
         listed and who it went to. Set up a mailbox's daily report on the Settings page. Newest first.</p>
 
       <div class="toolbar">
@@ -102,7 +102,7 @@
     async function load() {
       const filters = Object.fromEntries(new FormData(document.getElementById("report-filters")));
       let query = sb.from("reports")
-        .select("id, mailbox_address, sent_from, trigger, sent_by_name, period_start, period_end, status, recipients, subject, item_count, items, error, created_at")
+        .select("id, kind, mailbox_address, sent_from, trigger, sent_by_name, period_start, period_end, status, recipients, subject, item_count, items, error, created_at")
         .order("created_at", { ascending: false })
         .limit(MAX_ROWS);
       if (status) query = query.eq("status", status);
@@ -148,7 +148,7 @@
         statusCell,
         el("td", null, String(r.item_count)),
         sentToCell(r),
-        el("td", "muted", r.trigger === "manual" ? `Sent${r.sent_by_name ? ` by ${r.sent_by_name}` : ""}` : "Daily"),
+        el("td", "muted", r.trigger === "manual" ? `${r.kind === "weekly_invoices" ? "Weekly · " : ""}Sent${r.sent_by_name ? ` by ${r.sent_by_name}` : ""}` : r.kind === "weekly_invoices" ? "Weekly" : "Daily"),
       );
       if (!r.items?.length) return [tr];
 

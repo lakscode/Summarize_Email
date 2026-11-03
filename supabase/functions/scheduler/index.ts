@@ -8,6 +8,7 @@
 import { json } from "../_shared/cors.ts";
 import { logApi } from "../_shared/log.ts";
 import { REPORT_MAILBOX_COLUMNS, type ReportMailbox, sendForwardReport } from "../_shared/forward-report.ts";
+import { sendWeeklyReport, WEEKLY_REPORT_MAILBOX_COLUMNS, type WeeklyReportMailbox } from "../_shared/weekly-report.ts";
 import { processMailbox } from "../_shared/process.ts";
 import { type Frequency, type IntervalUnit, nextRun } from "../_shared/schedule.ts";
 import { adminClient } from "../_shared/supabase.ts";
@@ -120,5 +121,21 @@ Deno.serve(async (req) => {
     reports.push(await sendForwardReport(db, m));
   }
 
-  return json({ ran: results.length, due: due?.length ?? 0, results, reports });
+  // Then the weekly forwarded-invoices reports that are due (_shared/weekly-report.ts). Kept apart: a failure here never
+  // affects processing or the daily reports above.
+  const weeklyReports: Record<string, unknown>[] = [];
+  try {
+    const { data: dueWeekly, error: weeklyError } = await db.from("mailboxes").select(WEEKLY_REPORT_MAILBOX_COLUMNS)
+      .eq("weekly_report_enabled", true).lte("weekly_report_next_at", new Date().toISOString())
+      .order("weekly_report_next_at").limit(20);
+    if (weeklyError) throw new Error(weeklyError.message);
+    for (const m of (dueWeekly ?? []) as unknown as WeeklyReportMailbox[]) {
+      if (Date.now() - started > TIME_BUDGET_MS) break;
+      weeklyReports.push(await sendWeeklyReport(db, m));
+    }
+  } catch (err) {
+    await logApi("scheduler/weekly-reports", err);
+  }
+
+  return json({ ran: results.length, due: due?.length ?? 0, results, reports, weekly_reports: weeklyReports });
 });
