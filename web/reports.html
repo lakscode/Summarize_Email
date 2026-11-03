@@ -148,7 +148,7 @@
         statusCell,
         el("td", null, String(r.item_count)),
         sentToCell(r),
-        el("td", "muted", r.trigger === "manual" ? `Send now${r.sent_by_name ? ` by ${r.sent_by_name}` : ""}` : "Daily"),
+        el("td", "muted", r.trigger === "manual" ? `Sent${r.sent_by_name ? ` by ${r.sent_by_name}` : ""}` : "Daily"),
       );
       if (!r.items?.length) return [tr];
 
