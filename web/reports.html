@@ -55,6 +55,24 @@
     </main>
   </div>
 
+  <!-- Opened by clicking an invoice's subject: the message read live from the mailbox (same as the Inbox page). -->
+  <dialog class="dialog dialog-preview" id="preview-dialog" aria-labelledby="preview-subject">
+    <div class="preview-head">
+      <h2 id="preview-subject"></h2>
+      <button type="button" class="icon-button" id="preview-close" aria-label="Close">✕</button>
+    </div>
+    <dl class="preview-meta" id="preview-meta"></dl>
+    <div class="preview-attachments" id="preview-attachments"></div>
+    <p class="preview-status" id="preview-status"></p>
+    <!-- No allow-scripts / allow-same-origin: the email can't run code or reach the app. -->
+    <iframe class="preview-frame" id="preview-frame" title="Email content" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="preview-images" hidden>Show images</button>
+      <button type="button" class="secondary" id="preview-text" hidden>View as plain text</button>
+      <a class="button-link" id="preview-open" target="_blank" rel="noopener" hidden>Open in mailbox</a>
+    </div>
+  </dialog>
+
   <script>
     // Report history (supabase/migrations/*_reports.sql), read straight from the reports table: RLS returns the reports
     // of mailboxes the user can open (their own and their organization's).
@@ -151,6 +169,12 @@
           subject.href = i.web_link;
           subject.target = "_blank";
           subject.rel = "noopener";
+          // A click previews the email here, as on the Inbox; Ctrl / Cmd / Shift + click still opens it in Outlook.
+          subject.addEventListener("click", (ev) => {
+            if (ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+            ev.preventDefault();
+            openPreview(i);
+          });
         }
         email.append(subject, el("div", "muted", [i.from, CATEGORY_LABELS[i.category] ?? i.category].filter(Boolean).join(" · ")));
         row.append(email, el("td", null, i.vendor ?? ""), el("td", null, i.invoice_number ?? ""), el("td", null, i.amount ?? ""),
@@ -182,6 +206,120 @@
     }
     document.getElementById("report-filters").addEventListener("change", load);
     document.getElementById("refresh").addEventListener("click", load);
+
+    // --- Email preview, as on the Inbox page (supabase/functions/inbox ?preview=<processed email id>). A report item
+    // has no email id, so it is looked up by the item's Outlook link among the processed emails the user can read. ---
+
+    const previewDialog = document.getElementById("preview-dialog");
+    const previewFrame = document.getElementById("preview-frame");
+    let previewRequest = 0;
+
+    async function openPreview(item) {
+      const request = ++previewRequest;
+      const status = document.getElementById("preview-status");
+      document.getElementById("preview-subject").textContent = item.subject || "(no subject)";
+      document.getElementById("preview-meta").replaceChildren();
+      document.getElementById("preview-attachments").replaceChildren();
+      document.getElementById("preview-images").hidden = true;
+      document.getElementById("preview-text").hidden = true;
+      const open = document.getElementById("preview-open");
+      open.href = item.web_link;
+      open.hidden = false;
+      status.textContent = "Loading the email…";
+      status.hidden = false;
+      previewFrame.hidden = true;
+      previewFrame.srcdoc = "";
+      if (!previewDialog.open) previewDialog.showModal();
+
+      // By Outlook link, else (the link changes when an email is moved, e.g. to "AP Invoices") by subject and the exact
+      // time it was processed, which the report keeps as forwarded_at.
+      trackLoading(1);
+      let { data: found } = await sb.from("processed_emails").select("id").eq("web_link", item.web_link).limit(1);
+      if (!found?.length && item.forwarded_at) {
+        ({ data: found } = await sb.from("processed_emails").select("id")
+          .eq("subject", item.subject).eq("processed_at", item.forwarded_at).limit(1));
+      }
+      trackLoading(-1);
+      if (request !== previewRequest) return;
+      if (!found?.length) {
+        status.textContent = "This email can't be previewed here. Open it in the mailbox instead.";
+        return;
+      }
+      const { data, error } = await callApi(`inbox?${new URLSearchParams({ preview: found[0].id })}`, { method: "GET" });
+      if (request !== previewRequest) return;
+      if (error) {
+        status.textContent = `Could not load the email: ${error}`;
+        return;
+      }
+      const m = data.email;
+      document.getElementById("preview-subject").textContent = m.subject || "(no subject)";
+      const meta = [["From", m.from], ["To", m.to], ["Cc", m.cc], ["Date", m.received && new Date(m.received).toLocaleString()]]
+        .filter(([, v]) => v);
+      document.getElementById("preview-meta").replaceChildren(...meta.flatMap(([k, v]) => [el("dt", null, k), el("dd", null, v)]));
+      document.getElementById("preview-attachments").replaceChildren(
+        ...m.attachments.map((a) => el("span", "badge", `📎 ${a.name}${a.size ? ` (${formatSize(a.size)})` : ""}`)));
+      if (m.web_link) open.href = m.web_link;
+
+      // Remote images stay blocked (they tell the sender the email was opened) until asked for.
+      const images = document.getElementById("preview-images");
+      images.hidden = !m.html || !REMOTE_CONTENT.test(m.html);
+      images.onclick = () => {
+        images.hidden = true;
+        previewFrame.srcdoc = previewDocument(m, true);
+      };
+      // Plain text for an email whose formatted version shows blank or is hard to read; the button switches back.
+      const textButton = document.getElementById("preview-text");
+      let asText = false;
+      textButton.hidden = !m.html;
+      textButton.textContent = "View as plain text";
+      textButton.onclick = () => {
+        asText = !asText;
+        textButton.textContent = asText ? "View formatted" : "View as plain text";
+        images.hidden = asText || !REMOTE_CONTENT.test(m.html);
+        previewFrame.srcdoc = asText ? previewDocument({ html: null, text: m.text || htmlToText(m.html) }, false) : previewDocument(m, false);
+      };
+      status.hidden = true;
+      previewFrame.hidden = false;
+      previewFrame.srcdoc = previewDocument(m, false);
+    }
+
+    const REMOTE_CONTENT = /(src|background)\s*=\s*["']?https?:|url\(\s*["']?https?:/i;
+
+    // The email as a standalone page. The CSP blocks scripts and, unless remote is set, anything loaded from the web.
+    function previewDocument(m, remote) {
+      const web = remote ? " https: http:" : "";
+      const csp = `default-src 'none'; img-src data:${web}; style-src 'unsafe-inline'${web}; font-src data:${web}`;
+      const escape = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+      return `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank">` +
+        "<style>body{margin:16px;font:14px/1.5 system-ui,sans-serif;color:#1c2230;background:#fff;overflow-wrap:anywhere}" +
+        "img{max-width:100%;height:auto}pre{white-space:pre-wrap;font:inherit;margin:0}</style>" +
+        (m.html ?? `<pre>${escape(m.text || "(This email has no text.)")}</pre>`);
+    }
+
+    // The words of an HTML email, one block per line. DOMParser builds an inert document: no scripts run, nothing loads.
+    function htmlToText(html) {
+      const doc = new DOMParser().parseFromString(html.replace(/<(br|\/p|\/div|\/tr|\/li|\/h[1-6])\b[^>]*>/gi, (tag) => tag + "\n"), "text/html");
+      for (const n of doc.querySelectorAll("head, style, script")) n.remove();
+      return (doc.body?.textContent ?? "").replace(/[ \t ]+/g, " ").replace(/ *\n\s*/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    }
+
+    function formatSize(bytes) {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+      return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    }
+
+    document.getElementById("preview-close").addEventListener("click", () => previewDialog.close());
+    // A click on the backdrop closes it (the dialog's own padding is also the dialog, so compare with its box).
+    previewDialog.addEventListener("click", (ev) => {
+      const r = previewDialog.getBoundingClientRect();
+      const outside = ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom;
+      if (ev.target === previewDialog && outside) previewDialog.close();
+    });
+    previewDialog.addEventListener("close", () => {
+      previewRequest++;
+      previewFrame.srcdoc = "";
+    });
   </script>
 </body>
 </html>
