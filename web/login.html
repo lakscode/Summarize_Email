@@ -15,12 +15,12 @@
   <div class="auth">
     <div class="card">
       <img class="auth-logo" src="images/logo-256.png" alt="" data-brand-alt="appName" width="64" height="64" />
-      <h1>Welcome back</h1>
-      <p class="sub">Log in to <span data-brand="appName"></span></p>
-      <p>Clear the Inbox before your first coffee.</p>
+      <h1>Sign in to <span data-brand="appName"></span></h1>
+      <p class="sub">Clear the Inbox before your first coffee.</p>
       <div id="message" class="message" hidden></div>
       <div id="sso" class="sso"></div>
-      <form id="login-form">
+      <p class="sso-hint" id="sso-hint" hidden>Use your work Microsoft 365 account.</p>
+      <form id="login-form" hidden>
         <label>Email
           <input type="email" name="email" autocomplete="email" required />
         </label>
@@ -30,14 +30,18 @@
         <p class="forgot"><a href="forgot-password.html">Forgot password?</a></p>
         <button type="submit">Log in</button>
       </form>
-      <p class="alt">No account? <a href="signup.html">Sign up</a></p>
+      <p class="alt" id="signup-link" hidden>No account? <a href="signup.html">Sign up</a></p>
       <p class="legal-links"><a href="terms.html">Terms of Service</a> · <a href="privacy.html">Privacy Policy</a></p>
     </div>
   </div>
 
   <script>
     redirectIfSignedIn();
-    renderSsoButtons();
+    // SHOW_EMAIL_LOGIN (assets/common.js) switches the email / password form and sign-up link on; otherwise Microsoft only.
+    renderSsoButtons({ only: !SHOW_EMAIL_LOGIN });
+    document.getElementById("login-form").hidden = !SHOW_EMAIL_LOGIN;
+    document.getElementById("signup-link").hidden = !SHOW_EMAIL_LOGIN;
+    document.getElementById("sso-hint").hidden = SHOW_EMAIL_LOGIN;
 
     const params = new URLSearchParams(location.search);
     if (params.has("confirm")) showMessage("Check your email to confirm your account, then log in.", "ok");

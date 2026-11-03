@@ -19,7 +19,8 @@
       <p class="sub">Start using <span data-brand="appName"></span></p>
       <div id="message" class="message" hidden></div>
       <div id="sso" class="sso"></div>
-      <form id="signup-form">
+      <p class="sso-hint" id="sso-hint" hidden>Use your work Microsoft 365 account.</p>
+      <form id="signup-form" hidden>
         <label>Full name
           <input type="text" name="full_name" autocomplete="name" required />
         </label>
@@ -38,7 +39,10 @@
 
   <script>
     redirectIfSignedIn();
-    renderSsoButtons();
+    // SHOW_EMAIL_LOGIN (assets/common.js) switches the email / password form on; otherwise Microsoft only.
+    renderSsoButtons({ only: !SHOW_EMAIL_LOGIN });
+    document.getElementById("signup-form").hidden = !SHOW_EMAIL_LOGIN;
+    document.getElementById("sso-hint").hidden = SHOW_EMAIL_LOGIN;
 
     const form = document.getElementById("signup-form");
     form.addEventListener("submit", async (e) => {

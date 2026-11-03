@@ -74,6 +74,7 @@ a { color: var(--accent); }
 .auth-logo { display: block; width: 64px; height: 64px; border-radius: 14px; margin-bottom: 14px; }
 
 form { display: grid; gap: 14px; }
+form[hidden] { display: none; }
 label { display: grid; gap: 6px; font-size: 0.9rem; font-weight: 500; }
 
 input {
@@ -149,6 +150,10 @@ form.busy :is(button:not([type]), button[type="submit"])::before {
 
 .sso { display: grid; gap: 10px; margin-bottom: 14px; }
 .sso:empty { display: none; }
+.sso-button { display: flex; align-items: center; justify-content: center; gap: 10px; }
+/* White tile so the logo's colours read on the blue primary button. */
+.sso-logo { width: 22px; height: 22px; padding: 3px; box-sizing: border-box; background: #fff; border-radius: 4px; flex: none; }
+.sso-hint { margin: 0 0 10px; text-align: center; color: var(--muted); font-size: 0.85rem; line-height: 1.5; }
 .divider { display: flex; align-items: center; gap: 10px; margin-top: 4px; color: var(--muted); font-size: 0.85rem; }
 .divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
 
