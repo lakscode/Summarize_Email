@@ -205,3 +205,12 @@ Only people in the mailbox's organization see it: roles are in `mailbox_members`
 (`migrations/*_organization_mailboxes.sql`), which RLS and the edge functions use. When the owner leaves or moves to another
 organization, their mailboxes stop being shared and the roles on them are removed
 (`migrations/*_organization_mailbox_membership.sql`); people who leave lose their roles on its mailboxes.
+
+## Forwarded invoices report
+
+Each mailbox can email a daily list of the invoices and utility bills forwarded from it (by the app, or manually in
+Outlook): on the Settings page, open the mailbox, tick **Email a daily list of forwarded invoices**, pick the time and
+one or more recipients (comma-separated), and save. The scheduler sends it at that time in the time zone of whoever saved
+it, from the mailbox itself, covering everything forwarded since the previous report; days with nothing forwarded send
+nothing. **Send now** sends it straight away. Owners and mailbox admins change it (`_shared/forward-report.ts`,
+`migrations/*_forwarded_invoices_report.sql`).

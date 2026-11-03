@@ -1,4 +1,5 @@
-// Runs scheduled mailbox processing. Called every 5 minutes by pg_cron (see migrations *_schedules.sql, *_schedule_interval.sql) with the
+// Runs scheduled mailbox processing, then the daily forwarded-invoices reports that are due (_shared/forward-report.ts).
+// Called every 5 minutes by pg_cron (see migrations *_schedules.sql, *_schedule_interval.sql) with the
 // shared secret from Vault in the x-cron-secret header; not callable from the browser.
 // For each mailbox whose schedule is due it processes every email not processed yet that arrived since the mailbox
 // was connected (at most the last 14 days; older mail predates the app and is left alone). Batches of one mailbox
@@ -6,6 +7,7 @@
 // same run, so the summary email goes out once, when the run is finished.
 import { json } from "../_shared/cors.ts";
 import { logApi } from "../_shared/log.ts";
+import { REPORT_MAILBOX_COLUMNS, type ReportMailbox, sendForwardReport } from "../_shared/forward-report.ts";
 import { processMailbox } from "../_shared/process.ts";
 import { type Frequency, type IntervalUnit, nextRun } from "../_shared/schedule.ts";
 import { adminClient } from "../_shared/supabase.ts";
@@ -107,5 +109,16 @@ Deno.serve(async (req) => {
     }
   }));
 
-  return json({ ran: results.length, due: due?.length ?? 0, results });
+  // Then the daily forwarded-invoices reports that are due (after processing, so they include this tick's forwards).
+  const reports: Record<string, unknown>[] = [];
+  const { data: dueReports, error: reportsError } = await db.from("mailboxes").select(REPORT_MAILBOX_COLUMNS)
+    .eq("forward_report_enabled", true).lte("forward_report_next_at", new Date().toISOString())
+    .order("forward_report_next_at").limit(20);
+  if (reportsError) await logApi("scheduler/reports", reportsError.message);
+  for (const m of (dueReports ?? []) as unknown as ReportMailbox[]) {
+    if (Date.now() - started > TIME_BUDGET_MS) break;
+    reports.push(await sendForwardReport(db, m));
+  }
+
+  return json({ ran: results.length, due: due?.length ?? 0, results, reports });
 });

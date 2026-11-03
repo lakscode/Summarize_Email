@@ -48,6 +48,11 @@
 //                                            is emailed, and to which addresses (comma-separated; "" clears them: an
 //                                            own mailbox gets it itself, a shared mailbox sends it to the owner's
 //                                            account email)
+//   PATCH {id, forward_report: {enabled, time, timezone, addresses}}
+//                                         -> daily email listing the invoices forwarded from the mailbox, at `time`
+//                                            ("HH:MM" in `timezone`) to `addresses` (one or more; see
+//                                            _shared/forward-report.ts)
+//   POST {action: "send_forward_report", mailbox_id} -> { result } that report now, for the time since the last one
 //   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
 //                                         -> scheduled processing (see _shared/schedule.ts)
 //   Settings and schedule: the owner or a mailbox admin.
@@ -72,6 +77,7 @@ import {
 import {
   FREQUENCIES, type Frequency, INTERVAL_UNITS, type IntervalUnit, isValidTimeZone, localDate, MIN_INTERVAL_MINUTES, nextRun,
 } from "../_shared/schedule.ts";
+import { nextReportAt, REPORT_MAILBOX_COLUMNS, type ReportMailbox, sendForwardReport } from "../_shared/forward-report.ts";
 import { adminClient, callerUser, env } from "../_shared/supabase.ts";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
@@ -79,7 +85,7 @@ const ACCESS_DAYS = [1, 7, 30, 90];
 const DEFAULT_ACCESS_DAYS = 30;
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-// Addresses the run summary may go to.
+// Addresses the run summary or the forwarded-invoices report may go to.
 const MAX_SUMMARY_RECIPIENTS = 20;
 // Mailboxes per add_mailboxes call, and how many are checked against Graph at once.
 const MAX_BULK = 100;
@@ -117,7 +123,7 @@ Deno.serve(async (req) => {
       // RLS returns the caller's own mailboxes and those shared with their organization.
       const { data, error } = await sb
         .from("mailboxes")
-        .select("id, owner_user_id, org_id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, send_summary, summary_address, last_processed_at, last_processed_by_name, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
+        .select("id, owner_user_id, org_id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, send_summary, summary_address, last_processed_at, last_processed_by_name, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result, forward_report_enabled, forward_report_time, forward_report_timezone, forward_report_addresses, forward_report_next_at, forward_report_last_at, forward_report_last_result")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
       const { data: connections, error: connError } = await sb.from("ms_connections")
@@ -137,6 +143,7 @@ Deno.serve(async (req) => {
       if (body.action === "add_shared") return await addShared(user.id, body);
       if (body.action === "auto_shared") return await autoShared(user.id, sb, body);
       if (body.action === "set_mailbox_role") return await setMailboxRole(user.id, body);
+      if (body.action === "send_forward_report") return await sendReportNow(user.id, body.mailbox_id);
       if (body.action !== "connect") return json({ error: "Unknown action" }, 400);
       const provider: Provider = body.provider ?? "microsoft";
       if (!PROVIDERS.includes(provider)) return json({ error: "provider must be microsoft or google" }, 400);
@@ -160,6 +167,7 @@ Deno.serve(async (req) => {
     if (req.method === "PATCH") {
       const body = await req.json().catch(() => ({}));
       if (body.id && body.schedule) return await saveSchedule(user.id, body.id, body.schedule);
+      if (body.id && body.forward_report) return await saveForwardReport(user.id, body.id, body.forward_report);
       if (!body.id) return json({ error: "id is required" }, 400);
       if (body.org_shared !== undefined) return await shareMailbox(user.id, body);
       return await saveSettings(user.id, body);
@@ -326,6 +334,60 @@ async function setMailboxRole(userId: string, body: Record<string, unknown>): Pr
   );
   if (error) return await fail("mailboxes/set_role", error.message, 500, { userId, context: { mailbox_id: body.mailbox_id } });
   return json({ member: { user_id: targetId, role } });
+}
+
+// Recipients typed as one or more addresses (commas, semicolons or spaces between): lowercase, de-duplicated, checked.
+function parseAddresses(value: unknown, label: string): string[] | Response {
+  const addresses = [...new Set(String(value ?? "").split(/[\s,;]+/).map((a) => a.trim().toLowerCase()).filter(Boolean))];
+  const bad = addresses.find((a) => !EMAIL.test(a));
+  if (bad) return json({ error: `${label}: ${bad} is not a valid email address` }, 400);
+  if (addresses.length > MAX_SUMMARY_RECIPIENTS) return json({ error: `${label}: at most ${MAX_SUMMARY_RECIPIENTS} addresses` }, 400);
+  return addresses;
+}
+
+// The daily forwarded-invoices report of a mailbox (owner or mailbox admins): on or off, the local time it goes out
+// and to whom. Next / last times are written here and by the scheduler only.
+async function saveForwardReport(userId: string, id: string, r: Record<string, unknown>): Promise<Response> {
+  const role = await mailboxRole(userId, id);
+  if (!role) return json({ error: "Mailbox not found" }, 404);
+  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
+  const enabled = r.enabled === true;
+  const time = String(r.time ?? "");
+  const timezone = String(r.timezone ?? "");
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return json({ error: "time must be HH:MM" }, 400);
+  if (!isValidTimeZone(timezone)) return json({ error: "Unknown time zone" }, 400);
+  const addresses = parseAddresses(r.addresses, "Report recipients");
+  if (addresses instanceof Response) return addresses;
+  if (enabled && !addresses.length) return json({ error: "Enter at least one email address to send the report to" }, 400);
+
+  const { data, error } = await adminClient().from("mailboxes").update({
+    forward_report_enabled: enabled,
+    forward_report_time: time,
+    forward_report_timezone: timezone,
+    forward_report_addresses: addresses.join(", ") || null,
+    forward_report_next_at: enabled ? nextReportAt(time, timezone, new Date()).toISOString() : null,
+    updated_at: new Date().toISOString(),
+  }).eq("id", id)
+    .select("id, forward_report_enabled, forward_report_time, forward_report_timezone, forward_report_addresses, forward_report_next_at, forward_report_last_at, forward_report_last_result")
+    .single();
+  if (error) return await fail("mailboxes/forward_report", error.message, 500, { userId, context: { id } });
+  return json({ mailbox: data });
+}
+
+// Sends the forwarded-invoices report now (owner or mailbox admins), covering the time since the last one.
+async function sendReportNow(userId: string, id: unknown): Promise<Response> {
+  const role = await mailboxRole(userId, id);
+  if (!role) return json({ error: "Mailbox not found" }, 404);
+  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
+  const db = adminClient();
+  const { data, error } = await db.from("mailboxes").select(REPORT_MAILBOX_COLUMNS).eq("id", id).single();
+  if (error) return await fail("mailboxes/forward_report", error.message, 500, { userId, context: { id } });
+  const m = data as unknown as ReportMailbox & { forward_report_next_at: string | null };
+  const result = await sendForwardReport(db, m);
+  // Sending early doesn't move the daily time; a report that is off stays off.
+  const { data: box } = await db.from("mailboxes").select("forward_report_enabled").eq("id", m.id).single();
+  if (!box?.forward_report_enabled) await db.from("mailboxes").update({ forward_report_next_at: null }).eq("id", m.id);
+  return json({ result });
 }
 
 // Saves a mailbox's processing schedule and computes its next run. Schedule columns are written with the
@@ -539,10 +601,8 @@ async function saveSettings(userId: string, body: Record<string, unknown>): Prom
   // Summary recipients: one or more addresses (commas, semicolons or spaces between), stored comma-separated; ""
   // clears them (own mailbox: itself, shared mailbox: the owner's account email).
   if (body.summary_address !== undefined) {
-    const addresses = [...new Set(String(body.summary_address ?? "").split(/[\s,;]+/).map((a) => a.trim().toLowerCase()).filter(Boolean))];
-    const bad = addresses.find((a) => !EMAIL.test(a));
-    if (bad) return json({ error: `Summary email: ${bad} is not a valid email address` }, 400);
-    if (addresses.length > MAX_SUMMARY_RECIPIENTS) return json({ error: `Send the summary to at most ${MAX_SUMMARY_RECIPIENTS} addresses` }, 400);
+    const addresses = parseAddresses(body.summary_address, "Summary email");
+    if (addresses instanceof Response) return addresses;
     update.summary_address = addresses.join(", ") || null;
   }
   let type = current.mailbox_type as MailboxType;

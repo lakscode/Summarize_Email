@@ -648,3 +648,4 @@ a.button-link.secondary { background: transparent; color: var(--text); border: 1
 /* Summary recipients: room for a few comma-separated addresses. */
 .settings-form .summary-to { flex: 1 1 320px; max-width: 520px; }
 .settings-form .summary-to input { width: 100%; min-width: 0; }
+.settings-form input[type="time"] { min-width: 0; width: 8.5em; }

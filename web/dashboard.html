@@ -572,6 +572,7 @@
       head.setAttribute("aria-controls", body.id);
       body.append(
         section("Processing", settingsForm(m, type, () => (summary.textContent = summaryText(m)))),
+        section("Forwarded invoices report", reportForm(m, () => (summary.textContent = summaryText(m)))),
         section("Connection", connectionDetails(m, org, expired)),
       );
       const shared = orgSection(m);
@@ -596,6 +597,113 @@
       return s;
     }
 
+    // Daily email listing the invoices forwarded from the mailbox (supabase/functions/_shared/forward-report.ts): on or
+    // off, the local time and one or more recipients; "Send now" sends it straight away. Only the mailbox's admins
+    // change it. `onSaved` runs after a save.
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    function reportForm(m, onSaved) {
+      const form = el("form", "inline-form settings-form");
+      const onLabel = el("label", "checkbox");
+      const on = el("input");
+      on.type = "checkbox";
+      on.checked = !!m.forward_report_enabled;
+      onLabel.append(on, " Email a daily list of forwarded invoices");
+
+      const timeLabel = el("label", null, "At");
+      const time = el("input");
+      time.type = "time";
+      time.step = 300;
+      time.required = true;
+      time.value = String(m.forward_report_time ?? "08:00").slice(0, 5);
+      timeLabel.append(time);
+
+      const toLabel = el("label", "summary-to", "Send to (separate addresses with commas)");
+      const to = el("input");
+      to.type = "email";
+      to.multiple = true;
+      to.placeholder = appUser?.email || "ap-team@yourcompany.com";
+      to.value = m.forward_report_addresses || "";
+      toLabel.append(to);
+
+      const save = button("Save", "secondary", "submit");
+      const sendNow = button("Send now", "secondary");
+      const status = el("p", "hint");
+      const describe = () => {
+        const last = m.forward_report_last_result;
+        const parts = [];
+        if (m.forward_report_enabled && m.forward_report_next_at) parts.push(`Next report ${new Date(m.forward_report_next_at).toLocaleString()}.`);
+        if (last?.at) {
+          const when = new Date(last.at).toLocaleString();
+          parts.push(last.error ? `Last report ${when} failed: ${last.error}`
+            : last.sent ? `Last report ${when}: ${last.count} invoice${last.count === 1 ? "" : "s"}, sent to ${last.to.join(", ")}.`
+            : `Last report ${when}: nothing forwarded, so no email was sent.`);
+        }
+        if (m.forward_report_timezone && m.forward_report_timezone !== timezone) parts.push(`Times are in ${m.forward_report_timezone}.`);
+        status.textContent = parts.join(" ") || "Lists the invoices and utility bills forwarded since the previous report (by the app or manually). Nothing is sent on days without any.";
+      };
+      const showFields = () => (timeLabel.hidden = toLabel.hidden = !on.checked);
+      on.addEventListener("change", showFields);
+
+      const current = () => JSON.stringify([on.checked, time.value, to.value.trim()]);
+      let saved = current();
+      const refresh = () => {
+        const dirty = current() !== saved;
+        save.disabled = !dirty;
+        save.classList.toggle("secondary", !dirty);
+      };
+      form.addEventListener("input", refresh);
+      form.addEventListener("change", refresh);
+      form.append(onLabel, timeLabel, toLabel, save, sendNow, status);
+      showFields();
+      describe();
+      refresh();
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        if (!form.reportValidity()) return;
+        setBusy(form, true);
+        const { data, error } = await callApi("mailboxes", {
+          method: "PATCH",
+          body: { id: m.id, forward_report: { enabled: on.checked, time: time.value, timezone, addresses: to.value } },
+        });
+        setBusy(form, false);
+        if (error) return showMessage(`Could not save the report: ${error}`, "error");
+        Object.assign(m, data.mailbox);
+        to.value = m.forward_report_addresses || "";
+        saved = current();
+        refresh();
+        describe();
+        onSaved?.();
+        showMessage(m.forward_report_enabled
+          ? `Saved. The forwarded invoices report for ${m.email_address} goes to ${m.forward_report_addresses} every day at ${time.value}.`
+          : `Saved. No daily report for ${m.email_address}.`, "ok");
+      });
+
+      sendNow.addEventListener("click", async () => {
+        if (!to.value.trim() && !m.forward_report_addresses) return showMessage("Enter an address to send the report to, and save.", "error");
+        if (current() !== saved) return showMessage("Save the report settings first.", "error");
+        sendNow.disabled = true;
+        const { data, error } = await callApi("mailboxes", { body: { action: "send_forward_report", mailbox_id: m.id } });
+        sendNow.disabled = false;
+        if (error) return showMessage(`Could not send the report: ${error}`, "error");
+        const r = data.result;
+        m.forward_report_last_result = r;
+        if (!r.error) m.forward_report_last_at = r.at;
+        describe();
+        showMessage(r.error ? `Could not send the report: ${r.error}`
+          : r.sent ? `Sent the report (${r.count} invoice${r.count === 1 ? "" : "s"}) to ${r.to.join(", ")}.`
+          : "No invoices were forwarded since the last report, so nothing was sent.", r.error ? "error" : "ok");
+      });
+
+      // Members see it; only the mailbox's admins change it.
+      if (!manages(m)) {
+        for (const c of form.elements) c.disabled = true;
+        save.hidden = sendNow.hidden = true;
+      }
+      return form;
+    }
+
     // One line under the address: what is forwarded where, and anything else worth knowing without opening it.
     function summaryText(m) {
       const cats = (m.forward_categories ?? []).map((c) => CATEGORY_LABELS[c] ?? c).join(", ");
@@ -603,6 +711,7 @@
         !cats ? "Nothing forwarded automatically" : m.smart_ap_address ? `Forwards ${cats} to ${m.smart_ap_address}` : `${cats}: no destination set`,
         m.send_summary ? "summary email on" : null,
         m.schedule_enabled ? "scheduled" : null,
+        m.forward_report_enabled ? `daily report at ${String(m.forward_report_time ?? "").slice(0, 5)}` : null,
         owns(m) ? null : `shared by ${m.owner_name || "a colleague"}, you: ${(MAILBOX_ROLE_LABELS[m.role] ?? "Member").toLowerCase()}`,
       ].filter(Boolean).join(" · ");
     }
