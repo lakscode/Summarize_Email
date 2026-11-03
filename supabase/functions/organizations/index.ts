@@ -13,7 +13,9 @@
 //                                                             everyone with an account who isn't in `org_id`, to pick
 //                                                             from when adding people (organization: their current one)
 //   Super admins, or admins of `org_id` (default: the caller's own organization):
-//   POST {action: "update", org_id?, name?, domain?}       -> { organization } (domain: super admins only, as it decides
+//   POST {action: "update", org_id?, name?, domain?, app_version?}
+//                                                          -> { organization } (domain, app_version: super admins only;
+//                                                             app_version is "current" or "v1"; domain decides
 //                                                             who joins; "" turns automatic joining off)
 //   POST {action: "add_members", org_id?, emails, role?}   -> { results: [{email, ok, status?, error?}] } each added
 //                                                             (has an account), invited (joins on first visit) or,
@@ -31,6 +33,8 @@ import type { User } from "jsr:@supabase/supabase-js@2";
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DOMAIN = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 const ROLES = ["admin", "member"];
+// See migrations/*_organization_app_version.sql.
+const APP_VERSIONS = ["current", "v1"];
 const MAX_BULK = 100;
 // Anyone can have an address at these, so they can't decide who joins an organization.
 const PUBLIC_DOMAINS = new Set([
@@ -81,6 +85,7 @@ Deno.serve(async (req) => {
       if (orgId instanceof Response) return orgId;
       if (body.action === "update") {
         if (body.domain !== undefined && !c.superAdmin) return json({ error: "Only super admins can change the domain" }, 403);
+        if (body.app_version !== undefined && !c.superAdmin) return json({ error: "Only super admins can change the version" }, 403);
         return await update(user.id, orgId, body);
       }
       if (body.action === "add_members") return await addMembers(c, orgId, body);
@@ -169,7 +174,7 @@ async function autoJoin(user: User): Promise<Membership | null> {
 async function allOrganizations() {
   const db = adminClient();
   const [orgs, members] = await Promise.all([
-    db.from("organizations").select("id, name, domain, created_at").order("name"),
+    db.from("organizations").select("id, name, domain, app_version, created_at").order("name"),
     db.from("organization_members").select("org_id"),
   ]);
   for (const r of [orgs, members]) if (r.error) throw new Error(r.error.message);
@@ -202,7 +207,7 @@ async function describe(c: Caller, orgId: string | null) {
   if (!orgId) return { organization: null };
   const db = adminClient();
   const [org, members, invites] = await Promise.all([
-    db.from("organizations").select("id, name, domain, created_at").eq("id", orgId).maybeSingle(),
+    db.from("organizations").select("id, name, domain, app_version, created_at").eq("id", orgId).maybeSingle(),
     db.from("organization_members").select("user_id, role, created_at").eq("org_id", orgId).order("created_at"),
     db.from("organization_invites").select("email, role, created_at").eq("org_id", orgId).order("created_at"),
   ]);
@@ -243,7 +248,7 @@ async function create(userId: string, body: Record<string, unknown>): Promise<Re
   if ("error" in checked) return json({ error: checked.error }, 400);
 
   const { data: org, error } = await adminClient().from("organizations").insert({ name, domain: checked.domain, created_by: userId })
-    .select("id, name, domain, created_at").single();
+    .select("id, name, domain, app_version, created_at").single();
   if (error) {
     if (domainTaken(error.message)) return json({ error: `Another organization already uses ${checked.domain}` }, 400);
     return await fail("organizations/create", error.message, 500, { userId });
@@ -263,8 +268,12 @@ async function update(userId: string, orgId: string, body: Record<string, unknow
     if ("error" in checked) return json({ error: checked.error }, 400);
     fields.domain = checked.domain;
   }
+  if (body.app_version !== undefined) {
+    if (!APP_VERSIONS.includes(String(body.app_version))) return json({ error: "Version must be current or v1" }, 400);
+    fields.app_version = body.app_version;
+  }
   const { data, error } = await adminClient().from("organizations").update(fields).eq("id", orgId)
-    .select("id, name, domain, created_at").single();
+    .select("id, name, domain, app_version, created_at").single();
   if (error) {
     if (domainTaken(error.message)) return json({ error: `Another organization already uses ${fields.domain}` }, 400);
     return await fail("organizations/update", error.message, 500, { userId, context: { org_id: orgId } });

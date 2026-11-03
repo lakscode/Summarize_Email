@@ -182,3 +182,36 @@ and `npm run functions:serve`.
 
 Email confirmation is on by default for hosted projects: after signing up, click the email link to reach the
 dashboard. Turn it off under Authentication > Providers > Email to sign in immediately.
+
+## App versions (v0 and v1)
+
+Two versions of the app run side by side on the same database: **v0** (stored as `current`) and **v1**. Each
+organization uses one; users in no organization use **v0**. A super admin picks it on the Organization page
+(**Edit details > App version**).
+
+| | v0 (`current`) | v1 |
+|---|---|---|
+| UI | `web/*.html`, `web/assets/` | `web/v1/*.html`, `web/v1/assets/` (images and `config.js` shared from `web/`) |
+| API | `functions/<name>`, `functions/_shared` | `functions/<name>-v1`, `functions/_shared_v1` |
+| Scheduler | `scheduler` (cron job `process-inbox-schedules`) | `scheduler-v1` (cron job `process-inbox-schedules-v1`) |
+
+- Signed-in pages send a user whose organization is on the other version to the same page of that version
+  (`switchToAppVersion` in `assets/common.js`); each scheduler only runs mailboxes whose owner is on its version.
+- v1 started as an identical copy; change files under `web/v1/` and `functions/*-v1`, `functions/_shared_v1` only.
+- Connecting a mailbox from v1 signs in through `mailboxes-v1`: add
+  `https://<project-ref>.supabase.co/functions/v1/mailboxes-v1` as a redirect URI in the Azure app registration
+  (and the Google OAuth client, for Gmail).
+- `npm run functions:deploy` deploys both versions.
+
+## Organization mailboxes (v1)
+
+The person who connected a mailbox can tick **Organization mailbox** under it on the Settings page. Everyone in their
+organization can then use it, with a role per mailbox (**People and roles**):
+
+- **Member** (the default, also for people who join later): sees the mailbox, its emails and processing history,
+  processes its inbox and marks emails done.
+- **Admin**: also changes its settings, schedule and who is an admin. The person who connected it and organization
+  admins are always admins. Only the person who connected it can reconnect, disconnect or stop sharing it.
+
+Roles are in `mailbox_members` and checked by `mailbox_role()` (`migrations/*_organization_mailboxes.sql`), which RLS
+and the v1 functions use. A mailbox whose owner leaves the organization is no longer shared with it.

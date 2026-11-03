@@ -19,6 +19,8 @@ const MAX_LOOKBACK_HOURS = 24 * 14;
 // An unfinished run is continued only if its last tick was this recent; otherwise (e.g. the schedule was off for a
 // while) a new run starts.
 const CONTINUE_WITHIN_MS = 60 * 60_000;
+// This scheduler's app version (see migrations/*_organization_app_version.sql).
+const APP_VERSION = "current";
 
 // Link target for the summary email. Ignored if APP_URL points at Supabase rather than the hosted UI.
 const appUrl = (() => {
@@ -50,8 +52,20 @@ Deno.serve(async (req) => {
     return json({ error: error.message }, 500);
   }
 
+  // Only mailboxes whose owner's organization is on this version; the other version's scheduler runs the rest.
+  const owners = [...new Set((due ?? []).map((m) => m.owner_user_id))];
+  const { data: memberships, error: versionError } = owners.length
+    ? await db.from("organization_members").select("user_id, organizations(app_version)").in("user_id", owners)
+    : { data: [], error: null };
+  if (versionError) {
+    await logApi("scheduler", versionError.message);
+    return json({ error: versionError.message }, 500);
+  }
+  const versionOf = new Map((memberships ?? []).map((r) =>
+    [r.user_id, (r.organizations as unknown as { app_version: string } | null)?.app_version ?? "current"]));
+
   const results: Record<string, unknown>[] = [];
-  const queue = [...(due ?? [])];
+  const queue = (due ?? []).filter((m) => (versionOf.get(m.owner_user_id) ?? "current") === APP_VERSION);
   await Promise.all(Array.from({ length: Math.min(MAILBOX_CONCURRENCY, queue.length) }, async () => {
     for (let m = queue.shift(); m; m = queue.shift()) {
       if (Date.now() - started > TIME_BUDGET_MS) return;

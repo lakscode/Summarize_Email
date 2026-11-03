@@ -1,0 +1,1006 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Settings</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <link rel="icon" type="image/png" href="../images/favicon.png" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="../config.js"></script>
+  <script src="assets/brand.js"></script>
+  <script src="assets/common.js"></script>
+</head>
+<body>
+  <div class="shell" hidden>
+    <aside id="sidebar" class="sidebar"></aside>
+
+    <main class="content">
+      <div id="message" class="message" hidden></div>
+      <div id="own-mailbox-prompt" class="message info own-mailbox-prompt" hidden>
+        <span id="own-mailbox-text"></span>
+        <button type="button" id="own-mailbox-add">Add my mailbox</button>
+        <button type="button" class="secondary" id="own-mailbox-later">Not now</button>
+      </div>
+      <h1 id="greeting">Settings</h1>
+      <p class="sub">You're signed in.</p>
+      <section class="grid">
+        <div class="tile"><div class="label">Name</div><div class="value" id="profile-name">—</div></div>
+        <div class="tile"><div class="label">Email</div><div class="value" id="profile-email">—</div></div>
+        <div class="tile"><div class="label">Member since</div><div class="value" id="profile-since">—</div></div>
+      </section>
+
+
+      <section class="panel"  style="display:none">
+        <div class="panel-head">
+          <div>
+            <h2>Organizations</h2>
+            <p class="sub">Connect a Microsoft 365 organization once with its API keys, then add its shared AP / AR mailboxes.</p>
+          </div>
+          <div class="connect-controls">
+            <button class="secondary" type="button" data-toggle="org-form">Add organization</button>
+          </div>
+        </div>
+        <form id="org-form" class="inline-form connect-form" hidden autocomplete="off">
+          <h3>Add an organization</h3>
+          <label>Name <input name="name" placeholder="Contoso AP" /></label>
+          <label>Tenant ID <input name="tenant_id" placeholder="00000000-0000-0000-0000-000000000000" required /></label>
+          <label>Client ID <input name="client_id" placeholder="00000000-0000-0000-0000-000000000000" required /></label>
+          <label>Client secret <input type="password" name="client_secret" autocomplete="new-password" required /></label>
+          <button type="submit">Connect</button>
+          <button type="button" class="secondary" data-cancel>Cancel</button>
+          <p class="hint">An Azure app registration in that tenant with Microsoft Graph <em>application</em> permissions
+            <code>Mail.Read</code> and <code>Mail.Send</code>, admin-consented. Limit it to the AP/AR mailboxes with an Exchange
+            application access policy. The keys are stored encrypted and never shown again.</p>
+        </form>
+        <form id="bulk-form" class="inline-form connect-form" hidden autocomplete="off">
+          <h3 id="bulk-title">Add mailboxes</h3>
+          <div class="find-row">
+            <label>Find shared mailboxes for a person
+              <input type="email" id="find-person" placeholder="jane.doe@contoso.com" autocomplete="off" />
+            </label>
+            <button type="button" class="secondary" id="find-button">Find</button>
+            <span class="label" id="find-status"></span>
+          </div>
+          <label class="wide">Shared mailbox addresses (one per line, or separated by commas)
+            <textarea name="addresses" rows="5" placeholder="ap-east@contoso.com&#10;ap-west@contoso.com" required></textarea>
+          </label>
+          <label>Type
+            <select name="mailbox_type">
+              <option value="ap">Accounts payable (AP)</option>
+              <option value="ar">Accounts receivable (AR)</option>
+            </select>
+          </label>
+          <label>Destination email <input type="email" name="smart_ap_address" placeholder="invoices@your-ap-system.com" /></label>
+          <fieldset class="days" data-forward></fieldset>
+          <button type="submit">Add mailboxes</button>
+          <button type="button" class="secondary" data-cancel>Cancel</button>
+          <p class="hint">Each address is checked before it is added. Type, destination and forwarded categories apply to every
+            mailbox in this batch and can be changed per mailbox afterwards. <strong>Find</strong> lists the shared mailboxes the
+            person has Full Access to (granted directly, not through a group); it needs the Azure app to have
+            <code>Exchange.ManageAsApp</code> and the Global Reader role.</p>
+          <ul class="results" id="bulk-results" hidden></ul>
+        </form>
+        <ul class="list" id="connection-list"></ul>
+        <p class="empty" id="connection-empty" hidden>No organizations connected yet.</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Mailboxes</h2>
+            <p class="sub">Each mailbox has its own type (AP or AR), forwarded categories and destination email.</p>
+          </div>
+          <div class="connect-controls">
+            <label>Allow access for
+              <select id="access-days">
+                <option value="1">1 day</option>
+                <option value="7">7 days</option>
+                <option value="30" selected>30 days</option>
+                <option value="90">90 days</option>
+              </select>
+            </label>
+            <button class="connect-button" data-provider="microsoft">Add Azure mailbox</button>
+            <button class="secondary" type="button" data-toggle="shared-form"
+              title="Sign in with your own Microsoft 365 account and read a shared mailbox you have Full Access to.">Add shared mailbox</button>
+            <button style="display:none" class="connect-button" data-provider="google"
+              title="Beta: the Gmail connection is in Google's testing mode. Your Gmail address must first be added as a test user in the app's Google Auth Platform settings (Audience > Test users), or Google will block the sign-in. Testing-mode access expires after 7 days; reconnect to renew it.">Add Gmail inbox <span class="beta">Beta</span></button>
+          </div>
+        </div>
+        <p class="hint">Mailboxes connected by sign-in keep an encrypted Microsoft token only for the period you choose, then delete it. Reconnect to extend.</p>
+        <form id="shared-form" class="inline-form connect-form" hidden autocomplete="off">
+          <h3>Add a shared mailbox</h3>
+          <label>Shared mailbox address <input type="email" name="shared_mailbox" placeholder="ap@yourcompany.com" required /></label>
+          <button type="submit">Sign in with Microsoft</button>
+          <button type="button" class="secondary" data-cancel>Cancel</button>
+          <p class="hint">You'll sign in with your own Microsoft 365 account, which needs Full Access to this mailbox (and Send As
+            or Send on Behalf to forward emails from it). Ask your Microsoft 365 admin if you don't have it. For many
+            mailboxes, add an organization above instead.</p>
+        </form>
+        <form id="pick-shared-form" class="inline-form connect-form" hidden autocomplete="off">
+          <h3 id="pick-shared-title">Shared mailboxes</h3>
+          <p class="label wide" id="pick-shared-status"></p>
+          <fieldset class="days" id="pick-shared-list" hidden></fieldset>
+          <label class="wide">Other shared mailbox addresses (optional, one per line)
+            <textarea name="extra" rows="2" placeholder="ap@yourcompany.com"></textarea>
+          </label>
+          <button type="submit">Add selected</button>
+          <button type="button" class="secondary" data-cancel>Close</button>
+          <p class="hint">Selected mailboxes are read through the account you signed in with, for the same access period.
+            Only mailboxes that account has Full Access to can be added.</p>
+          <ul class="results" id="pick-shared-results" hidden></ul>
+        </form>
+        <div class="inline-form list-filter" id="mailbox-filter" hidden>
+          <label>Filter <input type="search" id="filter-text" placeholder="Address or organization" /></label>
+          <label>Type
+            <select id="filter-type">
+              <option value="">All</option>
+              <option value="ap">AP</option>
+              <option value="ar">AR</option>
+            </select>
+          </label>
+          <span class="label" id="filter-count"></span>
+        </div>
+        <ul class="list" id="mailbox-list"></ul>
+        <p class="empty" id="mailbox-empty" hidden>No mailboxes connected yet.</p>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    (async () => {
+      const session = await requireSession();
+      if (!session) return;
+      const { user } = session;
+      appUser = user;
+
+      renderSidebar("dashboard", session);
+      document.querySelector(".shell").hidden = false;
+
+      // Without a popup, the OAuth callback redirects back here with ?connected= / ?connect_error=; show
+      // that first so a later load error doesn't hide it.
+      if (showConnectResult(new URLSearchParams(location.search))) history.replaceState(null, "", location.pathname);
+
+      // Supabase Edge Function API: supabase/functions/profile
+      const { data, error } = await callApi("profile", { method: "GET" });
+      if (error) showMessage(`Could not load profile: ${error}`, "error");
+      const profile = data?.profile;
+
+      const name = profile?.full_name || user.user_metadata?.full_name || "";
+      document.getElementById("greeting").textContent = name ? `Hello, ${name}` : "Settings";
+      document.getElementById("profile-name").textContent = name || "—";
+      document.getElementById("profile-email").textContent = profile?.email || user.email;
+      document.getElementById("profile-since").textContent =
+        new Date(profile?.created_at || user.created_at).toLocaleDateString();
+
+      // Organization first (shown under Settings): loading it joins one by invitation or email domain, which decides
+      // whose settings new mailboxes reuse.
+      const { error: orgError } = await callApi("organizations", { method: "GET" });
+      if (orgError) showMessage(`Could not load your organization: ${orgError}`, "error");
+      autoAddMailboxes(user, await loadMailboxes());
+    })();
+
+    // --- Mailboxes and organizations (Supabase Edge Function API: supabase/functions/mailboxes) ---
+
+    const PROVIDER_LABELS = { microsoft: "Azure", google: "Gmail (beta)" };
+    const TYPE_LABELS = { ap: "AP", ar: "AR" };
+    const CATEGORY_LABELS = {
+      invoice: "Invoice",
+      utility_bill: "Utility bill",
+      vendor_info: "Vendor info",
+      statement: "Statement",
+      remittance: "Remittance",
+      purchase_order: "Purchase order",
+      customer_inquiry: "Customer inquiry",
+    };
+    // Filled from GET mailboxes: categories per mailbox type, the organization connections by id, and the caller's
+    // organization ({id, name, role} or null), which their mailboxes can be shared with.
+    let categories = { ap: [], ar: [] };
+    let connections = new Map();
+    let organization = null;
+
+    // Shows the outcome of a Microsoft sign-in; returns false if `params` carries none.
+    function showConnectResult(params) {
+      if (params.has("connected")) {
+        const days = Number(params.get("days"));
+        showMessage(`Connected ${params.get("connected")}${days ? ` for ${days} day${days === 1 ? "" : "s"}` : ""}.`, "ok");
+      }
+      else if (params.has("connect_error")) showMessage(params.get("connect_error"), "error");
+      else return false;
+      // An own Azure mailbox: offer the shared mailboxes that account can open (added straight away when the sign-in
+      // was started automatically after signing in to the app with Microsoft).
+      if (params.has("mailbox_id")) {
+        if (params.has("auto")) addSharedAutomatically(params.get("mailbox_id"), params.get("connected"));
+        else offerSharedMailboxes(params.get("mailbox_id"), params.get("connected"));
+      }
+      return true;
+    }
+
+    async function loadMailboxes() {
+      const { data, error } = await callApi("mailboxes", { method: "GET" });
+      if (error) return showMessage(`Could not load mailboxes: ${error}`, "error");
+      // Defaults keep the mailbox list working against an older API that returns only `mailboxes`.
+      categories = data.categories ?? { ap: ["invoice", "utility_bill", "vendor_info", "statement", "other"], ar: [] };
+      const orgs = data.connections ?? [];
+      connections = new Map(orgs.map((c) => [c.id, c]));
+      organization = data.organization ?? null;
+
+      const counts = {};
+      for (const m of data.mailboxes) if (m.connection_id) counts[m.connection_id] = (counts[m.connection_id] ?? 0) + 1;
+      document.getElementById("connection-list").replaceChildren(...orgs.map((c) => connectionRow(c, counts[c.id] ?? 0)));
+      document.getElementById("connection-empty").hidden = orgs.length > 0;
+
+      document.getElementById("mailbox-list").replaceChildren(...data.mailboxes.map(mailboxRow));
+      document.getElementById("mailbox-empty").hidden = data.mailboxes.length > 0;
+      document.getElementById("mailbox-filter").hidden = data.mailboxes.length < 2;
+      applyFilter();
+      syncToggles();
+      return data.mailboxes;
+    }
+
+    // Signed in to the app with Microsoft: once per sign-in, that account's own mailbox and the shared mailboxes it
+    // has Full Access to are added without any clicks. Without an active own mailbox the page goes straight to the
+    // usual Azure mailbox sign-in for that account (Microsoft usually completes it without asking again), and the
+    // shared mailboxes follow when it returns; with one, the shared mailboxes are looked up through it.
+    // If the automatic sign-in didn't complete, a prompt offers it: "Add my mailbox" runs it again, "Not now" hides
+    // the prompt until the next sign-in.
+    const ownPrompt = document.getElementById("own-mailbox-prompt");
+    let appUser = null;
+
+    function autoAddMailboxes(user, mailboxes) {
+      ownPrompt.hidden = true;
+      if (!mailboxes || user.app_metadata?.provider !== "azure" || !user.email) return;
+      const email = user.email.toLowerCase();
+      const own = mailboxes.find((m) => m.provider === "microsoft" && m.email_address === email && !m.delegate_address && m.active && owns(m));
+
+      const autoKey = `auto-mailboxes:${user.id}`;
+      const signIn = String(user.last_sign_in_at ?? "");
+      let firstVisit = false;
+      try {
+        firstVisit = localStorage.getItem(autoKey) !== signIn;
+        localStorage.setItem(autoKey, signIn);
+      } catch {
+        // Storage blocked: never redirect automatically, which could loop; the prompt below still works.
+      }
+      if (own) {
+        if (firstVisit) addSharedAutomatically(own.id, email);
+        return;
+      }
+      const add = document.getElementById("own-mailbox-add");
+      add.onclick = () => startConnect(add, "microsoft", null, { login_hint: email, auto: true });
+      if (firstVisit) {
+        showMessage(`Adding your mailbox ${email}…`);
+        return startConnect(add, "microsoft", null, { login_hint: email, auto: true, redirect: true });
+      }
+
+      const key = `own-mailbox-later:${user.id}`;
+      try {
+        if (sessionStorage.getItem(key)) return;
+      } catch {
+        // Storage blocked: always prompt.
+      }
+      document.getElementById("own-mailbox-text").textContent =
+        `Your mailbox ${email} isn't added yet. Add it to process its inbox.`;
+      document.getElementById("own-mailbox-later").onclick = () => {
+        ownPrompt.hidden = true;
+        try {
+          sessionStorage.setItem(key, "1");
+        } catch {
+          // Not remembered; the prompt returns on the next visit.
+        }
+      };
+      ownPrompt.hidden = false;
+    }
+
+    // --- Organization connections ---
+
+    function connectionRow(c, mailboxCount) {
+      const li = document.createElement("li");
+      li.className = "stacked";
+      const head = document.createElement("div");
+      head.className = "row";
+      const info = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "value";
+      name.textContent = c.name;
+      const meta = document.createElement("div");
+      meta.className = "label";
+      meta.textContent = `Tenant ${c.tenant_id} · Client ${c.client_id} · ${mailboxCount} mailbox${mailboxCount === 1 ? "" : "es"}`;
+      info.append(name, meta);
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      const add = button("Add mailboxes", "secondary");
+      add.dataset.toggle = "bulk-form";
+      add.dataset.connection = c.id;
+      add.addEventListener("click", () => bulkForm.hidden || bulkForm.dataset.connection !== c.id ? showBulkForm(c) : hideForm(bulkForm));
+      const rotate = button("Update secret", "secondary");
+      const remove = button("Remove", "secondary");
+      actions.append(add, rotate, remove);
+      head.append(info, actions);
+
+      // Azure client secrets expire; this replaces the stored one after checking it works.
+      const secretForm = document.createElement("form");
+      secretForm.className = "inline-form";
+      secretForm.hidden = true;
+      secretForm.autocomplete = "off";
+      const secretLabel = document.createElement("label");
+      secretLabel.textContent = "New client secret";
+      const secretInput = document.createElement("input");
+      secretInput.type = "password";
+      secretInput.autocomplete = "new-password";
+      secretInput.required = true;
+      secretLabel.append(secretInput);
+      secretForm.append(secretLabel, button("Save", "secondary", "submit"));
+      rotate.addEventListener("click", () => {
+        secretForm.hidden = !secretForm.hidden;
+        rotate.setAttribute("aria-expanded", String(!secretForm.hidden));
+        if (!secretForm.hidden) secretInput.focus();
+      });
+      secretForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        setBusy(secretForm, true);
+        const { error } = await callApi("mailboxes", { body: { action: "update_connection", connection_id: c.id, client_secret: secretInput.value } });
+        setBusy(secretForm, false);
+        if (error) return showMessage(error, "error");
+        secretForm.reset();
+        secretForm.hidden = true;
+        rotate.setAttribute("aria-expanded", "false");
+        showMessage(`Updated the client secret for ${c.name}.`, "ok");
+      });
+
+      remove.addEventListener("click", async () => {
+        const what = mailboxCount ? ` and its ${mailboxCount} mailbox${mailboxCount === 1 ? "" : "es"} (with their processed emails)` : "";
+        if (!confirm(`Remove ${c.name}${what}?`)) return;
+        remove.disabled = true;
+        const { error } = await callApi(`mailboxes?connection_id=${encodeURIComponent(c.id)}`, { method: "DELETE" });
+        if (error) {
+          remove.disabled = false;
+          return showMessage(`Could not remove: ${error}`, "error");
+        }
+        showMessage(`Removed ${c.name}.`, "ok");
+        if (bulkForm.dataset.connection === c.id) hideForm(bulkForm);
+        await loadMailboxes();
+      });
+
+      li.append(head, secretForm);
+      return li;
+    }
+
+    const orgForm = document.getElementById("org-form");
+    orgForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fields = Object.fromEntries(new FormData(orgForm));
+      setBusy(orgForm, true);
+      const { data, error } = await callApi("mailboxes", { body: { action: "add_connection", ...fields } });
+      setBusy(orgForm, false);
+      if (error) return showMessage(error, "error");
+      hideForm(orgForm);
+      showMessage(data.warning || `Connected ${data.connection.name}. Now add its mailboxes.`, data.warning ? "error" : "ok");
+      await loadMailboxes();
+      showBulkForm(data.connection);
+    });
+
+    // Bulk add: many shared mailboxes under one organization, each checked for access.
+    const bulkForm = document.getElementById("bulk-form");
+    const bulkResults = document.getElementById("bulk-results");
+
+    function showBulkForm(c) {
+      bulkForm.dataset.connection = c.id;
+      document.getElementById("bulk-title").textContent = `Add mailboxes to ${c.name}`;
+      bulkResults.hidden = true;
+      findStatus.textContent = "";
+      renderForwardChoices(bulkForm.querySelector("[data-forward]"), bulkForm.elements.mailbox_type.value);
+      showForm(bulkForm);
+    }
+
+    // Fills the address box with the shared mailboxes a person has Full Access to (Exchange lookup, can take a while).
+    const findButton = document.getElementById("find-button");
+    const findPerson = document.getElementById("find-person");
+    const findStatus = document.getElementById("find-status");
+
+    async function findShared() {
+      const person = findPerson.value.trim();
+      if (!findPerson.reportValidity() || !person) return findPerson.focus();
+      findButton.disabled = true;
+      findStatus.textContent = "Searching shared mailboxes…";
+      const { data, error } = await callApi("mailboxes", {
+        body: { action: "find_shared_mailboxes", connection_id: bulkForm.dataset.connection, person },
+      });
+      findButton.disabled = false;
+      if (error) {
+        findStatus.textContent = "";
+        return showMessage(error, "error");
+      }
+      const box = bulkForm.elements.addresses;
+      const existing = box.value.split(/[\s,;]+/).filter(Boolean);
+      box.value = [...new Set([...existing, ...data.mailboxes.map((m) => m.address)])].join("\n");
+      const partial = data.checked < data.total ? ` (checked the first ${data.checked} of ${data.total})` : "";
+      findStatus.textContent = data.mailboxes.length
+        ? `Found ${data.mailboxes.length} shared mailbox${data.mailboxes.length === 1 ? "" : "es"} for ${person}${partial}. Review the list, then add.`
+        : `${person} has no direct Full Access to any of ${data.total} shared mailboxes${partial}.`;
+    }
+
+    findButton.addEventListener("click", findShared);
+    // Enter in the person field searches instead of submitting the add form.
+    findPerson.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      findShared();
+    });
+
+    bulkForm.elements.mailbox_type.addEventListener("change", () =>
+      renderForwardChoices(bulkForm.querySelector("[data-forward]"), bulkForm.elements.mailbox_type.value));
+
+    bulkForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = {
+        action: "add_mailboxes",
+        connection_id: bulkForm.dataset.connection,
+        addresses: bulkForm.elements.addresses.value,
+        mailbox_type: bulkForm.elements.mailbox_type.value,
+        smart_ap_address: bulkForm.elements.smart_ap_address.value,
+        forward_categories: checkedForward(bulkForm),
+      };
+      setBusy(bulkForm, true);
+      const { data, error } = await callApi("mailboxes", { body });
+      setBusy(bulkForm, false);
+      if (error) return showMessage(error, "error");
+
+      const failed = data.results.filter((r) => !r.ok);
+      bulkResults.replaceChildren(...data.results.map((r) => {
+        const li = document.createElement("li");
+        li.className = r.ok ? "ok" : "failed";
+        li.textContent = r.ok ? `${r.address}: added` : `${r.address}: ${r.error}`;
+        return li;
+      }));
+      bulkResults.hidden = false;
+      // Keep only the addresses that failed, so they can be fixed and retried.
+      bulkForm.elements.addresses.value = failed.map((r) => r.address).join("\n");
+      const added = data.results.length - failed.length;
+      showMessage(`Added ${added} mailbox${added === 1 ? "" : "es"}${failed.length ? `; ${failed.length} could not be added (see below)` : ""}.`,
+        failed.length ? "error" : "ok");
+      await loadMailboxes();
+    });
+
+    // --- Mailbox rows ---
+
+    function mailboxRow(m) {
+      m.mailbox_type ??= "ap";
+      const li = document.createElement("li");
+      li.className = "stacked";
+      const org = connections.get(m.connection_id);
+      li.dataset.search = `${m.email_address} ${m.display_name ?? ""} ${org?.name ?? ""}`.toLowerCase();
+      li.dataset.type = m.mailbox_type;
+
+      const head = document.createElement("div");
+      head.className = "row";
+      const info = document.createElement("div");
+      const email = document.createElement("div");
+      email.className = "value";
+      const type = document.createElement("span");
+      type.className = `badge type-${m.mailbox_type}`;
+      type.textContent = TYPE_LABELS[m.mailbox_type] ?? "AP";
+      email.append(`${m.email_address} `, type);
+      if (m.org_id) {
+        const shared = document.createElement("span");
+        shared.className = "badge org";
+        shared.textContent = "Organization";
+        email.append(shared);
+      }
+      const meta = document.createElement("div");
+      meta.className = "label";
+      const via = org ? ` · ${org.name} (API keys)` : m.delegate_address ? ` shared mailbox, via ${m.delegate_address}` : "";
+      meta.textContent = `${m.display_name ? m.display_name + " · " : ""}${PROVIDER_LABELS[m.provider] || "Azure"}${via}` +
+        ` · connected ${new Date(m.created_at).toLocaleDateString()}${owns(m) ? "" : ` by ${m.owner_name || "a colleague"}`}`;
+
+      // Access window: active until access_expires_at, then the token is deleted and a reconnect is needed.
+      // Organization mailboxes use the organization's keys and don't expire.
+      const expired = !m.connection_id && (!m.active || (m.access_expires_at && new Date(m.access_expires_at) <= new Date()));
+      const access = document.createElement("div");
+      access.className = expired ? "access expired" : "access";
+      if (expired && !owns(m)) {
+        // The token is the owner's; only they can sign in again.
+        access.textContent = `Access expired. ${m.owner_name || "The person who connected it"} needs to reconnect it.`;
+      } else if (expired) {
+        access.textContent = "Access expired. ";
+        const reconnect = button("Reconnect", "link-button");
+        reconnect.addEventListener("click", () =>
+          startConnect(reconnect, m.provider || "microsoft", m.delegate_address ? m.email_address : null));
+        access.append(reconnect);
+      } else if (m.connection_id) {
+        access.textContent = "Access through the organization's API keys.";
+      } else {
+        access.textContent = m.access_expires_at
+          ? `Access until ${new Date(m.access_expires_at).toLocaleString()}. `
+          : "Access has no expiry (connected before access periods). Reconnect to set one. ";
+        if ((m.provider || "microsoft") === "microsoft" && !m.delegate_address && owns(m)) {
+          const findShared = button("Shared mailboxes…", "link-button");
+          findShared.addEventListener("click", () => offerSharedMailboxes(m.id, m.email_address));
+          access.append(findShared);
+        }
+      }
+      info.append(email, meta, access);
+
+      const remove = button("Disconnect", "secondary");
+      remove.addEventListener("click", async () => {
+        if (!confirm(`Disconnect ${m.email_address}?`)) return;
+        remove.disabled = true;
+        const { error } = await callApi(`mailboxes?id=${encodeURIComponent(m.id)}`, { method: "DELETE" });
+        if (error) {
+          remove.disabled = false;
+          return showMessage(`Could not disconnect: ${error}`, "error");
+        }
+        showMessage(`Disconnected ${m.email_address}.`, "ok");
+        await loadMailboxes();
+      });
+
+      // Only the owner disconnects; for everyone else an organization mailbox stays.
+      head.append(info, owns(m) ? remove : "");
+      li.append(head, settingsForm(m, type));
+      const shared = orgSection(m);
+      if (shared) li.append(shared);
+      return li;
+    }
+
+    // --- Organization mailboxes: the owner shares a mailbox with their organization; everyone in it then has a role
+    // on it: Admin (settings, schedule and roles) or Member (uses it; the default). The owner and organization admins
+    // are always Admin. ---
+
+    const MAILBOX_ROLE_LABELS = { owner: "Admin", admin: "Admin", member: "Member" };
+    // Mailboxes from an older API have no role: they are the caller's own.
+    const owns = (m) => (m.role ?? "owner") === "owner";
+    const manages = (m) => owns(m) || m.role === "admin";
+
+    function orgSection(m) {
+      if (!m.org_id && !(owns(m) && organization)) return null;
+      const box = document.createElement("div");
+      box.className = "mailbox-org";
+      const row = document.createElement("div");
+      row.className = "mailbox-org-row";
+      box.append(row);
+
+      if (owns(m) && organization) {
+        const label = document.createElement("label");
+        const share = document.createElement("input");
+        share.type = "checkbox";
+        share.checked = !!m.org_id;
+        label.append(share, `Organization mailbox: everyone in ${organization.name} can use it`);
+        share.addEventListener("change", async () => {
+          if (!share.checked && !confirm(`Stop sharing ${m.email_address} with ${organization.name}? Only you will see it, and the roles set on it are cleared.`)) {
+            share.checked = true;
+            return;
+          }
+          share.disabled = true;
+          const { error } = await callApi("mailboxes", { method: "PATCH", body: { id: m.id, org_shared: share.checked } });
+          share.disabled = false;
+          if (error) {
+            share.checked = !share.checked;
+            return showMessage(`Could not change sharing: ${error}`, "error");
+          }
+          showMessage(share.checked
+            ? `${m.email_address} is now an organization mailbox. Everyone in ${organization.name} can use it as a member; make people admins under People and roles.`
+            : `${m.email_address} is no longer shared with ${organization.name}.`, "ok");
+          await loadMailboxes();
+        });
+        row.append(label);
+      } else {
+        row.append(`Organization mailbox. Your role: ${MAILBOX_ROLE_LABELS[m.role] ?? "Member"}.`);
+      }
+      if (!m.org_id) return box;
+
+      const toggle = button("People and roles", "link-button");
+      toggle.setAttribute("aria-expanded", "false");
+      const wrap = document.createElement("div");
+      wrap.className = "org-table-wrap";
+      wrap.hidden = true;
+      toggle.addEventListener("click", async () => {
+        wrap.hidden = !wrap.hidden;
+        toggle.setAttribute("aria-expanded", String(!wrap.hidden));
+        if (!wrap.hidden) await loadAccess(m, wrap);
+      });
+      row.append(toggle);
+      box.append(wrap);
+      return box;
+    }
+
+    // Everyone in the organization with their role on mailbox `m`; the mailbox's admins change roles here.
+    async function loadAccess(m, wrap) {
+      const text = (tag, className, textContent) => Object.assign(document.createElement(tag), { className, textContent });
+      wrap.replaceChildren(text("p", "hint", "Loading…"));
+      const { data, error } = await callApi(`mailboxes?access=${encodeURIComponent(m.id)}`, { method: "GET" });
+      if (error) {
+        wrap.hidden = true;
+        return showMessage(`Could not load who can use ${m.email_address}: ${error}`, "error");
+      }
+      const table = document.createElement("table");
+      table.className = "logs";
+      const head = table.createTHead().insertRow();
+      for (const t of ["Name", "Email", "Role"]) head.append(text("th", "", t));
+      const rows = table.createTBody();
+      for (const p of data.people) {
+        const tr = rows.insertRow();
+        const name = tr.insertCell();
+        name.textContent = p.full_name || "—";
+        if (p.you) name.append(text("span", "badge you", "You"));
+        tr.insertCell().textContent = p.email ?? "";
+        const cell = tr.insertCell();
+        if (!data.manage || p.fixed) {
+          cell.textContent = MAILBOX_ROLE_LABELS[p.role];
+          const why = p.role === "owner" ? "Connected it" : p.org_admin ? "Organization admin" : null;
+          if (why) cell.append(text("div", "muted", why));
+          continue;
+        }
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", `Role of ${p.email} on ${m.email_address}`);
+        for (const r of ["member", "admin"]) select.add(new Option(MAILBOX_ROLE_LABELS[r], r, false, r === p.role));
+        select.addEventListener("change", async () => {
+          select.disabled = true;
+          const { error } = await callApi("mailboxes", {
+            body: { action: "set_mailbox_role", mailbox_id: m.id, user_id: p.user_id, role: select.value },
+          });
+          select.disabled = false;
+          if (error) {
+            select.value = p.role;
+            return showMessage(`Could not change the role: ${error}`, "error");
+          }
+          p.role = select.value;
+          showMessage(`${p.full_name || p.email} is now ${p.role === "admin" ? "an admin" : "a member"} of ${m.email_address}.`, "ok");
+          // Changing your own role changes what you may do here.
+          if (p.you) await loadMailboxes();
+        });
+        cell.append(select);
+      }
+      const hint = text("p", "hint", "Members see this mailbox and its emails, process its inbox and mark emails done. " +
+        "Admins can also change its settings, schedule and roles. People who join the organization later are members.");
+      hint.style.padding = "0 12px 10px";
+      wrap.replaceChildren(table, hint);
+    }
+
+    // Per-mailbox settings: AP or AR, which categories are forwarded, and where to.
+    function settingsForm(m, typeBadge) {
+      const form = document.createElement("form");
+      form.className = "inline-form settings-form";
+
+      const typeLabel = document.createElement("label");
+      typeLabel.textContent = "Type";
+      const typeSelect = document.createElement("select");
+      typeSelect.name = "mailbox_type";
+      for (const [value, label] of Object.entries({ ap: "Accounts payable (AP)", ar: "Accounts receivable (AR)" })) {
+        typeSelect.append(new Option(label, value, false, value === m.mailbox_type));
+      }
+      typeLabel.append(typeSelect);
+
+      const destLabel = document.createElement("label");
+      destLabel.textContent = "Destination email";
+      const dest = document.createElement("input");
+      dest.type = "email";
+      dest.name = "smart_ap_address";
+      dest.placeholder = "invoices@your-ap-system.com";
+      dest.value = m.smart_ap_address || "";
+      destLabel.append(dest);
+
+      const forward = document.createElement("fieldset");
+      forward.className = "days";
+      renderForwardChoices(forward, m.mailbox_type, m.forward_categories);
+      // Switching type shows that type's categories with its defaults ticked, as the server would.
+      typeSelect.addEventListener("change", () =>
+        renderForwardChoices(forward, typeSelect.value, typeSelect.value === m.mailbox_type ? m.forward_categories : null));
+
+      // Run summary emailed after each run; off means no summary email at all. When on, it goes to the summary address,
+      // or if that is blank to the mailbox itself (a shared mailbox: the owner's account email).
+      const summaryLabel = document.createElement("label");
+      summaryLabel.className = "checkbox";
+      const summary = document.createElement("input");
+      summary.type = "checkbox";
+      summary.name = "send_summary";
+      summary.checked = m.send_summary === true;
+      summaryLabel.append(summary, " Send summary email");
+
+      const shared = !!m.delegate_address || !!m.connection_id;
+      const summaryToLabel = document.createElement("label");
+      summaryToLabel.textContent = "Summary to";
+      const summaryTo = document.createElement("input");
+      summaryTo.type = "email";
+      summaryTo.name = "summary_address";
+      summaryTo.placeholder = !shared ? m.email_address
+        : owns(m) ? (appUser?.email || "Your account email") : `${m.owner_name || "The owner"}'s account email`;
+      summaryTo.value = m.summary_address || "";
+      summaryToLabel.append(summaryTo);
+      const showSummaryTo = () => (summaryToLabel.hidden = !summary.checked);
+      summary.addEventListener("change", showSummaryTo);
+      showSummaryTo();
+
+      // Save is only enabled (and highlighted) when something changed; the result shows next to it.
+      const save = button("Save", "secondary", "submit");
+      const status = document.createElement("span");
+      status.className = "save-status";
+      status.setAttribute("role", "status");
+      const current = () => JSON.stringify([typeSelect.value, dest.value.trim(), checkedForward(form), summary.checked, summaryTo.value.trim()]);
+      let saved = null;
+      const refresh = () => {
+        const dirty = current() !== saved;
+        save.disabled = !dirty;
+        save.classList.toggle("secondary", !dirty);
+        if (dirty) status.textContent = "";
+      };
+      form.addEventListener("input", refresh);
+      form.addEventListener("change", refresh);
+
+      form.append(typeLabel, destLabel, forward, summaryLabel, summaryToLabel, save, status);
+      saved = current();
+      refresh();
+      // Members of an organization mailbox see its settings; only its admins change them.
+      if (!manages(m)) {
+        for (const c of form.elements) c.disabled = true;
+        save.hidden = true;
+        form.append(Object.assign(document.createElement("p"), { className: "hint", textContent: "Only admins of this mailbox can change its settings." }));
+      }
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const body = {
+          id: m.id, mailbox_type: typeSelect.value, forward_categories: checkedForward(form), smart_ap_address: dest.value,
+          send_summary: summary.checked, summary_address: summaryTo.value,
+        };
+        status.className = "save-status";
+        status.textContent = "Saving…";
+        setBusy(form, true);
+        const { data, error } = await callApi("mailboxes", { method: "PATCH", body });
+        setBusy(form, false);
+        if (error) {
+          refresh();
+          status.className = "save-status error";
+          status.textContent = "Not saved";
+          return showMessage(`Could not save settings: ${error}`, "error");
+        }
+        Object.assign(m, data.mailbox);
+        dest.value = m.smart_ap_address || "";
+        summary.checked = m.send_summary === true;
+        summaryTo.value = m.summary_address || "";
+        showSummaryTo();
+        saved = current();
+        refresh();
+        status.className = "save-status ok";
+        status.textContent = "✓ Saved";
+        typeBadge.className = `badge type-${m.mailbox_type}`;
+        typeBadge.textContent = TYPE_LABELS[m.mailbox_type];
+        form.closest("li").dataset.type = m.mailbox_type;
+        const cats = m.forward_categories.map((c) => CATEGORY_LABELS[c] ?? c).join(", ");
+        showMessage(!cats ? `Saved. Nothing from ${m.email_address} is forwarded automatically.`
+          : m.smart_ap_address ? `Saved. ${cats} from ${m.email_address} will be forwarded to ${m.smart_ap_address}.`
+          : `Saved. Set a destination email to forward ${cats} from ${m.email_address}.`, "ok");
+      });
+      return form;
+    }
+
+    // Checkboxes for the categories of `type` that can be forwarded; `checked` defaults to that type's default.
+    function renderForwardChoices(fieldset, type, checked = null) {
+      const defaults = { ap: ["invoice"], ar: ["remittance"] };
+      const on = new Set(checked ?? defaults[type]);
+      const legend = document.createElement("legend");
+      legend.textContent = "Forward automatically";
+      fieldset.replaceChildren(legend, ...(categories[type] ?? []).filter((c) => c !== "other").map((c) => {
+        const label = document.createElement("label");
+        label.className = "checkbox";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.name = "forward";
+        input.value = c;
+        input.checked = on.has(c);
+        label.append(input, CATEGORY_LABELS[c] ?? c);
+        return label;
+      }));
+    }
+
+    const checkedForward = (form) => [...form.querySelectorAll('input[name="forward"]:checked')].map((i) => i.value);
+
+    function button(text, className, type = "button") {
+      const b = document.createElement("button");
+      b.type = type;
+      b.className = className;
+      b.textContent = text;
+      return b;
+    }
+
+    // --- Filter (useful with dozens of mailboxes) ---
+
+    function applyFilter() {
+      const text = document.getElementById("filter-text").value.trim().toLowerCase();
+      const type = document.getElementById("filter-type").value;
+      const rows = [...document.getElementById("mailbox-list").children];
+      let shown = 0;
+      for (const li of rows) {
+        li.hidden = (text && !li.dataset.search.includes(text)) || (type && li.dataset.type !== type);
+        if (!li.hidden) shown++;
+      }
+      document.getElementById("filter-count").textContent = shown === rows.length ? `${rows.length} mailboxes` : `${shown} of ${rows.length}`;
+    }
+    document.getElementById("filter-text").addEventListener("input", applyFilter);
+    document.getElementById("filter-type").addEventListener("change", applyFilter);
+
+    // --- Sign-in (delegated OAuth) ---
+
+    // Starts Microsoft or Google sign-in in a popup; the chosen access period is carried through to the callback.
+    // The popup is opened straight from the click (before the API call) so browsers don't block it; if they
+    // do anyway, sign-in falls back to navigating this page.
+    // `shared_mailbox`: a Microsoft 365 shared mailbox read through the account that signs in.
+    // `login_hint`: the account to sign in with (skips the account picker).
+    // `auto`: the shared mailboxes of the account are then added without asking (see autoAddMailboxes).
+    // `redirect`: navigate this page instead of a popup (needed when not started from a click).
+    async function startConnect(button, provider, shared_mailbox = null, { login_hint = null, auto = false, redirect = false } = {}) {
+      button.disabled = true;
+      if (!redirect) showMessage("");
+      const popup = redirect ? null : openCentered(500, 650);
+      if (popup) popup.document.body.textContent = `Opening ${provider === "google" ? "Google" : "Microsoft"} sign-in…`;
+      const access_days = Number(document.getElementById("access-days").value);
+      const { data, error } = await callApi("mailboxes", {
+        body: {
+          action: "connect", provider, access_days, popup: !!popup,
+          ...(shared_mailbox ? { shared_mailbox } : {}), ...(login_hint ? { login_hint } : {}), ...(auto ? { auto } : {}),
+        },
+      });
+      if (error) {
+        popup?.close();
+        button.disabled = false;
+        return showMessage(error, "error");
+      }
+      if (!popup) return (location.href = data.url);
+
+      popup.location.href = data.url;
+      popup.focus();
+      const watch = setInterval(() => {
+        if (!popup.closed) return;
+        clearInterval(watch);
+        button.disabled = false;
+      }, 500);
+    }
+
+    function openCentered(width, height) {
+      const left = Math.round(window.screenX + (window.outerWidth - width) / 2);
+      const top = Math.round(window.screenY + (window.outerHeight - height) / 2);
+      return window.open("", "mailbox-sign-in", `popup,width=${width},height=${height},left=${left},top=${top}`);
+    }
+
+    // connect-done.html (loaded in the popup at the end of sign-in) reports the outcome here.
+    new BroadcastChannel("mailbox-connect").addEventListener("message", async (e) => {
+      for (const b of document.querySelectorAll(".connect-button, #shared-form button")) b.disabled = false;
+      const params = new URLSearchParams(e.data);
+      if (params.has("connected")) hideForm(sharedForm);
+      showConnectResult(params);
+      const mailboxes = await loadMailboxes();
+      if (appUser) autoAddMailboxes(appUser, mailboxes);
+    });
+
+    // --- Add forms: shown only from their button, one at a time ---
+
+    const sharedForm = document.getElementById("shared-form");
+
+    function showForm(form) {
+      for (const f of document.querySelectorAll(".connect-form")) f.hidden = f !== form;
+      syncToggles();
+      form.querySelector("input, textarea").focus();
+    }
+
+    function hideForm(form) {
+      form.reset();
+      form.hidden = true;
+      if (form === bulkForm) bulkResults.hidden = true;
+      if (form === pickForm) pickResults.hidden = true;
+      syncToggles();
+    }
+
+    // Highlights the button whose form is open (for "Add mailboxes", the one for that organization).
+    function syncToggles() {
+      for (const b of document.querySelectorAll("[data-toggle]")) {
+        const form = document.getElementById(b.dataset.toggle);
+        const open = !form.hidden && (!b.dataset.connection || form.dataset.connection === b.dataset.connection);
+        b.setAttribute("aria-expanded", String(open));
+      }
+    }
+
+    for (const b of document.querySelectorAll(".panel-head [data-toggle]")) {
+      const form = document.getElementById(b.dataset.toggle);
+      b.addEventListener("click", () => form.hidden ? showForm(form) : hideForm(form));
+    }
+    for (const b of document.querySelectorAll("[data-cancel]")) b.addEventListener("click", () => hideForm(b.form));
+    syncToggles();
+
+    // Shared mailbox: Microsoft sign-in with the user's own account (see startConnect).
+    sharedForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const address = sharedForm.elements.shared_mailbox.value.trim();
+      startConnect(sharedForm.querySelector('button[type="submit"]'), "microsoft", address);
+    });
+
+    for (const b of document.querySelectorAll(".connect-button")) {
+      b.addEventListener("click", () => startConnect(b, b.dataset.provider));
+    }
+
+    // --- Shared mailboxes of a signed-in Azure account: listed after sign-in (or from the mailbox row), then the
+    // ticked ones (plus any typed addresses) are added, read through that account. ---
+
+    const pickForm = document.getElementById("pick-shared-form");
+    const pickList = document.getElementById("pick-shared-list");
+    const pickStatus = document.getElementById("pick-shared-status");
+    const pickResults = document.getElementById("pick-shared-results");
+
+    // Adds every shared mailbox `account` can open that isn't added yet, without a picker. Quiet when there are none.
+    async function addSharedAutomatically(mailboxId, account) {
+      const { data, error } = await callApi("mailboxes", { body: { action: "auto_shared", mailbox_id: mailboxId } });
+      if (error) return showMessage(`Could not add the shared mailboxes of ${account}: ${error}`, "error");
+      if (!data.results.length) return;
+      const added = data.results.filter((r) => r.ok);
+      const failed = data.results.filter((r) => !r.ok);
+      showMessage(
+        `Added ${added.length} shared mailbox${added.length === 1 ? "" : "es"} of ${account}` +
+          (failed.length ? `; could not add ${failed.map((r) => `${r.address} (${r.error})`).join(", ")}` : "") + ".",
+        failed.length ? "error" : "ok",
+      );
+      await loadMailboxes();
+    }
+
+    async function offerSharedMailboxes(mailboxId, account) {
+      pickForm.dataset.mailbox = mailboxId;
+      document.getElementById("pick-shared-title").textContent = `Shared mailboxes for ${account}`;
+      pickStatus.textContent = "Looking for shared mailboxes…";
+      pickList.replaceChildren();
+      pickList.hidden = true;
+      pickResults.hidden = true;
+      showForm(pickForm);
+
+      const { data, error } = await callApi("mailboxes", { body: { action: "discover_shared", mailbox_id: mailboxId } });
+      if (pickForm.dataset.mailbox !== mailboxId) return; // another account's list was opened meanwhile
+      if (error) return (pickStatus.textContent = error);
+      if (!data.mailboxes.length) {
+        pickStatus.textContent = data.warning ?? `No shared mailboxes left to add for ${account}. You can still add one by address.`;
+        return;
+      }
+      const n = data.mailboxes.length;
+      pickStatus.textContent = `${account} has Full Access to ${n} shared mailbox${n === 1 ? "" : "es"} not added yet. Tick the ones to add.`;
+      const legend = document.createElement("legend");
+      legend.textContent = "Shared mailboxes";
+      pickList.replaceChildren(legend, ...data.mailboxes.map((m) => {
+        const label = document.createElement("label");
+        label.className = "checkbox";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.value = m.address;
+        label.append(input, ` ${m.name ? `${m.name} · ` : ""}${m.address}`);
+        return label;
+      }));
+      pickList.hidden = false;
+    }
+
+    pickForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const ticked = [...pickList.querySelectorAll("input:checked")].map((i) => i.value);
+      const extra = pickForm.elements.extra.value.trim();
+      if (!ticked.length && !extra) return showMessage("Tick a shared mailbox or enter an address.", "error");
+
+      setBusy(pickForm, true);
+      const { data, error } = await callApi("mailboxes", {
+        body: { action: "add_shared", mailbox_id: pickForm.dataset.mailbox, addresses: [...ticked, extra] },
+      });
+      setBusy(pickForm, false);
+      if (error) return showMessage(error, "error");
+
+      pickResults.replaceChildren(...data.results.map((r) => {
+        const li = document.createElement("li");
+        li.className = r.ok ? "ok" : "failed";
+        li.textContent = r.ok ? `${r.address}: added` : `${r.address}: ${r.error}`;
+        return li;
+      }));
+      pickResults.hidden = false;
+      // Added mailboxes leave the list; failed typed addresses stay so they can be fixed and retried.
+      const added = new Set(data.results.filter((r) => r.ok).map((r) => r.address));
+      for (const input of pickList.querySelectorAll("input")) if (added.has(input.value)) input.closest("label").remove();
+      if (!pickList.querySelector("input")) pickList.hidden = true;
+      pickForm.elements.extra.value = data.results.filter((r) => !r.ok && !ticked.includes(r.address)).map((r) => r.address).join("\n");
+      const failed = data.results.length - added.size;
+      showMessage(`Added ${added.size} shared mailbox${added.size === 1 ? "" : "es"}${failed ? `; ${failed} could not be added (see below)` : ""}.`,
+        failed ? "error" : "ok");
+      await loadMailboxes();
+    });
+  </script>
+</body>
+</html>
