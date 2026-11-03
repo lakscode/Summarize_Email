@@ -383,7 +383,8 @@ async function sendReportNow(userId: string, id: unknown): Promise<Response> {
   const { data, error } = await db.from("mailboxes").select(REPORT_MAILBOX_COLUMNS).eq("id", id).single();
   if (error) return await fail("mailboxes/forward_report", error.message, 500, { userId, context: { id } });
   const m = data as unknown as ReportMailbox & { forward_report_next_at: string | null };
-  const result = await sendForwardReport(db, m);
+  const me = (await profilesOf([userId])).get(userId);
+  const result = await sendForwardReport(db, m, { id: userId, name: me?.full_name?.trim() || me?.email || null });
   // Sending early doesn't move the daily time; a report that is off stays off.
   const { data: box } = await db.from("mailboxes").select("forward_report_enabled").eq("id", m.id).single();
   if (!box?.forward_report_enabled) await db.from("mailboxes").update({ forward_report_next_at: null }).eq("id", m.id);

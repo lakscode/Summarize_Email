@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reports</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <link rel="icon" type="image/png" href="images/favicon.png" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="assets/brand.js"></script>
+  <script src="assets/common.js"></script>
+</head>
+<body>
+  <div class="shell" hidden>
+    <aside id="sidebar" class="sidebar"></aside>
+
+    <main class="content">
+      <div id="message" class="message" hidden></div>
+      <h1>Reports</h1>
+      <p class="sub">Every forwarded invoices report of your mailboxes and your organization's: when it ran, the invoices it
+        listed and who it went to. Set up a mailbox's daily report on the Settings page. Newest first.</p>
+
+      <div class="toolbar">
+        <div class="tabs" role="tablist" id="status-tabs">
+          <button class="tab active" data-status="">All</button>
+          <button class="tab" data-status="sent">Sent</button>
+          <button class="tab" data-status="empty">Nothing to send</button>
+          <button class="tab" data-status="failed">Failed</button>
+        </div>
+        <div class="toolbar-actions">
+          <button class="secondary" id="refresh">Refresh</button>
+        </div>
+      </div>
+
+      <form class="log-filters" id="report-filters">
+        <label>Mailbox
+          <select name="mailbox"><option value="">All mailboxes</option></select>
+        </label>
+        <label>From
+          <input type="date" name="from" />
+        </label>
+        <label>To
+          <input type="date" name="to" />
+        </label>
+      </form>
+
+      <div class="panel log-panel">
+        <table class="logs reports">
+          <thead><tr><th></th><th>Ran</th><th>Mailbox</th><th>Period</th><th>Status</th><th>Invoices</th><th>Sent to</th><th>How</th></tr></thead>
+          <tbody id="report-rows"></tbody>
+        </table>
+        <p class="empty" id="report-empty" hidden>No reports yet. Turn on a mailbox's daily report on the Settings page.</p>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // Report history (supabase/migrations/*_reports.sql), read straight from the reports table: RLS returns the reports
+    // of mailboxes the user can open (their own and their organization's).
+    const MAX_ROWS = 200;
+    const STATUS_LABELS = { sent: "Sent", empty: "Nothing to send", failed: "Failed" };
+    const STATUS_CLASSES = { sent: "status-done", empty: "status-no_action", failed: "status-error" };
+    const CATEGORY_LABELS = { invoice: "Invoice", utility_bill: "Utility bill" };
+    let status = "";
+
+    (async () => {
+      const session = await requireSession();
+      if (!session) return;
+      renderSidebar("reports", session);
+      document.querySelector(".shell").hidden = false;
+      await load();
+    })();
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    const when = (iso) => new Date(iso).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+
+    async function load() {
+      const filters = Object.fromEntries(new FormData(document.getElementById("report-filters")));
+      let query = sb.from("reports")
+        .select("id, mailbox_address, trigger, sent_by_name, period_start, period_end, status, recipients, subject, item_count, items, error, created_at")
+        .order("created_at", { ascending: false })
+        .limit(MAX_ROWS);
+      if (status) query = query.eq("status", status);
+      if (filters.mailbox) query = query.eq("mailbox_address", filters.mailbox);
+      if (filters.from) query = query.gte("created_at", new Date(`${filters.from}T00:00`).toISOString());
+      if (filters.to) query = query.lt("created_at", new Date(new Date(`${filters.to}T00:00`).getTime() + 86_400_000).toISOString());
+      trackLoading(1);
+      const { data, error } = await query;
+      trackLoading(-1);
+      if (error) return showMessage(`Could not load reports: ${error.message}`, "error");
+      document.getElementById("report-rows").replaceChildren(...data.flatMap(reportRows));
+      document.getElementById("report-empty").hidden = data.length > 0;
+      fillMailboxes(data);
+    }
+
+    // The mailbox filter offers every mailbox seen so far (kept when a filter narrows the list).
+    const seenMailboxes = new Set();
+    function fillMailboxes(reports) {
+      const select = document.querySelector('#report-filters select[name="mailbox"]');
+      for (const r of reports) seenMailboxes.add(r.mailbox_address);
+      const chosen = select.value;
+      select.replaceChildren(new Option("All mailboxes", ""), ...[...seenMailboxes].sort().map((m) => new Option(m, m)));
+      select.value = chosen;
+    }
+
+    // One row per report, and a hidden row with the invoices it listed (opened by the row's chevron).
+    function reportRows(r) {
+      const tr = el("tr");
+      const expand = el("button", "icon-button expand", "▸");
+      expand.title = "Invoices";
+      expand.setAttribute("aria-expanded", "false");
+      expand.disabled = !r.items?.length;
+      const statusCell = el("td");
+      statusCell.append(el("span", `badge ${STATUS_CLASSES[r.status] ?? ""}`, STATUS_LABELS[r.status] ?? r.status));
+      if (r.error) statusCell.append(el("div", "muted error-text", r.error));
+      const expandCell = el("td");
+      expandCell.append(expand);
+      tr.append(
+        expandCell,
+        el("td", null, when(r.created_at)),
+        el("td", null, r.mailbox_address),
+        el("td", "muted", `${when(r.period_start)} – ${when(r.period_end)}`),
+        statusCell,
+        el("td", null, String(r.item_count)),
+        el("td", "muted", r.recipients?.join(", ") || "—"),
+        el("td", "muted", r.trigger === "manual" ? `Send now${r.sent_by_name ? ` by ${r.sent_by_name}` : ""}` : "Daily"),
+      );
+      if (!r.items?.length) return [tr];
+
+      const detail = el("tr", "email-detail-row");
+      detail.hidden = true;
+      const cell = el("td");
+      cell.colSpan = 8;
+      const table = el("table", "logs report-items");
+      const head = table.createTHead().insertRow();
+      for (const h of ["Forwarded", "Email", "Vendor", "Invoice #", "Amount", "Due", "Forwarded to"]) head.append(el("th", null, h));
+      const body = table.createTBody();
+      for (const i of r.items) {
+        const row = body.insertRow();
+        row.append(el("td", "muted", i.forwarded_at ? when(i.forwarded_at) : ""));
+        const email = el("td");
+        const subject = el(i.web_link?.startsWith("https://") ? "a" : "span", null, i.subject);
+        if (subject.tagName === "A") {
+          subject.href = i.web_link;
+          subject.target = "_blank";
+          subject.rel = "noopener";
+        }
+        email.append(subject, el("div", "muted", [i.from, CATEGORY_LABELS[i.category] ?? i.category].filter(Boolean).join(" · ")));
+        row.append(email, el("td", null, i.vendor ?? ""), el("td", null, i.invoice_number ?? ""), el("td", null, i.amount ?? ""),
+          el("td", null, i.due_date ?? ""), el("td", "muted", i.forwarded_to ?? ""));
+      }
+      cell.append(table);
+      detail.append(cell);
+      expand.addEventListener("click", () => {
+        detail.hidden = !detail.hidden;
+        expand.setAttribute("aria-expanded", String(!detail.hidden));
+        tr.classList.toggle("open", !detail.hidden);
+      });
+      return [tr, detail];
+    }
+
+    for (const tab of document.querySelectorAll("#status-tabs .tab")) {
+      tab.addEventListener("click", () => {
+        status = tab.dataset.status;
+        for (const t of document.querySelectorAll("#status-tabs .tab")) t.classList.toggle("active", t === tab);
+        load();
+      });
+    }
+    document.getElementById("report-filters").addEventListener("change", load);
+    document.getElementById("refresh").addEventListener("click", load);
+  </script>
+</body>
+</html>

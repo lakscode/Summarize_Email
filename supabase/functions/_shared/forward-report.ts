@@ -1,7 +1,8 @@
 // Daily "forwarded invoices" report of a mailbox (see migrations/*_forwarded_invoices_report.sql): the invoices and
 // utility bills forwarded since the previous report, by the app or manually in Outlook, emailed from the mailbox to
 // its report recipients. Sent by the scheduler at the time set on the Settings page; nothing is sent when nothing was
-// forwarded. Subjects and vendors come from email content, so everything inserted is HTML-escaped.
+// forwarded. Every run is kept in the report history (reports, shown on the Reports page). Subjects and vendors come
+// from email content, so everything inserted is HTML-escaped.
 import { APP_NAME } from "./brand.ts";
 import { escapeHtml as esc, renderEmail } from "./email-template.ts";
 import { logApi, logStep } from "./log.ts";
@@ -44,14 +45,18 @@ interface Row {
 }
 
 // Sends one mailbox's report for the time since its previous one and schedules the next. Returns what happened, also
-// stored in forward_report_last_result; never throws.
-export async function sendForwardReport(db: Db, m: ReportMailbox, now = new Date()) {
+// stored in forward_report_last_result and as a row of the report history (reports); never throws.
+// `by`: who pressed "Send now" (null for the daily report).
+export async function sendForwardReport(db: Db, m: ReportMailbox, by: { id: string; name: string | null } | null = null, now = new Date()) {
   const since = new Date(Math.max(
     m.forward_report_last_at ? new Date(m.forward_report_last_at).getTime() : 0,
     now.getTime() - (m.forward_report_last_at ? MAX_LOOKBACK_MS : 86_400_000),
   ));
   const next = nextReportAt(m.forward_report_time, m.forward_report_timezone, now);
+  const to = reportRecipients(m.forward_report_addresses);
   let result: Record<string, unknown>;
+  let rows: Row[] = [];
+  let subject: string | null = null;
   try {
     const { data, error } = await db.from("processed_emails")
       .select("subject, from_name, from_address, category, vendor, invoice_number, amount, due_date, action_taken, processed_at, web_link")
@@ -59,15 +64,15 @@ export async function sendForwardReport(db: Db, m: ReportMailbox, now = new Date
       .gte("processed_at", since.toISOString()).lt("processed_at", now.toISOString())
       .order("processed_at").limit(MAX_ROWS);
     if (error) throw new Error(error.message);
-    const rows = (data as Row[]).filter((r) => FORWARDED.test(r.action_taken ?? ""));
-    const to = reportRecipients(m.forward_report_addresses);
+    rows = (data as Row[]).filter((r) => FORWARDED.test(r.action_taken ?? ""));
     if (!to.length) {
       result = { at: now.toISOString(), error: "No recipients set" };
     } else if (!rows.length) {
       result = { at: now.toISOString(), sent: false, count: 0 };
     } else {
-      const { subject, html } = buildForwardReport(m, rows, since, now);
-      await (await mailClient(db, m)).sendMail(to, subject, html);
+      const report = buildForwardReport(m, rows, since, now);
+      subject = report.subject;
+      await (await mailClient(db, m)).sendMail(to, report.subject, report.html);
       result = { at: now.toISOString(), sent: true, count: rows.length, to };
       await logStep("forward-report/sent", `Forwarded invoices report for ${m.email_address} sent to ${to.join(", ")}: ${rows.length} forwarded`,
         m.owner_user_id, { mailbox: m.email_address, count: rows.length });
@@ -76,6 +81,30 @@ export async function sendForwardReport(db: Db, m: ReportMailbox, now = new Date
     await logApi("forward-report", err, { userId: m.owner_user_id, context: { mailbox: m.email_address } });
     result = { at: now.toISOString(), error: err instanceof Error ? err.message : String(err) };
   }
+
+  const { error: historyError } = await db.from("reports").insert({
+    kind: "forwarded_invoices",
+    mailbox_id: m.id,
+    mailbox_address: m.email_address,
+    owner_user_id: m.owner_user_id,
+    trigger: by ? "manual" : "schedule",
+    sent_by: by?.id ?? null,
+    sent_by_name: by?.name ?? null,
+    period_start: since.toISOString(),
+    period_end: now.toISOString(),
+    status: result.error ? "failed" : result.sent ? "sent" : "empty",
+    recipients: to,
+    subject,
+    item_count: rows.length,
+    items: rows.map((r) => ({
+      subject: r.subject || "(no subject)",
+      from: r.from_name ? `${r.from_name} <${r.from_address ?? ""}>` : r.from_address,
+      category: r.category, vendor: r.vendor, invoice_number: r.invoice_number, amount: r.amount, due_date: r.due_date,
+      forwarded_to: forwardedTo(r), forwarded_at: r.processed_at, web_link: r.web_link,
+    })),
+    error: (result.error as string | undefined) ?? null,
+  });
+  if (historyError) await logApi("forward-report/history", historyError.message, { userId: m.owner_user_id, level: "warn", context: { mailbox: m.email_address } });
   // A failed report isn't retried every tick: the next one covers the same period (since the last successful one).
   await db.from("mailboxes").update({
     forward_report_next_at: next.toISOString(),
@@ -86,6 +115,10 @@ export async function sendForwardReport(db: Db, m: ReportMailbox, now = new Date
 }
 
 const LABELS: Record<string, string> = { invoice: "Invoice", utility_bill: "Utility bill" };
+
+// Where an email went: the destination address, or "Manually forwarded".
+const forwardedTo = (r: Row) =>
+  r.action_taken === "Manually forwarded" ? "Manually forwarded" : (r.action_taken ?? "").replace(/^Forwarded to /, "");
 
 function buildForwardReport(m: ReportMailbox, rows: Row[], since: Date, until: Date) {
   const tz = m.forward_report_timezone;
@@ -101,11 +134,10 @@ function buildForwardReport(m: ReportMailbox, rows: Row[], since: Date, until: D
     const title = esc(r.subject || "(no subject)");
     const linked = r.web_link?.startsWith("https://") ? `<a href="${esc(r.web_link)}" style="color:#1c2230;">${title}</a>` : title;
     const from = r.from_name ? `${r.from_name} <${r.from_address ?? ""}>` : r.from_address ?? "";
-    const forwardedTo = r.action_taken === "Manually forwarded" ? "Manually forwarded" : (r.action_taken ?? "").replace(/^Forwarded to /, "");
     return `<tr>${[
       cell(esc(when(r.processed_at))),
       cell(`<strong>${linked}</strong><br><span style="color:#5f6b7a;font-size:13px;">${esc(from)} · ${esc(LABELS[r.category ?? ""] ?? r.category)}</span>`),
-      cell(esc(r.vendor)), cell(esc(r.invoice_number)), cell(esc(r.amount)), cell(esc(r.due_date)), cell(esc(forwardedTo)),
+      cell(esc(r.vendor)), cell(esc(r.invoice_number)), cell(esc(r.amount)), cell(esc(r.due_date)), cell(esc(forwardedTo(r))),
     ].join("")}</tr>`;
   }).join("");
   const html = renderEmail({

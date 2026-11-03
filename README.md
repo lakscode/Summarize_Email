@@ -214,3 +214,7 @@ one or more recipients (comma-separated), and save. The scheduler sends it at th
 it, from the mailbox itself, covering everything forwarded since the previous report; days with nothing forwarded send
 nothing. **Send now** sends it straight away. Owners and mailbox admins change it (`_shared/forward-report.ts`,
 `migrations/*_forwarded_invoices_report.sql`).
+
+Every report run (sent, nothing to send, or failed, with the invoices it listed, the recipients and who pressed **Send
+now**) is kept in the `reports` table and listed on the **Reports** page, for everyone who can open the mailbox
+(`migrations/*_reports.sql`). The history stays when a mailbox is disconnected.
