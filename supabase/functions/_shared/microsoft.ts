@@ -3,7 +3,7 @@
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { decodeBase64 } from "./base64.ts";
 import {
-  contentIdOf, type FullMessage, type InlineImage, isEmailAttachment, isNotFound, type MailAttachment, type MailboxRow,
+  contentIdOf, type FullMessage, type InlineImage, INVOICES_FOLDERS, isEmailAttachment, isNotFound, type MailAttachment, type MailboxRow,
   type MailClient, mapLimit, type MailMessage, MAX_INLINE_IMAGE_BYTES, readRefreshToken, saveRefreshToken, type SentFrom,
 } from "./mail.ts";
 import { env } from "./supabase.ts";
@@ -245,13 +245,16 @@ const LAST_VERB = "Integer 0x1081";
 const LAST_VERB_TIME = "SystemTime 0x1082";
 const VERB_FORWARD = "104";
 
+// Messages in the AP / AR Invoices folders (or their vendor subfolders) are skipped: they're filed, not read.
 async function forwardedAt(token: string, box: string, ids: string[]): Promise<Map<string, string>> {
   const expand = `singleValueExtendedProperties($filter=id eq '${LAST_VERB}' or id eq '${LAST_VERB_TIME}')`;
+  const filed = await invoicesFolderIds(token, box);
   const found = new Map<string, string>();
   await mapLimit(ids, FETCH_CONCURRENCY, async (id) => {
     try {
-      const m = await graph<{ singleValueExtendedProperties?: { id: string; value: string }[] }>(
-        token, `${box}/messages/${id}?$select=id&$expand=${encodeURIComponent(expand)}`);
+      const m = await graph<{ parentFolderId?: string; singleValueExtendedProperties?: { id: string; value: string }[] }>(
+        token, `${box}/messages/${id}?$select=id,parentFolderId&$expand=${encodeURIComponent(expand)}`);
+      if (m.parentFolderId && filed.has(m.parentFolderId)) return;
       const props = new Map((m.singleValueExtendedProperties ?? []).map((p) => [p.id.toLowerCase(), p.value]));
       if (props.get(LAST_VERB.toLowerCase()) === VERB_FORWARD) {
         found.set(id, props.get(LAST_VERB_TIME.toLowerCase()) ?? new Date().toISOString());
@@ -261,6 +264,22 @@ async function forwardedAt(token: string, box: string, ids: string[]): Promise<M
     }
   });
   return found;
+}
+
+// The ids of the AP / AR Invoices folders that exist in the mailbox and of their vendor subfolders.
+async function invoicesFolderIds(token: string, box: string): Promise<Set<string>> {
+  const filter = encodeURIComponent(INVOICES_FOLDERS.map((n) => `displayName eq '${n}'`).join(" or "));
+  const top = await graph<{ value: { id: string }[] }>(token, `${box}/mailFolders?$filter=${filter}&$select=id`);
+  const ids = new Set(top.value.map((f) => f.id));
+  for (const f of top.value) {
+    let next: string | undefined = `${box}/mailFolders/${encodeURIComponent(f.id)}/childFolders?$select=id&$top=250`;
+    while (next) {
+      const page: { value: { id: string }[]; "@odata.nextLink"?: string } = await graph(token, next);
+      for (const c of page.value) ids.add(c.id);
+      next = page["@odata.nextLink"];
+    }
+  }
+  return ids;
 }
 
 // The messages whose folder is the Inbox (moved or deleted ones are left out).

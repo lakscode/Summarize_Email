@@ -12,7 +12,7 @@ import PostalMime from "npm:postal-mime@3.0.1";
 import { type AttachmentFile, type AttachmentText, classifyEmail, type Classification, type MailboxType } from "./classify.ts";
 import { logApi, logStep } from "./log.ts";
 import {
-  embedInlineImages, htmlToText, isEmailAttachment, type MailClient, mailClient, type MailMessage, type Provider,
+  embedInlineImages, htmlToText, INVOICES_FOLDERS, isEmailAttachment, type MailClient, mailClient, type MailMessage, type Provider,
 } from "./mail.ts";
 import { buildReport, type ReportItem } from "./report.ts";
 import { adminClient } from "./supabase.ts";
@@ -630,7 +630,7 @@ async function takeAction(
 }
 
 // The folder forwarded emails are filed in, by the mailbox's type (Settings: AP or AR).
-export const invoicesFolder = (type: MailboxType) => `${type === "ar" ? "AR" : "AP"} Invoices`;
+export const invoicesFolder = (type: MailboxType) => INVOICES_FOLDERS[type === "ar" ? 1 : 0];
 
 // The vendor's subfolder name (the customer's, for AR), from the vendor the model read; null when it gave none. Kept to
 // what Outlook accepts in a folder name and trimmed of the punctuation the model sometimes varies ("Acme Corp." / "Acme

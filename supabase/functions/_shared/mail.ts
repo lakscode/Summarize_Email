@@ -118,6 +118,10 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
 // Whether a provider error means the message is gone (deleted, or moved: Outlook gives a moved message a new id).
 export const isNotFound = (err: unknown) => /failed: 404\b/.test(String(err));
 
+// The folders forwarded emails are filed in (by mailbox type, see process.ts fileForwarded), each with a subfolder per
+// vendor. Emails there are handled: processing never reads them.
+export const INVOICES_FOLDERS = ["AP Invoices", "AR Invoices"];
+
 // Replaces cid: references in an HTML body with data: URLs of the message's inline images.
 export function embedInlineImages(html: string, images: InlineImage[]): string {
   const byId = new Map(images.map((i) => [i.contentId.toLowerCase(), i]));
