@@ -120,8 +120,10 @@ export async function sendForwardReport(db: Db, m: ReportMailbox, by: { id: stri
 const LABELS: Record<string, string> = { invoice: "Invoice", utility_bill: "Utility bill" };
 
 // Where an email went: the destination address, or "Manually forwarded".
-const forwardedTo = (r: Row) =>
-  r.action_taken === "Manually forwarded" ? "Manually forwarded" : (r.action_taken ?? "").replace(/^Forwarded to /, "");
+const forwardedTo = (r: Row) => {
+  const action = (r.action_taken ?? "").split(" · ")[0];
+  return action.startsWith("Manually forwarded") ? "Manually forwarded" : action.replace(/^Forwarded to /, "");
+};
 
 function buildForwardReport(m: ReportMailbox, rows: Row[], since: Date, until: Date) {
   const tz = m.forward_report_timezone;

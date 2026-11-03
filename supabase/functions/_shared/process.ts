@@ -4,7 +4,8 @@
 // Each message is processed once per mailbox (unique mailbox_id + message_id). With reprocess, emails already
 // classified are classified again unless they were forwarded or marked done, so nothing is forwarded twice.
 // Invoices and utility bills left as action needed are marked done once someone forwards them manually in Outlook
-// (checked at the end of each run, see markManuallyForwarded).
+// (checked at the end of each run, see markManuallyForwarded). Forwarded emails (either way) are then moved to the
+// mailbox's "AP Invoices" or "AR Invoices" folder (see fileForwarded).
 import { encodeBase64 } from "./base64.ts";
 import { APP_NAME } from "./brand.ts";
 import PostalMime from "npm:postal-mime@3.0.1";
@@ -236,15 +237,22 @@ async function markManuallyForwarded(db: Db, run: Run, mailbox: Mailbox, client:
     for (const row of rows) {
       const at = forwarded.get(row.message_id);
       if (!at) continue;
-      const action = MANUALLY_FORWARDED;
       const by = processedBy(run);
       // Only if it is still action needed (someone may have marked it done meanwhile).
       const { data: updated, error: updateError } = await db.from("processed_emails")
-        .update({ status: "done", action_taken: action, ...by, updated_at: by.processed_at })
+        .update({ status: "done", action_taken: MANUALLY_FORWARDED, ...by, updated_at: by.processed_at })
         .eq("id", row.id).eq("status", "action_needed").select("id");
       if (updateError) throw new Error(updateError.message);
       if (!updated?.length) continue;
       marked++;
+      // Filed like the ones the app forwards; the new id and link replace the old ones.
+      const filed = await fileForwarded(run, mailbox, client, row.message_id, { email_id: row.id });
+      const action = `${MANUALLY_FORWARDED}${filed.note}`;
+      if (filed.moved) row.message_id = filed.moved.id;
+      if (filed.moved?.webLink) row.web_link = filed.moved.webLink;
+      await db.from("processed_emails").update({
+        action_taken: action, ...(filed.moved ? { message_id: row.message_id, web_link: row.web_link } : {}),
+      }).eq("id", row.id);
       const { error: logError } = await db.from("email_processing_log").insert({
         processed_email_id: row.id,
         mailbox_id: mailbox.id,
@@ -475,7 +483,7 @@ async function processMessage(
     await step(run, "process/classify", `Classified "${subject}" as ${c.category} (${c.confidence} confidence): ${c.summary}`,
       { ...email, category: c.category, confidence: c.confidence, vendor: c.vendor, amount: c.amount, next_step: c.next_step });
 
-    const { status, action } = await takeAction(run, mailbox, client, msg, c, email);
+    const { status, action, moved } = await takeAction(run, mailbox, client, msg, c, email);
     await step(run, "process/action", `"${subject}" → ${status.replace("_", " ")}${action ? `: ${action}` : ""}`, { ...email, status });
 
     const { error } = await db.from("processed_emails").update({
@@ -490,11 +498,13 @@ async function processMessage(
       next_step: c.next_step,
       action_taken: action,
       status,
+      // Moved to the Invoices folder: Outlook gave it a new id and link.
+      ...(moved ? { message_id: moved.id, web_link: moved.webLink ?? msg.webLink ?? null } : {}),
       ...processedBy(run),
       updated_at: new Date().toISOString(),
     }).eq("id", rowId);
     if (error) throw new Error(error.message);
-    await logProcessing(db, run, mailbox, rowId, msg, {
+    await logProcessing(db, run, mailbox, rowId, moved ? { ...msg, id: moved.id, webLink: moved.webLink ?? msg.webLink } : msg, {
       status, action, category: c.category, confidence: c.confidence, attachment_names: attachments.names,
       vendor: c.vendor || null, invoice_number: c.invoice_number || null, amount: c.amount || null, due_date: c.due_date || null,
       summary: c.summary, next_step: c.next_step,
@@ -549,11 +559,12 @@ async function logProcessing(
   if (error) await logApi("process/log", error.message, { userId: run.userId, level: "warn", context: { run: run.id, email_id: rowId } });
 }
 
-// The only automatic action: forward confident emails in the mailbox's forward_categories to its destination address.
-// The recipient always comes from settings, never from the email or the model. `email`: the log context of the email.
+// The only automatic action: forward confident emails in the mailbox's forward_categories to its destination address,
+// then file them in the Invoices folder. The recipient always comes from settings, never from the email or the model.
+// `email`: the log context of the email.
 async function takeAction(
   run: Run, mailbox: Mailbox, client: MailClient, msg: MailMessage, c: Classification, email: Record<string, unknown>,
-) {
+): Promise<{ status: string; action: string | null; moved?: { id: string; webLink: string | null } }> {
   const userId = run.userId;
   const label = c.category.replace("_", " ");
   if (c.category === "other") return { status: "no_action", action: null };
@@ -565,11 +576,35 @@ async function takeAction(
   try {
     const details = [c.vendor, c.invoice_number && `#${c.invoice_number}`, c.amount, c.due_date && `due ${c.due_date}`].filter(Boolean).join(", ");
     await client.forwardMessage(msg.id, mailbox.smart_ap_address, `Forwarded automatically by ${APP_NAME}: ${label}${details ? ` (${details})` : ""}.`);
-    return { status: "done", action: `Forwarded to ${mailbox.smart_ap_address}` };
   } catch (err) {
     await logApi("inbox/forward", err, { userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, ...email } });
     const hint = !String(err).includes("403") ? ""
       : mailbox.auth_type === "app" ? " Give the organization's Azure app the Mail.Send application permission." : " Reconnect the mailbox to allow sending.";
     return { status: "action_needed", action: `Forward failed; forward it manually.${hint}` };
+  }
+  const filed = await fileForwarded(run, mailbox, client, msg.id, email);
+  return { status: "done", action: `Forwarded to ${mailbox.smart_ap_address}${filed.note}`, moved: filed.moved };
+}
+
+// The folder forwarded emails are filed in, by the mailbox's type (Settings: AP or AR).
+export const invoicesFolder = (type: MailboxType) => `${type === "ar" ? "AR" : "AP"} Invoices`;
+
+// Moves a forwarded email to the mailbox's Invoices folder. Never fails the email: the forward stands, and `note` (added
+// to the action taken) says it was moved, or why not. Nothing happens where the provider has no folders (Gmail).
+async function fileForwarded(
+  run: Run, mailbox: Mailbox, client: MailClient, messageId: string, context: Record<string, unknown>,
+): Promise<{ moved?: { id: string; webLink: string | null }; note: string }> {
+  if (!client.moveToFolder) return { note: "" };
+  const folder = invoicesFolder(mailbox.mailbox_type);
+  try {
+    const moved = await client.moveToFolder(messageId, folder);
+    await step(run, "process/move", `Moved to ${folder}`, context);
+    return { moved, note: ` · moved to ${folder}` };
+  } catch (err) {
+    await logApi("process/move", err, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, ...context } });
+    const why = !/failed: 403\b/.test(String(err)) ? ""
+      : mailbox.auth_type === "app" ? ": give the organization's Azure app the Mail.ReadWrite application permission"
+      : ": reconnect the mailbox to allow moving emails";
+    return { note: ` · not moved to ${folder}${why}` };
   }
 }

@@ -960,7 +960,13 @@
       form.addEventListener("input", refresh);
       form.addEventListener("change", refresh);
 
-      form.append(typeLabel, destLabel, forward, summaryLabel, summaryToLabel, save, status);
+      // Where forwarded emails end up (supabase/functions/_shared/process.ts, fileForwarded).
+      const filing = el("p", "hint");
+      const describeFiling = () => (filing.textContent =
+        `Forwarded emails (by the app or manually in Outlook) are moved to the "${typeSelect.value === "ar" ? "AR" : "AP"} Invoices" folder of this mailbox.`);
+      typeSelect.addEventListener("change", describeFiling);
+      describeFiling();
+      form.append(typeLabel, destLabel, forward, summaryLabel, summaryToLabel, save, status, filing);
       saved = current();
       refresh();
       // Members of an organization mailbox see its settings; only its admins change them.

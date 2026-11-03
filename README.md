@@ -65,9 +65,11 @@ Until Azure is enabled in Supabase, clicking the button shows "Unsupported provi
    - Supported account types: pick "any organizational directory and personal accounts" (or single tenant).
    - Redirect URI (Web): `https://<project-ref>.supabase.co/functions/v1/mailboxes`
 2. Certificates & secrets > New client secret. Copy the **value**.
-3. API permissions > Microsoft Graph > Delegated: `offline_access`, `User.Read`, `Mail.Read`, `Mail.Send`
-   (`Mail.Send` forwards invoices; mailboxes connected before it was added must be reconnected).
-   Also add `Mail.Read.Shared` and `Mail.Send.Shared` (requested on every sign-in, for shared mailboxes).
+3. API permissions > Microsoft Graph > Delegated: `offline_access`, `User.Read`, `Mail.Read`, `Mail.ReadWrite`,
+   `Mail.Send` (`Mail.Send` forwards invoices, `Mail.ReadWrite` moves forwarded emails to the AP / AR Invoices folder;
+   mailboxes connected before either was added must be reconnected).
+   Also add `Mail.Read.Shared`, `Mail.ReadWrite.Shared` and `Mail.Send.Shared` (requested on every sign-in, for shared
+   mailboxes).
    To list a signed-in user's shared mailboxes after sign-in, add Office 365 Exchange Online > Delegated >
    `EWS.AccessAsUser.All` and grant admin consent (without it, shared mailboxes can still be added by address).
 4. Copy `supabase/functions/.env.example` to `supabase/functions/.env`, fill in `MS_CLIENT_ID`,
@@ -121,7 +123,8 @@ insert into public.super_admins (user_id) select id from auth.users where email 
 (app-only / client credentials); its shared mailboxes are then added by address, many at a time, with no one signing in.
 
 1. In the customer's tenant: App registrations > New registration (single tenant, no redirect URI).
-2. API permissions > Microsoft Graph > **Application**: `Mail.Read` and `Mail.Send`, then **Grant admin consent**.
+2. API permissions > Microsoft Graph > **Application**: `Mail.Read`, `Mail.ReadWrite` (to move forwarded emails to the
+   AP / AR Invoices folder) and `Mail.Send`, then **Grant admin consent**.
 3. Certificates & secrets > New client secret.
 4. Recommended: restrict the app to the AP/AR mailboxes only. Put them in a mail-enabled security group and run (Exchange
    Online PowerShell) `New-ApplicationAccessPolicy -AppId <client id> -PolicyScopeGroupId <group> -AccessRight RestrictAccess`,

@@ -10,12 +10,13 @@ import { env } from "./supabase.ts";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
-// Requested at connect time. Mail.Send is needed to forward invoices to the Smart AP address;
-// mailboxes connected before it was added must be reconnected to grant it.
-export const MS_SCOPES = "offline_access User.Read Mail.Read Mail.Send";
-// Requested on every Microsoft sign-in, so shared mailboxes (chosen up front or found afterwards) can be read and
-// forwarded from with the same token (forwarding also needs Send As or Send on Behalf rights in Exchange).
-export const MS_SHARED_SCOPES = `${MS_SCOPES} Mail.Read.Shared Mail.Send.Shared`;
+// Requested at connect time. Mail.Send is needed to forward invoices to the Smart AP address, Mail.ReadWrite to move
+// forwarded emails to the AP / AR Invoices folder; mailboxes connected before either was added must be reconnected to
+// grant it.
+export const MS_SCOPES = "offline_access User.Read Mail.Read Mail.ReadWrite Mail.Send";
+// Requested on every Microsoft sign-in, so shared mailboxes (chosen up front or found afterwards) can be read, filed
+// and forwarded from with the same token (forwarding also needs Send As or Send on Behalf rights in Exchange).
+export const MS_SHARED_SCOPES = `${MS_SCOPES} Mail.Read.Shared Mail.ReadWrite.Shared Mail.Send.Shared`;
 
 // Graph path of a mailbox: the signed-in user's own, or a shared mailbox they have access to.
 export const mailboxPath = (shared?: string | null) => shared ? `/users/${encodeURIComponent(shared)}` : "/me";
@@ -50,6 +51,7 @@ export async function microsoftClient(db: SupabaseClient, mailbox: MailboxRow): 
     sendMail: (to, subject, html) => sendFromMailbox(token, box, mailbox, to, subject, html),
     forwardMessage: (messageId, to, comment) => forwardMessage(token, box, messageId, to, comment),
     forwardedAt: (ids) => forwardedAt(token, box, ids),
+    moveToFolder: (messageId, folder) => moveToFolder(token, box, messageId, folder),
   };
 }
 
@@ -421,6 +423,50 @@ async function sendMail(token: string, box: string, to: string[], subject: strin
       saveToSentItems: true,
     }),
   });
+}
+
+// Moves a message to the top-level folder `name` of the mailbox, creating the folder the first time.
+async function moveToFolder(token: string, box: string, messageId: string, name: string): Promise<{ id: string; webLink: string | null }> {
+  const folderId = await folderIdFor(token, box, name);
+  const moved = await graph<{ id: string; webLink?: string }>(token, `${box}/messages/${messageId}/move`, {
+    method: "POST",
+    body: JSON.stringify({ destinationId: folderId }),
+  });
+  return { id: moved.id, webLink: moved.webLink ?? null };
+}
+
+// Folder ids by mailbox and name, for the rest of this invocation (a run moves many emails to the same folder).
+const folderIds = new Map<string, Promise<string>>();
+
+function folderIdFor(token: string, box: string, name: string): Promise<string> {
+  const key = `${box}|${name.toLowerCase()}`;
+  let id = folderIds.get(key);
+  if (!id) {
+    id = findOrCreateFolder(token, box, name);
+    id.catch(() => folderIds.delete(key));
+    folderIds.set(key, id);
+  }
+  return id;
+}
+
+async function findOrCreateFolder(token: string, box: string, name: string): Promise<string> {
+  const find = async () => {
+    const filter = encodeURIComponent(`displayName eq '${name.replace(/'/g, "''")}'`);
+    const found = await graph<{ value: { id: string }[] }>(token, `${box}/mailFolders?$filter=${filter}&$select=id`);
+    return found.value[0]?.id ?? null;
+  };
+  const existing = await find();
+  if (existing) return existing;
+  try {
+    const created = await graph<{ id: string }>(token, `${box}/mailFolders`, { method: "POST", body: JSON.stringify({ displayName: name }) });
+    return created.id;
+  } catch (err) {
+    // Created meanwhile (another run): use that one.
+    if (!/failed: 409\b/.test(String(err))) throw err;
+    const id = await find();
+    if (!id) throw err;
+    return id;
+  }
 }
 
 async function forwardMessage(token: string, box: string, messageId: string, to: string, comment: string): Promise<void> {
