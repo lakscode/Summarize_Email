@@ -215,5 +215,7 @@ them, unless the organization already has that mailbox; personal mailboxes are n
 - **Admin**: also changes its settings, schedule and who is an admin. The person who connected it and organization
   admins are always admins. Only the person who connected it can reconnect, disconnect or stop sharing it.
 
-Roles are in `mailbox_members` and checked by `mailbox_role()` (`migrations/*_organization_mailboxes.sql`), which RLS
-and the v1 functions use. A mailbox whose owner leaves the organization is no longer shared with it.
+Only people in the mailbox's organization see it: roles are in `mailbox_members` and checked by `mailbox_role()`
+(`migrations/*_organization_mailboxes.sql`), which RLS and the v1 functions use. When the owner leaves or moves to another
+organization, their mailboxes stop being shared and the roles on them are removed
+(`migrations/*_organization_mailbox_membership.sql`); people who leave lose their roles on its mailboxes.

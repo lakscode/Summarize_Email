@@ -230,6 +230,9 @@ async function withRoles(userId: string, sb: SupabaseClient, rows: Record<string
     const owner = owners.get(m.owner_user_id as string);
     return {
       ...m,
+      // Shared only with the caller's own organization; one left behind in an organization they're no longer in
+      // (see *_organization_mailbox_membership.sql) shows as not shared.
+      org_id: m.org_id && m.org_id === own.data?.org_id ? m.org_id : null,
       role: m.owner_user_id === userId ? "owner" : own.data?.role === "admin" ? "admin" : roles.get(m.id) ?? "member",
       owner_name: owner ? owner.full_name?.trim() || owner.email : null,
     };
