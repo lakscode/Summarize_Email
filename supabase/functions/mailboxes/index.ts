@@ -53,6 +53,10 @@
 //                                            ("HH:MM" in `timezone`) to `addresses` (one or more; see
 //                                            _shared/forward-report.ts)
 //   POST {action: "send_forward_report", mailbox_id} -> { result } that report now, for the time since the last one
+//   PATCH {id, weekly_report: {enabled, day, time, timezone, addresses}}
+//                                         -> weekly email listing the invoices forwarded in the past 7 days, on `day`
+//                                            (0 = Sunday) at `time` to `addresses` (see _shared/weekly-report.ts)
+//   POST {action: "send_weekly_report", mailbox_id} -> { result } the weekly report now, for the past 7 days
 //   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
 //                                         -> scheduled processing (see _shared/schedule.ts)
 //   Settings and schedule: the owner or a mailbox admin.
@@ -78,6 +82,9 @@ import {
   FREQUENCIES, type Frequency, INTERVAL_UNITS, type IntervalUnit, isValidTimeZone, localDate, MIN_INTERVAL_MINUTES, nextRun,
 } from "../_shared/schedule.ts";
 import { nextReportAt, REPORT_MAILBOX_COLUMNS, type ReportMailbox, sendForwardReport } from "../_shared/forward-report.ts";
+import {
+  dayName, nextWeeklyReportAt, sendWeeklyReport, WEEKLY_REPORT_MAILBOX_COLUMNS, type WeeklyReportMailbox,
+} from "../_shared/weekly-report.ts";
 import { adminClient, callerUser, env } from "../_shared/supabase.ts";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
@@ -126,6 +133,7 @@ Deno.serve(async (req) => {
         .select("id, owner_user_id, org_id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, send_summary, summary_address, last_processed_at, last_processed_by_name, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result, forward_report_enabled, forward_report_time, forward_report_timezone, forward_report_addresses, forward_report_next_at, forward_report_last_at, forward_report_last_result")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
+      await addWeeklyReportSettings(user.id, sb, data);
       const { data: connections, error: connError } = await sb.from("ms_connections")
         .select("id, name, tenant_id, client_id, created_at").order("created_at");
       if (connError) return await fail("mailboxes/list", connError.message, 500, { userId: user.id });
@@ -144,6 +152,7 @@ Deno.serve(async (req) => {
       if (body.action === "auto_shared") return await autoShared(user.id, sb, body);
       if (body.action === "set_mailbox_role") return await setMailboxRole(user.id, body);
       if (body.action === "send_forward_report") return await sendReportNow(user.id, body.mailbox_id);
+      if (body.action === "send_weekly_report") return await sendWeeklyReportNow(user.id, body.mailbox_id);
       if (body.action !== "connect") return json({ error: "Unknown action" }, 400);
       const provider: Provider = body.provider ?? "microsoft";
       if (!PROVIDERS.includes(provider)) return json({ error: "provider must be microsoft or google" }, 400);
@@ -168,6 +177,7 @@ Deno.serve(async (req) => {
       const body = await req.json().catch(() => ({}));
       if (body.id && body.schedule) return await saveSchedule(user.id, body.id, body.schedule);
       if (body.id && body.forward_report) return await saveForwardReport(user.id, body.id, body.forward_report);
+      if (body.id && body.weekly_report) return await saveWeeklyReport(user.id, body.id, body.weekly_report);
       if (!body.id) return json({ error: "id is required" }, 400);
       if (body.org_shared !== undefined) return await shareMailbox(user.id, body);
       return await saveSettings(user.id, body);
@@ -398,6 +408,63 @@ async function sendReportNow(userId: string, id: unknown): Promise<Response> {
   // Sending early doesn't move the daily time; a report that is off stays off.
   const { data: box } = await db.from("mailboxes").select("forward_report_enabled").eq("id", m.id).single();
   if (!box?.forward_report_enabled) await db.from("mailboxes").update({ forward_report_next_at: null }).eq("id", m.id);
+  return json({ result });
+}
+
+// --- Weekly forwarded-invoices report (_shared/weekly-report.ts), separate from the daily one above. ---
+
+const WEEKLY_REPORT_COLUMNS = "id, weekly_report_enabled, weekly_report_day, weekly_report_time, weekly_report_timezone, " +
+  "weekly_report_addresses, weekly_report_next_at, weekly_report_last_at, weekly_report_last_result";
+
+// Adds the weekly report settings to the listed mailboxes. Read on their own, so the list still loads (without them)
+// if the weekly report's columns aren't there yet.
+async function addWeeklyReportSettings(userId: string, sb: SupabaseClient, mailboxes: Record<string, unknown>[] | null) {
+  if (!mailboxes?.length) return;
+  const { data, error } = await sb.from("mailboxes").select(WEEKLY_REPORT_COLUMNS).in("id", mailboxes.map((m) => m.id));
+  if (error) return await logApi("mailboxes/weekly_report", error.message, { userId, level: "warn" });
+  const byId = new Map((data as unknown as Record<string, unknown>[]).map((w) => [w.id, w]));
+  for (const m of mailboxes) Object.assign(m, byId.get(m.id) ?? {});
+}
+
+// The weekly report of a mailbox (owner or mailbox admins): on or off, the day and local time it goes out, and to whom.
+async function saveWeeklyReport(userId: string, id: string, r: Record<string, unknown>): Promise<Response> {
+  const role = await mailboxRole(userId, id);
+  if (!role) return json({ error: "Mailbox not found" }, 404);
+  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
+  const enabled = r.enabled === true;
+  const day = Number(r.day);
+  const time = String(r.time ?? "");
+  const timezone = String(r.timezone ?? "");
+  if (!Number.isInteger(day) || day < 0 || day > 6) return json({ error: "day must be 0 (Sunday) to 6 (Saturday)" }, 400);
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return json({ error: "time must be HH:MM" }, 400);
+  if (!isValidTimeZone(timezone)) return json({ error: "Unknown time zone" }, 400);
+  const addresses = parseAddresses(r.addresses, "Weekly report recipients");
+  if (addresses instanceof Response) return addresses;
+  if (enabled && !addresses.length) return json({ error: "Enter at least one email address to send the weekly report to" }, 400);
+
+  const { data, error } = await adminClient().from("mailboxes").update({
+    weekly_report_enabled: enabled,
+    weekly_report_day: day,
+    weekly_report_time: time,
+    weekly_report_timezone: timezone,
+    weekly_report_addresses: addresses.join(", ") || null,
+    weekly_report_next_at: enabled ? nextWeeklyReportAt(day, time, timezone, new Date()).toISOString() : null,
+    updated_at: new Date().toISOString(),
+  }).eq("id", id).select(WEEKLY_REPORT_COLUMNS).single();
+  if (error) return await fail("mailboxes/weekly_report", error.message, 500, { userId, context: { id } });
+  return json({ mailbox: data, day_name: dayName(day) });
+}
+
+// Sends the weekly report now (owner or mailbox admins), for the past 7 days; the weekly day and time don't move.
+async function sendWeeklyReportNow(userId: string, id: unknown): Promise<Response> {
+  const role = await mailboxRole(userId, id);
+  if (!role) return json({ error: "Mailbox not found" }, 404);
+  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
+  const db = adminClient();
+  const { data, error } = await db.from("mailboxes").select(WEEKLY_REPORT_MAILBOX_COLUMNS).eq("id", id).single();
+  if (error) return await fail("mailboxes/weekly_report", error.message, 500, { userId, context: { id } });
+  const me = (await profilesOf([userId])).get(userId);
+  const result = await sendWeeklyReport(db, data as unknown as WeeklyReportMailbox, { id: userId, name: me?.full_name?.trim() || me?.email || null });
   return json({ result });
 }
 
