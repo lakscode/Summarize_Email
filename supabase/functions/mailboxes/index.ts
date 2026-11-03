@@ -1,6 +1,14 @@
-// Connected mailboxes (Azure / Microsoft 365 or Gmail) for the signed-in user.
-//   GET                                   -> { mailboxes, connections, categories } (expired access is cleaned up
-//                                            first; categories: the AP and AR categories per mailbox type)
+// Connected mailboxes (Azure / Microsoft 365 or Gmail) for the signed-in user, and their organization's mailboxes.
+//   GET                                   -> { mailboxes, connections, categories, organization } (expired access is
+//                                            cleaned up first; categories: the AP and AR categories per mailbox type;
+//                                            each mailbox has the caller's `role` and its `owner_name`; organization:
+//                                            the caller's {id, name, role} or null)
+//   Organization mailboxes (see migrations/*_organization_mailboxes.sql): the owner shares a mailbox with their
+//   organization; everyone in it then has a role on it: admin (settings, schedule, roles) or member (the default).
+//   PATCH {id, org_shared: true | false}  -> owner: { mailbox } shared with their organization, or not any more
+//   GET ?access=<mailbox id>              -> { people: [{user_id, email, full_name, role, fixed, you}], manage }
+//                                            everyone in the mailbox's organization with their role on it
+//   POST {action: "set_mailbox_role", mailbox_id, user_id, role: "admin" | "member"} -> mailbox admins: { member }
 //   POST {action: "connect", provider: "microsoft" | "google", access_days, popup, shared_mailbox?, login_hint?}
 //                                         -> { url } to start Microsoft or Google sign-in (OAuth). With
 //                                            shared_mailbox (Microsoft only), the user signs in with their own
@@ -28,17 +36,21 @@
 //                                         -> { results: [{address, ok, error?}], warning? } discover_shared + add_shared
 //                                            for every shared mailbox found, run after signing in to the app with
 //                                            Microsoft so nothing has to be picked by hand
+//   A newly added shared mailbox (add_shared, auto_shared, a shared mailbox sign-in, add_mailboxes) is shared with the
+//   user's organization by default, unless the organization already has it from someone else.
 //   A newly added mailbox that another member of the same organization already has takes that member's settings
 //   (type, forwarded categories, destination, summary); the schedule is not copied, so the same mailbox isn't
 //   processed twice.
 //   PATCH {id, mailbox_type?, forward_categories?, smart_ap_address?, send_summary?, summary_address?}
 //                                         -> per-mailbox settings: AP or AR, which categories are forwarded, the
 //                                            destination address they go to ("" clears it), whether the run summary
-//                                            is emailed, and to which address ("" clears it: an own mailbox gets it
-//                                            itself, a shared mailbox sends it to the owner's account email)
+//                                            is emailed, and to which addresses (comma-separated; "" clears them: an
+//                                            own mailbox gets it itself, a shared mailbox sends it to the owner's
+//                                            account email)
 //   PATCH {id, schedule: {enabled, frequency, days, time, timezone, interval, interval_unit, start_date}}
 //                                         -> scheduled processing (see _shared/schedule.ts)
-//   DELETE ?id=<mailbox id>               -> disconnect (Vault secret removed by trigger)
+//   Settings and schedule: the owner or a mailbox admin.
+//   DELETE ?id=<mailbox id>               -> owner: disconnect (Vault secret removed by trigger)
 //   GET ?code=...&state=...               -> OAuth callback (either provider); stores the refresh token for the
 //                                            chosen number of days, redirects back to the app's dashboard
 //                                            (or to connect-done, which reports to the opener, when signing in
@@ -66,6 +78,8 @@ const ACCESS_DAYS = [1, 7, 30, 90];
 const DEFAULT_ACCESS_DAYS = 30;
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Addresses the run summary may go to.
+const MAX_SUMMARY_RECIPIENTS = 20;
 // Mailboxes per add_mailboxes call, and how many are checked against Graph at once.
 const MAX_BULK = 100;
 const CHECK_CONCURRENCY = 5;
@@ -93,19 +107,23 @@ Deno.serve(async (req) => {
   const { user, sb } = caller;
 
   try {
+    if (req.method === "GET" && url.searchParams.has("access")) return await mailboxAccess(user.id, url.searchParams.get("access"));
+
     if (req.method === "GET") {
       const { error: expireError } = await adminClient().rpc("expire_mailbox_access");
       if (expireError) await logApi("mailboxes/expire", expireError.message, { userId: user.id, level: "warn" });
 
+      // RLS returns the caller's own mailboxes and those shared with their organization.
       const { data, error } = await sb
         .from("mailboxes")
-        .select("id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, send_summary, summary_address, last_processed_at, last_processed_by_name, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
+        .select("id, owner_user_id, org_id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, send_summary, summary_address, last_processed_at, last_processed_by_name, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
       const { data: connections, error: connError } = await sb.from("ms_connections")
         .select("id, name, tenant_id, client_id, created_at").order("created_at");
       if (connError) return await fail("mailboxes/list", connError.message, 500, { userId: user.id });
-      return json({ mailboxes: data, connections, categories: CATEGORIES });
+      const { mailboxes, organization } = await withRoles(user.id, sb, data);
+      return json({ mailboxes, connections, categories: CATEGORIES, organization });
     }
 
     if (req.method === "POST") {
@@ -117,6 +135,7 @@ Deno.serve(async (req) => {
       if (body.action === "discover_shared") return await discoverShared(user.id, sb, body);
       if (body.action === "add_shared") return await addShared(user.id, body);
       if (body.action === "auto_shared") return await autoShared(user.id, sb, body);
+      if (body.action === "set_mailbox_role") return await setMailboxRole(user.id, body);
       if (body.action !== "connect") return json({ error: "Unknown action" }, 400);
       const provider: Provider = body.provider ?? "microsoft";
       if (!PROVIDERS.includes(provider)) return json({ error: "provider must be microsoft or google" }, 400);
@@ -139,9 +158,10 @@ Deno.serve(async (req) => {
 
     if (req.method === "PATCH") {
       const body = await req.json().catch(() => ({}));
-      if (body.id && body.schedule) return await saveSchedule(user.id, sb, body.id, body.schedule);
+      if (body.id && body.schedule) return await saveSchedule(user.id, body.id, body.schedule);
       if (!body.id) return json({ error: "id is required" }, 400);
-      return await saveSettings(user.id, sb, body);
+      if (body.org_shared !== undefined) return await shareMailbox(user.id, body);
+      return await saveSettings(user.id, body);
     }
 
     if (req.method === "DELETE" && url.searchParams.has("connection_id")) {
@@ -155,6 +175,8 @@ Deno.serve(async (req) => {
     if (req.method === "DELETE") {
       const id = url.searchParams.get("id");
       if (!id) return json({ error: "id is required" }, 400);
+      const role = await mailboxRole(user.id, id);
+      if (role && role !== "owner") return json({ error: "Only the person who connected this mailbox can disconnect it" }, 403);
       const { error, count } = await sb.from("mailboxes").delete({ count: "exact" }).eq("id", id);
       if (error) return await fail("mailboxes/delete", error.message, 500, { userId: user.id, context: { id } });
       if (!count) return json({ error: "Mailbox not found" }, 404);
@@ -168,12 +190,144 @@ Deno.serve(async (req) => {
   }
 });
 
+// --- organization mailboxes ------------------------------------------------------------------------------
+// See migrations/*_organization_mailboxes.sql. Rights come from mailbox_role(); writes use the service role.
+
+type MailboxRole = "owner" | "admin" | "member";
+const MAILBOX_ROLES = ["admin", "member"];
+const canManage = (role: MailboxRole | null) => role === "owner" || role === "admin";
+const ONLY_ADMINS = "Only admins of this mailbox can change it. Ask the person who connected it or an organization admin.";
+
+// The user's role on mailbox `id`, or null without access.
+async function mailboxRole(userId: string, id: unknown): Promise<MailboxRole | null> {
+  const { data, error } = await adminClient().rpc("mailbox_role", { p_mailbox_id: id, p_user_id: userId });
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+// Display names (profile name, else email) and emails of these users.
+async function profilesOf(ids: string[]): Promise<Map<string, { email: string | null; full_name: string | null }>> {
+  const unique = [...new Set(ids)];
+  if (!unique.length) return new Map();
+  const { data, error } = await adminClient().from("profiles").select("id, email, full_name").in("id", unique);
+  if (error) throw new Error(error.message);
+  return new Map(data.map((p) => [p.id, p]));
+}
+
+// Adds the caller's role and the owner's name to each mailbox (the same rules as mailbox_role(), without a query per
+// mailbox; RLS has already left out mailboxes the caller can't see), and returns the caller's organization.
+async function withRoles(userId: string, sb: SupabaseClient, rows: Record<string, unknown>[]) {
+  const db = adminClient();
+  const [own, set] = await Promise.all([
+    db.from("organization_members").select("org_id, role, organizations(name)").eq("user_id", userId).maybeSingle(),
+    sb.from("mailbox_members").select("mailbox_id, role").eq("user_id", userId),
+  ]);
+  for (const r of [own, set]) if (r.error) throw new Error(r.error.message);
+  const roles = new Map((set.data ?? []).map((r) => [r.mailbox_id, r.role]));
+  const owners = await profilesOf(rows.map((m) => m.owner_user_id as string).filter((id) => id !== userId));
+  const mailboxes = rows.map((m) => {
+    const owner = owners.get(m.owner_user_id as string);
+    return {
+      ...m,
+      // Shared only with the caller's own organization; one left behind in an organization they're no longer in
+      // (see *_organization_mailbox_membership.sql) shows as not shared.
+      org_id: m.org_id && m.org_id === own.data?.org_id ? m.org_id : null,
+      role: m.owner_user_id === userId ? "owner" : own.data?.role === "admin" ? "admin" : roles.get(m.id) ?? "member",
+      owner_name: owner ? owner.full_name?.trim() || owner.email : null,
+    };
+  });
+  const org = own.data as { org_id: string; role: string; organizations: { name: string } | null } | null;
+  return { mailboxes, organization: org ? { id: org.org_id, name: org.organizations?.name ?? "", role: org.role } : null };
+}
+
+// Shares the caller's own mailbox with their organization, or stops sharing it. Roles set on it are dropped when it
+// stops being shared.
+async function shareMailbox(userId: string, body: Record<string, unknown>): Promise<Response> {
+  if (typeof body.org_shared !== "boolean") return json({ error: "org_shared must be true or false" }, 400);
+  const role = await mailboxRole(userId, body.id);
+  if (!role) return json({ error: "Mailbox not found" }, 404);
+  if (role !== "owner") return json({ error: "Only the person who connected this mailbox can change who it is shared with" }, 403);
+
+  const db = adminClient();
+  let orgId: string | null = null;
+  if (body.org_shared) {
+    const { data: own, error } = await db.from("organization_members").select("org_id").eq("user_id", userId).maybeSingle();
+    if (error) return await fail("mailboxes/share", error.message, 500, { userId });
+    if (!own) return json({ error: "You're not in an organization" }, 400);
+    orgId = own.org_id;
+  }
+  const { data, error } = await db.from("mailboxes").update({ org_id: orgId, updated_at: new Date().toISOString() })
+    .eq("id", body.id).select("id, org_id, email_address").single();
+  if (error) return await fail("mailboxes/share", error.message, 500, { userId, context: { id: body.id } });
+  if (!orgId) await db.from("mailbox_members").delete().eq("mailbox_id", data.id);
+  await logApi("mailboxes/share", `${data.email_address} ${orgId ? "shared with organization" : "no longer shared"}`, {
+    userId, level: "info", context: { mailbox: data.email_address, org_id: orgId },
+  });
+  return json({ mailbox: { id: data.id, org_id: data.org_id } });
+}
+
+// Everyone in an organization mailbox's organization with their role on it. `fixed`: the owner and organization
+// admins, who are always admins of it.
+async function mailboxAccess(userId: string, id: string | null): Promise<Response> {
+  const role = await mailboxRole(userId, id);
+  if (!role) return json({ error: "Mailbox not found" }, 404);
+  const db = adminClient();
+  const { data: mailbox, error } = await db.from("mailboxes").select("id, owner_user_id, org_id").eq("id", id).single();
+  if (error) return await fail("mailboxes/access", error.message, 500, { userId, context: { id } });
+  if (!mailbox.org_id) return json({ error: "This mailbox isn't shared with an organization" }, 400);
+  const [members, set] = await Promise.all([
+    db.from("organization_members").select("user_id, role").eq("org_id", mailbox.org_id),
+    db.from("mailbox_members").select("user_id, role").eq("mailbox_id", mailbox.id),
+  ]);
+  for (const r of [members, set]) if (r.error) return await fail("mailboxes/access", r.error.message, 500, { userId, context: { id } });
+  const roles = new Map(set.data!.map((r) => [r.user_id, r.role]));
+  const profiles = await profilesOf(members.data!.map((m) => m.user_id));
+  const people = members.data!.map((m) => {
+    const owner = m.user_id === mailbox.owner_user_id;
+    return {
+      user_id: m.user_id,
+      email: profiles.get(m.user_id)?.email ?? null,
+      full_name: profiles.get(m.user_id)?.full_name ?? null,
+      role: owner ? "owner" : m.role === "admin" ? "admin" : roles.get(m.user_id) ?? "member",
+      fixed: owner || m.role === "admin",
+      org_admin: m.role === "admin",
+      you: m.user_id === userId,
+    };
+  });
+  const rank = (p: { role: string }) => ["owner", "admin", "member"].indexOf(p.role);
+  people.sort((a, b) => rank(a) - rank(b) || (a.full_name || a.email || "").localeCompare(b.full_name || b.email || ""));
+  return json({ people, manage: canManage(role) });
+}
+
+async function setMailboxRole(userId: string, body: Record<string, unknown>): Promise<Response> {
+  const role = String(body.role ?? "");
+  if (!MAILBOX_ROLES.includes(role)) return json({ error: "role must be admin or member" }, 400);
+  const mine = await mailboxRole(userId, body.mailbox_id);
+  if (!mine) return json({ error: "Mailbox not found" }, 404);
+  if (!canManage(mine)) return json({ error: ONLY_ADMINS }, 403);
+  const targetId = String(body.user_id ?? "");
+  const target = await mailboxRole(targetId, body.mailbox_id);
+  if (!target) return json({ error: "That person isn't in this mailbox's organization" }, 404);
+  if (target === "owner") return json({ error: "The person who connected the mailbox is always its admin" }, 400);
+  const db = adminClient();
+  const { data: member, error: memberError } = await db.from("organization_members").select("role").eq("user_id", targetId).maybeSingle();
+  if (memberError) return await fail("mailboxes/set_role", memberError.message, 500, { userId });
+  if (member?.role === "admin") return json({ error: "Organization admins are always admins of its mailboxes" }, 400);
+  const { error } = await db.from("mailbox_members").upsert(
+    { mailbox_id: body.mailbox_id, user_id: targetId, role, updated_by: userId, updated_at: new Date().toISOString() },
+    { onConflict: "mailbox_id,user_id" },
+  );
+  if (error) return await fail("mailboxes/set_role", error.message, 500, { userId, context: { mailbox_id: body.mailbox_id } });
+  return json({ member: { user_id: targetId, role } });
+}
+
 // Saves a mailbox's processing schedule and computes its next run. Schedule columns are written with the
-// service role (after checking ownership) so users can't set next/last run times directly.
-async function saveSchedule(userId: string, sb: SupabaseClient, id: string, s: Record<string, unknown>): Promise<Response> {
-  const { data: owned, error: ownError } = await sb.from("mailboxes").select("id").eq("id", id).maybeSingle();
-  if (ownError) return await fail("mailboxes/schedule", ownError.message, 500, { userId });
-  if (!owned) return json({ error: "Mailbox not found" }, 404);
+// service role (after checking the caller is the owner or a mailbox admin) so users can't set next/last run times
+// directly.
+async function saveSchedule(userId: string, id: string, s: Record<string, unknown>): Promise<Response> {
+  const role = await mailboxRole(userId, id);
+  if (!role) return json({ error: "Mailbox not found" }, 404);
+  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
 
   const enabled = s.enabled === true;
   const frequency = String(s.frequency) as Frequency;
@@ -277,7 +431,9 @@ async function saveMailbox(
   let id = existing?.id as string | undefined;
   if (!id) {
     const shared = await settingsFromOtherUsers(db, uid, fields.email_address);
-    const { data, error } = await db.from("mailboxes").insert({ owner_user_id: uid, ...fields, ...shared }).select("id").single();
+    // A shared mailbox (read through the user's account) is shared with their organization from the start.
+    const org = fields.delegate_address ? { org_id: await defaultOrgShare(db, uid, fields.email_address) } : {};
+    const { data, error } = await db.from("mailboxes").insert({ owner_user_id: uid, ...fields, ...shared, ...org }).select("id").single();
     if (error) throw new Error(error.message);
     id = data.id as string;
   }
@@ -300,6 +456,19 @@ async function saveMailbox(
   return id;
 }
 
+// The organization a newly added shared mailbox is shared with by default: the user's, unless the organization already
+// has that mailbox shared by someone else (it would show twice and could be processed twice). Null otherwise. The owner
+// can still stop sharing it.
+async function defaultOrgShare(db: SupabaseClient, uid: string, address: string): Promise<string | null> {
+  const { data: own, error } = await db.from("organization_members").select("org_id").eq("user_id", uid).maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!own) return null;
+  const { count, error: countError } = await db.from("mailboxes").select("id", { count: "exact", head: true })
+    .eq("org_id", own.org_id).eq("email_address", address);
+  if (countError) throw new Error(countError.message);
+  return count ? null : own.org_id;
+}
+
 // Settings of the same mailbox as another member of the user's organization most recently configured it, for a
 // mailbox this user adds for the first time (typically a shared AP/AR mailbox colleagues already set up). Empty when
 // the user is in no organization or no other member has it.
@@ -319,10 +488,14 @@ async function settingsFromOtherUsers(db: SupabaseClient, uid: string, address: 
   return data ?? {};
 }
 
-// Per-mailbox settings. forward_categories must be categories of the mailbox's type; changing the type without
-// sending forward_categories resets them to that type's default.
-async function saveSettings(userId: string, sb: SupabaseClient, body: Record<string, unknown>): Promise<Response> {
-  const { data: current, error: readError } = await sb.from("mailboxes").select("id, mailbox_type").eq("id", body.id).maybeSingle();
+// Per-mailbox settings (the owner or a mailbox admin). forward_categories must be categories of the mailbox's type;
+// changing the type without sending forward_categories resets them to that type's default.
+async function saveSettings(userId: string, body: Record<string, unknown>): Promise<Response> {
+  const role = await mailboxRole(userId, body.id);
+  if (!role) return json({ error: "Mailbox not found" }, 404);
+  if (!canManage(role)) return json({ error: ONLY_ADMINS }, 403);
+  const db = adminClient();
+  const { data: current, error: readError } = await db.from("mailboxes").select("id, mailbox_type").eq("id", body.id).maybeSingle();
   if (readError) return await fail("mailboxes/update", readError.message, 500, { userId, context: { id: body.id } });
   if (!current) return json({ error: "Mailbox not found" }, 404);
 
@@ -336,11 +509,14 @@ async function saveSettings(userId: string, sb: SupabaseClient, body: Record<str
     if (typeof body.send_summary !== "boolean") return json({ error: "send_summary must be true or false" }, 400);
     update.send_summary = body.send_summary;
   }
-  // Summary recipient; "" clears it (own mailbox: itself, shared mailbox: the owner's account email).
+  // Summary recipients: one or more addresses (commas, semicolons or spaces between), stored comma-separated; ""
+  // clears them (own mailbox: itself, shared mailbox: the owner's account email).
   if (body.summary_address !== undefined) {
-    const address = String(body.summary_address ?? "").trim().toLowerCase();
-    if (address && !EMAIL.test(address)) return json({ error: "Summary email must be a valid email address" }, 400);
-    update.summary_address = address || null;
+    const addresses = [...new Set(String(body.summary_address ?? "").split(/[\s,;]+/).map((a) => a.trim().toLowerCase()).filter(Boolean))];
+    const bad = addresses.find((a) => !EMAIL.test(a));
+    if (bad) return json({ error: `Summary email: ${bad} is not a valid email address` }, 400);
+    if (addresses.length > MAX_SUMMARY_RECIPIENTS) return json({ error: `Send the summary to at most ${MAX_SUMMARY_RECIPIENTS} addresses` }, 400);
+    update.summary_address = addresses.join(", ") || null;
   }
   let type = current.mailbox_type as MailboxType;
   if (body.mailbox_type !== undefined) {
@@ -355,7 +531,7 @@ async function saveSettings(userId: string, sb: SupabaseClient, body: Record<str
     update.forward_categories = cats;
   }
 
-  const { data, error } = await sb.from("mailboxes").update(update).eq("id", body.id)
+  const { data, error } = await db.from("mailboxes").update(update).eq("id", body.id)
     .select("id, mailbox_type, forward_categories, smart_ap_address, send_summary, summary_address").maybeSingle();
   if (error) return await fail("mailboxes/update", error.message, 500, { userId, context: { id: body.id } });
   if (!data) return json({ error: "Mailbox not found" }, 404);
@@ -525,9 +701,19 @@ async function addMailboxes(userId: string, sb: SupabaseClient, body: Record<str
       credentials_secret_id: null, access_expires_at: null, mailbox_type: type, forward_categories: forward,
       ...(destination ? { smart_ap_address: destination } : {}), updated_at: new Date().toISOString(),
     };
-    const { error: saveError } = existing
-      ? await db.from("mailboxes").update(fields).eq("id", existing.id)
-      : await db.from("mailboxes").insert({ owner_user_id: userId, email_address: address, ...fields });
+    // New ones are shared with the user's organization by default (see defaultOrgShare); existing ones keep their sharing.
+    let saveError;
+    if (existing) {
+      ({ error: saveError } = await db.from("mailboxes").update(fields).eq("id", existing.id));
+    } else {
+      let org_id: string | null;
+      try {
+        org_id = await defaultOrgShare(db, userId, address);
+      } catch (err) {
+        return { address, ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+      ({ error: saveError } = await db.from("mailboxes").insert({ owner_user_id: userId, email_address: address, ...fields, org_id }));
+    }
     if (saveError) return { address, ok: false, error: saveError.message };
     // Its own sign-in token is no longer used.
     if (existing?.credentials_secret_id) await db.rpc("mailbox_secret_delete", { p_secret_id: existing.credentials_secret_id });

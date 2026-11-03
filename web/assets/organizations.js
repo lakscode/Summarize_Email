@@ -66,7 +66,7 @@ function initOrganizations() {
       $("org-placeholder-text").textContent = superAdmin
         ? "There are no organizations yet. Create one, then add people to it."
         : "You're not in an organization yet. An administrator adds you, or you join automatically when you sign in " +
-          "with Microsoft using your company email.";
+          "with your company email.";
       $("org-placeholder-new").hidden = !superAdmin;
       return;
     }
@@ -96,9 +96,8 @@ function initOrganizations() {
     const { members = [], invites = [] } = current;
     $("org-name").textContent = org.name;
     $("org-autojoin").replaceChildren(...(org.domain
-      ? [el("span", { className: "badge type-ar" }, "Auto-join on"), ` Anyone who signs in with Microsoft using an @${org.domain} address joins as a member.`]
-      : [el("span", { className: "badge" }, "Auto-join off"), " People join only when added here."]),
-      " ", el("span", { className: "badge" }, `Version: ${org.app_version === "v1" ? "v1" : "v0"}`));
+      ? [el("span", { className: "badge type-ar" }, "Auto-join on"), ` Anyone who signs up or signs in with an @${org.domain} address joins as a member once the address is confirmed.`]
+      : [el("span", { className: "badge" }, "Auto-join off"), " People join only when added here."]));
     $("org-count").textContent = `${plural(members.length, "member")}${invites.length ? ` · ${invites.length} invited` : ""}`;
     // Members see the organization read-only; anyone in it may leave.
     $("org-edit").hidden = $("org-add").hidden = $("org-manage-hint").hidden = !manage;
@@ -192,19 +191,15 @@ function initOrganizations() {
     form.elements.domain.value = current.organization.domain ?? "";
     // Only super admins change the domain: it decides who joins automatically.
     $("org-edit-domain").hidden = $("org-edit-domain-hint").hidden = !superAdmin;
-    form.elements.app_version.value = current.organization.app_version ?? "current";
-    $("org-edit-version").hidden = $("org-edit-version-hint").hidden = !superAdmin;
     editDialog.showModal();
   });
 
   $("org-edit-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const form = e.currentTarget;
-    const { name, domain, app_version } = Object.fromEntries(new FormData(form));
+    const { name, domain } = Object.fromEntries(new FormData(form));
     setBusy(form, true);
-    const ok = await act({ action: "update", name, ...(superAdmin ? { domain, app_version } : {}) }, "Saved.");
-    // Members of the organization switch on their next page load; a super admin in it switches now.
-    if (ok && superAdmin && current.role) await switchToAppVersion();
+    const ok = await act({ action: "update", name, ...(superAdmin ? { domain } : {}) }, "Saved.");
     setBusy(form, false);
     if (ok) editDialog.close();
   });

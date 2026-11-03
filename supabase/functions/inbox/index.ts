@@ -1,4 +1,5 @@
-// AP inbox processing for the signed-in user's connected mailboxes.
+// AP inbox processing for the signed-in user's connected mailboxes and the organization mailboxes they have a role on
+// (any role may process and mark emails; see migrations/*_organization_mailboxes.sql).
 //   GET   ?status=&mailbox_id=                          -> { emails: [...] } newest first
 //   GET   ?preview=<email id>                           -> { email: {...} } the message read live from the mailbox
 //   POST  {action: "process", mailbox_id, lookback_hours, reprocess?, all?, started_at?} -> process a batch now

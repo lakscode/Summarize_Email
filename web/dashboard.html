@@ -22,14 +22,51 @@
         <button type="button" id="own-mailbox-add">Add my mailbox</button>
         <button type="button" class="secondary" id="own-mailbox-later">Not now</button>
       </div>
-      <h1 id="greeting">Settings</h1>
-      <p class="sub">You're signed in.</p>
-      <section class="grid">
-        <div class="tile"><div class="label">Name</div><div class="value" id="profile-name">—</div></div>
-        <div class="tile"><div class="label">Email</div><div class="value" id="profile-email">—</div></div>
-        <div class="tile"><div class="label">Member since</div><div class="value" id="profile-since">—</div></div>
-      </section>
+      <h1>Settings</h1>
+      <p class="sub" id="greeting">Connect mailboxes and choose how each one is processed.</p>
 
+      <!-- Tabs: the caller's own mailboxes, those colleagues shared with the organization, and their account. The open
+           tab is kept in the URL hash. -->
+      <div class="tabs settings-tabs" role="tablist" aria-label="Settings">
+        <button type="button" class="tab" role="tab" data-tab="mine" aria-controls="tab-mine">My mailboxes<span class="tab-count" id="count-mine"></span></button>
+        <button type="button" class="tab" role="tab" data-tab="organization" aria-controls="tab-organization" hidden>Organization mailboxes<span class="tab-count" id="count-organization"></span></button>
+        <button type="button" class="tab" role="tab" data-tab="account" aria-controls="tab-account">Account</button>
+      </div>
+
+      <div class="inline-form list-filter" id="mailbox-filter" hidden>
+        <label>Filter <input type="search" id="filter-text" placeholder="Address or organization" /></label>
+        <label>Type
+          <select id="filter-type">
+            <option value="">All</option>
+            <option value="ap">AP</option>
+            <option value="ar">AR</option>
+          </select>
+        </label>
+        <span class="label" id="filter-count"></span>
+      </div>
+
+      <div class="tab-panel" id="tab-account" role="tabpanel" hidden>
+        <section class="grid">
+          <div class="tile"><div class="label">Name</div><div class="value" id="profile-name">—</div></div>
+          <div class="tile"><div class="label">Email</div><div class="value" id="profile-email">—</div></div>
+          <div class="tile"><div class="label">Member since</div><div class="value" id="profile-since">—</div></div>
+          <div class="tile"><div class="label">Organization</div><div class="value" id="profile-org">—</div>
+            <a class="tile-link" href="settings.html">Organization page</a></div>
+        </section>
+        <p class="hint">Change your name on the <a href="profile.html">Profile</a> page.</p>
+      </div>
+
+      <div class="tab-panel" id="tab-organization" role="tabpanel" hidden>
+        <section class="panel">
+          <h2 id="org-mailboxes-title">Organization mailboxes</h2>
+          <p class="sub">Mailboxes colleagues shared with your organization. Your role on each decides whether you can
+            change its settings and schedule; anyone with access can process it on the Inbox page.</p>
+          <ul class="mailbox-list" id="org-mailbox-list"></ul>
+          <p class="empty" id="org-mailbox-empty" hidden></p>
+        </section>
+      </div>
+
+      <div class="tab-panel" id="tab-mine" role="tabpanel" hidden>
 
       <section class="panel"  style="display:none">
         <div class="panel-head">
@@ -88,8 +125,9 @@
       <section class="panel">
         <div class="panel-head">
           <div>
-            <h2>Mailboxes</h2>
-            <p class="sub">Each mailbox has its own type (AP or AR), forwarded categories and destination email.</p>
+            <h2>My mailboxes</h2>
+            <p class="sub">Mailboxes you connected. Open one to set its type (AP or AR), what is forwarded and where, and
+              whether your organization can use it.</p>
           </div>
           <div class="connect-controls">
             <label>Allow access for
@@ -130,20 +168,11 @@
             Only mailboxes that account has Full Access to can be added.</p>
           <ul class="results" id="pick-shared-results" hidden></ul>
         </form>
-        <div class="inline-form list-filter" id="mailbox-filter" hidden>
-          <label>Filter <input type="search" id="filter-text" placeholder="Address or organization" /></label>
-          <label>Type
-            <select id="filter-type">
-              <option value="">All</option>
-              <option value="ap">AP</option>
-              <option value="ar">AR</option>
-            </select>
-          </label>
-          <span class="label" id="filter-count"></span>
-        </div>
-        <ul class="list" id="mailbox-list"></ul>
-        <p class="empty" id="mailbox-empty" hidden>No mailboxes connected yet.</p>
+        <ul class="mailbox-list" id="mailbox-list"></ul>
+        <p class="empty" id="mailbox-empty" hidden>No mailboxes connected yet. Use <strong>Add Azure mailbox</strong> to
+          connect your first one.</p>
       </section>
+      </div>
     </main>
   </div>
 
@@ -167,7 +196,7 @@
       const profile = data?.profile;
 
       const name = profile?.full_name || user.user_metadata?.full_name || "";
-      document.getElementById("greeting").textContent = name ? `Hello, ${name}` : "Settings";
+      if (name) document.getElementById("greeting").textContent = `Hello, ${name}. Connect mailboxes and choose how each one is processed.`;
       document.getElementById("profile-name").textContent = name || "—";
       document.getElementById("profile-email").textContent = profile?.email || user.email;
       document.getElementById("profile-since").textContent =
@@ -193,9 +222,11 @@
       purchase_order: "Purchase order",
       customer_inquiry: "Customer inquiry",
     };
-    // Filled from GET mailboxes: categories per mailbox type, and the organization connections by id.
+    // Filled from GET mailboxes: categories per mailbox type, the organization connections by id, and the caller's
+    // organization ({id, name, role} or null), which their mailboxes can be shared with.
     let categories = { ap: [], ar: [] };
     let connections = new Map();
+    let organization = null;
 
     // Shows the outcome of a Microsoft sign-in; returns false if `params` carries none.
     function showConnectResult(params) {
@@ -221,19 +252,60 @@
       categories = data.categories ?? { ap: ["invoice", "utility_bill", "vendor_info", "statement", "other"], ar: [] };
       const orgs = data.connections ?? [];
       connections = new Map(orgs.map((c) => [c.id, c]));
+      organization = data.organization ?? null;
 
       const counts = {};
       for (const m of data.mailboxes) if (m.connection_id) counts[m.connection_id] = (counts[m.connection_id] ?? 0) + 1;
       document.getElementById("connection-list").replaceChildren(...orgs.map((c) => connectionRow(c, counts[c.id] ?? 0)));
       document.getElementById("connection-empty").hidden = orgs.length > 0;
 
-      document.getElementById("mailbox-list").replaceChildren(...data.mailboxes.map(mailboxRow));
-      document.getElementById("mailbox-empty").hidden = data.mailboxes.length > 0;
-      document.getElementById("mailbox-filter").hidden = data.mailboxes.length < 2;
-      applyFilter();
+      // My mailboxes: connected by the caller (shared with the organization or not). Organization mailboxes: shared by
+      // colleagues.
+      const mine = data.mailboxes.filter(owns);
+      const shared = data.mailboxes.filter((m) => !owns(m));
+      document.getElementById("mailbox-list").replaceChildren(...mine.map(mailboxRow));
+      document.getElementById("mailbox-empty").hidden = mine.length > 0;
+      document.getElementById("org-mailbox-list").replaceChildren(...shared.map(mailboxRow));
+      const orgEmpty = document.getElementById("org-mailbox-empty");
+      orgEmpty.hidden = shared.length > 0;
+      orgEmpty.textContent = `No one has shared a mailbox with ${organization?.name ?? "your organization"} yet. To share one of ` +
+        "yours, open it under My mailboxes and tick Organization mailbox.";
+      document.getElementById("count-mine").textContent = mine.length || "";
+      document.getElementById("count-organization").textContent = shared.length || "";
+      document.querySelector('.tab[data-tab="organization"]').hidden = !organization && !shared.length;
+      if (organization) document.getElementById("org-mailboxes-title").textContent = `Shared with ${organization.name}`;
+      document.getElementById("profile-org").textContent = organization
+        ? `${organization.name} (${organization.role === "admin" ? "admin" : "member"})` : "None";
+      showTab(currentTab());
       syncToggles();
       return data.mailboxes;
     }
+
+    // --- Tabs ---
+
+    const TABS = ["mine", "organization", "account"];
+    const currentTab = () => {
+      const tab = location.hash.slice(1);
+      return TABS.includes(tab) && !document.querySelector(`.tab[data-tab="${tab}"]`).hidden ? tab : "mine";
+    };
+
+    function showTab(tab) {
+      for (const b of document.querySelectorAll(".settings-tabs .tab")) {
+        const on = b.dataset.tab === tab;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-selected", String(on));
+        document.getElementById(`tab-${b.dataset.tab}`).hidden = !on;
+      }
+      applyFilter();
+    }
+
+    for (const b of document.querySelectorAll(".settings-tabs .tab")) {
+      b.addEventListener("click", () => {
+        history.replaceState(null, "", b.dataset.tab === "mine" ? location.pathname + location.search : `#${b.dataset.tab}`);
+        showTab(b.dataset.tab);
+      });
+    }
+    showTab(currentTab());
 
     // Signed in to the app with Microsoft: once per sign-in, that account's own mailbox and the shared mailboxes it
     // has Full Access to are added without any clicks. Without an active own mailbox the page goes straight to the
@@ -248,7 +320,7 @@
       ownPrompt.hidden = true;
       if (!mailboxes || user.app_metadata?.provider !== "azure" || !user.email) return;
       const email = user.email.toLowerCase();
-      const own = mailboxes.find((m) => m.provider === "microsoft" && m.email_address === email && !m.delegate_address && m.active);
+      const own = mailboxes.find((m) => m.provider === "microsoft" && m.email_address === email && !m.delegate_address && m.active && owns(m));
 
       const autoKey = `auto-mailboxes:${user.id}`;
       const signIn = String(user.last_sign_in_at ?? "");
@@ -455,42 +527,99 @@
       // Keep only the addresses that failed, so they can be fixed and retried.
       bulkForm.elements.addresses.value = failed.map((r) => r.address).join("\n");
       const added = data.results.length - failed.length;
-      showMessage(`Added ${added} mailbox${added === 1 ? "" : "es"}${failed.length ? `; ${failed.length} could not be added (see below)` : ""}.`,
+      showMessage(`Added ${added} mailbox${added === 1 ? "" : "es"}${failed.length ? `; ${failed.length} could not be added (see below)` : ""}.${sharedNote(added)}`,
         failed.length ? "error" : "ok");
       await loadMailboxes();
     });
 
-    // --- Mailbox rows ---
+    // --- Mailbox rows: a compact row (address, badges, one-line summary) that opens into Processing, Connection and
+    // Sharing sections. ---
+
+    // Mailboxes whose details are open; they stay open when the list is redrawn (e.g. after sharing one).
+    const expanded = new Set();
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
 
     function mailboxRow(m) {
       m.mailbox_type ??= "ap";
-      const li = document.createElement("li");
-      li.className = "stacked";
+      const li = el("li", "mailbox-item");
       const org = connections.get(m.connection_id);
-      li.dataset.search = `${m.email_address} ${m.display_name ?? ""} ${org?.name ?? ""}`.toLowerCase();
+      li.dataset.search = `${m.email_address} ${m.display_name ?? ""} ${org?.name ?? ""} ${m.owner_name ?? ""}`.toLowerCase();
       li.dataset.type = m.mailbox_type;
-
-      const head = document.createElement("div");
-      head.className = "row";
-      const info = document.createElement("div");
-      const email = document.createElement("div");
-      email.className = "value";
-      const type = document.createElement("span");
-      type.className = `badge type-${m.mailbox_type}`;
-      type.textContent = TYPE_LABELS[m.mailbox_type] ?? "AP";
-      email.append(`${m.email_address} `, type);
-      const meta = document.createElement("div");
-      meta.className = "label";
-      const via = org ? ` · ${org.name} (API keys)` : m.delegate_address ? ` shared mailbox, via ${m.delegate_address}` : "";
-      meta.textContent = `${m.display_name ? m.display_name + " · " : ""}${PROVIDER_LABELS[m.provider] || "Azure"}${via}` +
-        ` · connected ${new Date(m.created_at).toLocaleDateString()}`;
-
       // Access window: active until access_expires_at, then the token is deleted and a reconnect is needed.
       // Organization mailboxes use the organization's keys and don't expire.
       const expired = !m.connection_id && (!m.active || (m.access_expires_at && new Date(m.access_expires_at) <= new Date()));
-      const access = document.createElement("div");
-      access.className = expired ? "access expired" : "access";
-      if (expired) {
+
+      const head = button("", "mailbox-head");
+      const title = el("span", "mailbox-title");
+      const type = el("span", `badge type-${m.mailbox_type}`, TYPE_LABELS[m.mailbox_type] ?? "AP");
+      title.append(el("span", "mailbox-address", m.email_address), type);
+      // Under My mailboxes: which ones the organization can use (every mailbox on the Organization tab can).
+      if (m.org_id && owns(m)) title.append(el("span", "badge org", "Organization"));
+      if (expired) title.append(el("span", "badge status-error", "Access expired"));
+      const summary = el("span", "mailbox-summary", summaryText(m));
+      const main = el("span", "mailbox-head-main");
+      main.append(title, summary);
+      head.append(main, el("span", "chevron"));
+
+      const body = el("div", "mailbox-body");
+      body.id = `mailbox-${m.id}`;
+      head.setAttribute("aria-controls", body.id);
+      body.append(
+        section("Processing", settingsForm(m, type, () => (summary.textContent = summaryText(m)))),
+        section("Connection", connectionDetails(m, org, expired)),
+      );
+      const shared = orgSection(m);
+      if (shared) body.append(section("Sharing", shared));
+
+      const setOpen = (open) => {
+        body.hidden = !open;
+        head.setAttribute("aria-expanded", String(open));
+        li.classList.toggle("open", open);
+        if (open) expanded.add(m.id);
+        else expanded.delete(m.id);
+      };
+      head.addEventListener("click", () => setOpen(body.hidden));
+      setOpen(expanded.has(m.id));
+      li.append(head, body);
+      return li;
+    }
+
+    function section(title, content) {
+      const s = el("section", "mailbox-section");
+      s.append(el("h3", null, title), content);
+      return s;
+    }
+
+    // One line under the address: what is forwarded where, and anything else worth knowing without opening it.
+    function summaryText(m) {
+      const cats = (m.forward_categories ?? []).map((c) => CATEGORY_LABELS[c] ?? c).join(", ");
+      return [
+        !cats ? "Nothing forwarded automatically" : m.smart_ap_address ? `Forwards ${cats} to ${m.smart_ap_address}` : `${cats}: no destination set`,
+        m.send_summary ? "summary email on" : null,
+        m.schedule_enabled ? "scheduled" : null,
+        owns(m) ? null : `shared by ${m.owner_name || "a colleague"}, you: ${(MAILBOX_ROLE_LABELS[m.role] ?? "Member").toLowerCase()}`,
+      ].filter(Boolean).join(" · ");
+    }
+
+    // How the mailbox is connected and until when, with Reconnect / Shared mailboxes… and Disconnect for the owner.
+    function connectionDetails(m, org, expired) {
+      const box = el("div", "mailbox-connection");
+      const info = el("div");
+      const via = org ? ` · ${org.name} (API keys)` : m.delegate_address ? ` · shared mailbox, via ${m.delegate_address}` : "";
+      info.append(el("div", "label", `${m.display_name ? m.display_name + " · " : ""}${PROVIDER_LABELS[m.provider] || "Azure"}${via}` +
+        ` · connected ${new Date(m.created_at).toLocaleDateString()}${owns(m) ? "" : ` by ${m.owner_name || "a colleague"}`}`));
+
+      const access = el("div", expired ? "access expired" : "access");
+      if (expired && !owns(m)) {
+        // The token is the owner's; only they can sign in again.
+        access.textContent = `Access expired. ${m.owner_name || "The person who connected it"} needs to reconnect it.`;
+      } else if (expired) {
         access.textContent = "Access expired. ";
         const reconnect = button("Reconnect", "link-button");
         reconnect.addEventListener("click", () =>
@@ -502,15 +631,18 @@
         access.textContent = m.access_expires_at
           ? `Access until ${new Date(m.access_expires_at).toLocaleString()}. `
           : "Access has no expiry (connected before access periods). Reconnect to set one. ";
-        if ((m.provider || "microsoft") === "microsoft" && !m.delegate_address) {
+        if ((m.provider || "microsoft") === "microsoft" && !m.delegate_address && owns(m)) {
           const findShared = button("Shared mailboxes…", "link-button");
           findShared.addEventListener("click", () => offerSharedMailboxes(m.id, m.email_address));
           access.append(findShared);
         }
       }
-      info.append(email, meta, access);
+      info.append(access);
+      box.append(info);
 
-      const remove = button("Disconnect", "secondary");
+      // Only the owner disconnects; for everyone else an organization mailbox stays.
+      if (!owns(m)) return box;
+      const remove = button("Disconnect", "secondary small");
       remove.addEventListener("click", async () => {
         if (!confirm(`Disconnect ${m.email_address}?`)) return;
         remove.disabled = true;
@@ -519,17 +651,130 @@
           remove.disabled = false;
           return showMessage(`Could not disconnect: ${error}`, "error");
         }
+        expanded.delete(m.id);
         showMessage(`Disconnected ${m.email_address}.`, "ok");
         await loadMailboxes();
       });
-
-      head.append(info, remove);
-      li.append(head, settingsForm(m, type));
-      return li;
+      box.append(remove);
+      return box;
     }
 
-    // Per-mailbox settings: AP or AR, which categories are forwarded, and where to.
-    function settingsForm(m, typeBadge) {
+    // --- Organization mailboxes: the owner shares a mailbox with their organization; everyone in it then has a role
+    // on it: Admin (settings, schedule and roles) or Member (uses it; the default). The owner and organization admins
+    // are always Admin. ---
+
+    const MAILBOX_ROLE_LABELS = { owner: "Admin", admin: "Admin", member: "Member" };
+    // Mailboxes from an older API have no role: they are the caller's own.
+    const owns = (m) => (m.role ?? "owner") === "owner";
+    const manages = (m) => owns(m) || m.role === "admin";
+
+    function orgSection(m) {
+      if (!m.org_id && !(owns(m) && organization)) return null;
+      const box = document.createElement("div");
+      box.className = "mailbox-org";
+      const row = document.createElement("div");
+      row.className = "mailbox-org-row";
+      box.append(row);
+
+      if (owns(m) && organization) {
+        const label = document.createElement("label");
+        const share = document.createElement("input");
+        share.type = "checkbox";
+        share.checked = !!m.org_id;
+        label.append(share, `Organization mailbox: everyone in ${organization.name} can use it`);
+        share.addEventListener("change", async () => {
+          if (!share.checked && !confirm(`Stop sharing ${m.email_address} with ${organization.name}? Only you will see it, and the roles set on it are cleared.`)) {
+            share.checked = true;
+            return;
+          }
+          share.disabled = true;
+          const { error } = await callApi("mailboxes", { method: "PATCH", body: { id: m.id, org_shared: share.checked } });
+          share.disabled = false;
+          if (error) {
+            share.checked = !share.checked;
+            return showMessage(`Could not change sharing: ${error}`, "error");
+          }
+          showMessage(share.checked
+            ? `${m.email_address} is now an organization mailbox. Everyone in ${organization.name} can use it as a member; make people admins under People and roles.`
+            : `${m.email_address} is no longer shared with ${organization.name}.`, "ok");
+          await loadMailboxes();
+        });
+        row.append(label);
+      } else {
+        row.append(`Organization mailbox. Your role: ${MAILBOX_ROLE_LABELS[m.role] ?? "Member"}.`);
+      }
+      if (!m.org_id) return box;
+
+      const toggle = button("People and roles", "link-button");
+      toggle.setAttribute("aria-expanded", "false");
+      const wrap = document.createElement("div");
+      wrap.className = "org-table-wrap";
+      wrap.hidden = true;
+      toggle.addEventListener("click", async () => {
+        wrap.hidden = !wrap.hidden;
+        toggle.setAttribute("aria-expanded", String(!wrap.hidden));
+        if (!wrap.hidden) await loadAccess(m, wrap);
+      });
+      row.append(toggle);
+      box.append(wrap);
+      return box;
+    }
+
+    // Everyone in the organization with their role on mailbox `m`; the mailbox's admins change roles here.
+    async function loadAccess(m, wrap) {
+      const text = (tag, className, textContent) => Object.assign(document.createElement(tag), { className, textContent });
+      wrap.replaceChildren(text("p", "hint", "Loading…"));
+      const { data, error } = await callApi(`mailboxes?access=${encodeURIComponent(m.id)}`, { method: "GET" });
+      if (error) {
+        wrap.hidden = true;
+        return showMessage(`Could not load who can use ${m.email_address}: ${error}`, "error");
+      }
+      const table = document.createElement("table");
+      table.className = "logs";
+      const head = table.createTHead().insertRow();
+      for (const t of ["Name", "Email", "Role"]) head.append(text("th", "", t));
+      const rows = table.createTBody();
+      for (const p of data.people) {
+        const tr = rows.insertRow();
+        const name = tr.insertCell();
+        name.textContent = p.full_name || "—";
+        if (p.you) name.append(text("span", "badge you", "You"));
+        tr.insertCell().textContent = p.email ?? "";
+        const cell = tr.insertCell();
+        if (!data.manage || p.fixed) {
+          cell.textContent = MAILBOX_ROLE_LABELS[p.role];
+          const why = p.role === "owner" ? "Connected it" : p.org_admin ? "Organization admin" : null;
+          if (why) cell.append(text("div", "muted", why));
+          continue;
+        }
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", `Role of ${p.email} on ${m.email_address}`);
+        for (const r of ["member", "admin"]) select.add(new Option(MAILBOX_ROLE_LABELS[r], r, false, r === p.role));
+        select.addEventListener("change", async () => {
+          select.disabled = true;
+          const { error } = await callApi("mailboxes", {
+            body: { action: "set_mailbox_role", mailbox_id: m.id, user_id: p.user_id, role: select.value },
+          });
+          select.disabled = false;
+          if (error) {
+            select.value = p.role;
+            return showMessage(`Could not change the role: ${error}`, "error");
+          }
+          p.role = select.value;
+          showMessage(`${p.full_name || p.email} is now ${p.role === "admin" ? "an admin" : "a member"} of ${m.email_address}.`, "ok");
+          // Changing your own role changes what you may do here.
+          if (p.you) await loadMailboxes();
+        });
+        cell.append(select);
+      }
+      const hint = text("p", "hint", "Members see this mailbox and its emails, process its inbox and mark emails done. " +
+        "Admins can also change its settings, schedule and roles. People who join the organization later are members.");
+      hint.style.padding = "0 12px 10px";
+      wrap.replaceChildren(table, hint);
+    }
+
+    // Per-mailbox settings: AP or AR, which categories are forwarded, and where to. `onSaved` runs after a save.
+    function settingsForm(m, typeBadge, onSaved) {
       const form = document.createElement("form");
       form.className = "inline-form settings-form";
 
@@ -570,11 +815,15 @@
 
       const shared = !!m.delegate_address || !!m.connection_id;
       const summaryToLabel = document.createElement("label");
-      summaryToLabel.textContent = "Summary to";
+      summaryToLabel.className = "summary-to";
+      summaryToLabel.textContent = "Summary to (separate addresses with commas)";
       const summaryTo = document.createElement("input");
+      // multiple: the browser accepts a comma-separated list of addresses.
       summaryTo.type = "email";
+      summaryTo.multiple = true;
       summaryTo.name = "summary_address";
-      summaryTo.placeholder = shared ? (appUser?.email || "Your account email") : m.email_address;
+      summaryTo.placeholder = !shared ? m.email_address
+        : owns(m) ? (appUser?.email || "Your account email") : `${m.owner_name || "The owner"}'s account email`;
       summaryTo.value = m.summary_address || "";
       summaryToLabel.append(summaryTo);
       const showSummaryTo = () => (summaryToLabel.hidden = !summary.checked);
@@ -600,6 +849,12 @@
       form.append(typeLabel, destLabel, forward, summaryLabel, summaryToLabel, save, status);
       saved = current();
       refresh();
+      // Members of an organization mailbox see its settings; only its admins change them.
+      if (!manages(m)) {
+        for (const c of form.elements) c.disabled = true;
+        save.hidden = true;
+        form.append(Object.assign(document.createElement("p"), { className: "hint", textContent: "Only admins of this mailbox can change its settings." }));
+      }
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
         const body = {
@@ -629,6 +884,7 @@
         typeBadge.className = `badge type-${m.mailbox_type}`;
         typeBadge.textContent = TYPE_LABELS[m.mailbox_type];
         form.closest("li").dataset.type = m.mailbox_type;
+        onSaved?.();
         const cats = m.forward_categories.map((c) => CATEGORY_LABELS[c] ?? c).join(", ");
         showMessage(!cats ? `Saved. Nothing from ${m.email_address} is forwarded automatically.`
           : m.smart_ap_address ? `Saved. ${cats} from ${m.email_address} will be forwarded to ${m.smart_ap_address}.`
@@ -656,6 +912,9 @@
       }));
     }
 
+    // Added after new shared mailboxes: they are shared with the organization by default (the owner can untick it).
+    const sharedNote = (n) => n && organization ? ` ${n === 1 ? "It is" : "They are"} shared with ${organization.name}; untick Organization mailbox under one to keep it to yourself.` : "";
+
     const checkedForward = (form) => [...form.querySelectorAll('input[name="forward"]:checked')].map((i) => i.value);
 
     function button(text, className, type = "button") {
@@ -668,15 +927,19 @@
 
     // --- Filter (useful with dozens of mailboxes) ---
 
+    // Filters the open tab's list; shown on a mailbox tab with at least two mailboxes.
     function applyFilter() {
+      const tab = currentTab();
+      const list = document.getElementById(tab === "organization" ? "org-mailbox-list" : "mailbox-list");
       const text = document.getElementById("filter-text").value.trim().toLowerCase();
       const type = document.getElementById("filter-type").value;
-      const rows = [...document.getElementById("mailbox-list").children];
+      const rows = [...list.children];
       let shown = 0;
       for (const li of rows) {
         li.hidden = (text && !li.dataset.search.includes(text)) || (type && li.dataset.type !== type);
         if (!li.hidden) shown++;
       }
+      document.getElementById("mailbox-filter").hidden = tab === "account" || rows.length < 2;
       document.getElementById("filter-count").textContent = shown === rows.length ? `${rows.length} mailboxes` : `${shown} of ${rows.length}`;
     }
     document.getElementById("filter-text").addEventListener("input", applyFilter);
@@ -740,6 +1003,11 @@
     const sharedForm = document.getElementById("shared-form");
 
     function showForm(form) {
+      // The add forms are on the My mailboxes tab.
+      if (currentTab() !== "mine") {
+        history.replaceState(null, "", location.pathname + location.search);
+        showTab("mine");
+      }
       for (const f of document.querySelectorAll(".connect-form")) f.hidden = f !== form;
       syncToggles();
       form.querySelector("input, textarea").focus();
@@ -797,7 +1065,7 @@
       const failed = data.results.filter((r) => !r.ok);
       showMessage(
         `Added ${added.length} shared mailbox${added.length === 1 ? "" : "es"} of ${account}` +
-          (failed.length ? `; could not add ${failed.map((r) => `${r.address} (${r.error})`).join(", ")}` : "") + ".",
+          (failed.length ? `; could not add ${failed.map((r) => `${r.address} (${r.error})`).join(", ")}` : "") + "." + sharedNote(added.length),
         failed.length ? "error" : "ok",
       );
       await loadMailboxes();
@@ -861,7 +1129,7 @@
       if (!pickList.querySelector("input")) pickList.hidden = true;
       pickForm.elements.extra.value = data.results.filter((r) => !r.ok && !ticked.includes(r.address)).map((r) => r.address).join("\n");
       const failed = data.results.length - added.size;
-      showMessage(`Added ${added.size} shared mailbox${added.size === 1 ? "" : "es"}${failed ? `; ${failed} could not be added (see below)` : ""}.`,
+      showMessage(`Added ${added.size} shared mailbox${added.size === 1 ? "" : "es"}${failed ? `; ${failed} could not be added (see below)` : ""}.${sharedNote(added.size)}`,
         failed ? "error" : "ok");
       await loadMailboxes();
     });

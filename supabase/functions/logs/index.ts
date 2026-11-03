@@ -3,7 +3,8 @@
 //        its steps read in order.
 //        kind=emails: the email processing history (email_processing_log) instead of app_logs.
 //        mailbox: an address; user: a user id; from / to: ISO times (from inclusive, to exclusive).
-// GET    ?filters=1 -> { users, mailboxes, others } the choices for the filters (mailboxes: the caller's own)
+// GET    ?filters=1 -> { users, mailboxes, others } the choices for the filters (mailboxes: the caller's own and their
+//        organization's)
 //        Whose logs: everyone's for a super admin, the organization's members' for an organization admin, otherwise
 //        only the caller's own (others: false).
 // POST   { level, message, location, context } -> record a UI error for the caller
@@ -50,8 +51,9 @@ Deno.serve(async (req) => {
       const visible = await visibleUsers(user.id);
       const db = adminClient();
       let users = db.from("profiles").select("id").order("email").limit(1000);
-      // Mailboxes: only the caller's own (connected under their account, shared ones included), also for admins.
-      const boxes = db.from("mailboxes").select("email_address").eq("owner_user_id", user.id).order("email_address");
+      // Mailboxes: the caller's own (connected under their account, shared ones included) and their organization's
+      // (RLS), also for admins.
+      const boxes = sb.from("mailboxes").select("email_address").order("email_address");
       if (visible) users = users.in("id", visible);
       const [u, b] = await Promise.all([users, boxes]);
       if (u.error || b.error) return await fail("logs/filters", (u.error ?? b.error)!.message, 500, { userId: user.id });
@@ -88,7 +90,8 @@ Deno.serve(async (req) => {
           .order("processed_at", { ascending: ordered })
           .limit(limit);
         if (emailId) query = query.eq("processed_email_id", emailId);
-        if (visible) query = query.in("owner_user_id", visible);
+        // Only the caller: RLS also lets in the history of organization mailboxes they have a role on.
+        if (visible && !own) query = query.in("owner_user_id", visible);
         if (userFilter) query = query.eq("processed_by", userFilter);
         if (mailbox) query = query.eq("mailbox_address", mailbox);
         if (run) query = query.eq("run_id", run);

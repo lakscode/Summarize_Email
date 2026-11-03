@@ -3,6 +3,8 @@
 // forwards confident emails in the mailbox's forward_categories to its destination address (smart_ap_address).
 // Each message is processed once per mailbox (unique mailbox_id + message_id). With reprocess, emails already
 // classified are classified again unless they were forwarded or marked done, so nothing is forwarded twice.
+// Invoices and utility bills left as action needed are marked done once someone forwards them manually in Outlook
+// (checked at the end of each run, see markManuallyForwarded).
 import { encodeBase64 } from "./base64.ts";
 import { APP_NAME } from "./brand.ts";
 import PostalMime from "npm:postal-mime@3.0.1";
@@ -55,11 +57,15 @@ export async function processorOf(db: Db, userId: string) {
 const step = (run: Run, location: string, message: string, context: Record<string, unknown> = {}) =>
   logStep(location, message, run.userId, { run: run.id, mailbox: run.mailbox, trigger: run.trigger, ...context });
 
+// A mailbox `userId` may process: their own, or an organization mailbox they have a role on (any role may process).
 async function loadMailbox(db: Db, userId: string, mailboxId: string): Promise<Mailbox> {
   await db.rpc("expire_mailbox_access");
+  const { data: role, error: roleError } = await db.rpc("mailbox_role", { p_mailbox_id: mailboxId, p_user_id: userId });
+  if (roleError) throw new Error(roleError.message);
+  if (!role) throw new Error("Mailbox not found");
   const { data: mailbox, error } = await db.from("mailboxes")
-    .select("id, provider, auth_type, connection_id, email_address, delegate_address, credentials_secret_id, smart_ap_address, access_expires_at, mailbox_type, forward_categories, send_summary, summary_address")
-    .eq("id", mailboxId).eq("owner_user_id", userId).maybeSingle();
+    .select("id, owner_user_id, provider, auth_type, connection_id, email_address, delegate_address, credentials_secret_id, smart_ap_address, access_expires_at, mailbox_type, forward_categories, send_summary, summary_address")
+    .eq("id", mailboxId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!mailbox) throw new Error("Mailbox not found");
   if (!mailbox.credentials_secret_id && !mailbox.connection_id) {
@@ -102,13 +108,16 @@ export async function previewMailbox(userId: string, mailboxId: string, hours: n
   };
 }
 
-// A processed email as the Inbox preview shows it, read live from the mailbox (null if it isn't the user's).
+// A processed email as the Inbox preview shows it, read live from the mailbox (null if the user has no access to it).
 export async function previewEmail(userId: string, emailId: string) {
   const db = adminClient();
   const { data: row, error } = await db.from("processed_emails").select("mailbox_id, message_id, web_link")
-    .eq("id", emailId).eq("owner_user_id", userId).maybeSingle();
+    .eq("id", emailId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!row) return null;
+  const { data: role, error: roleError } = await db.rpc("mailbox_role", { p_mailbox_id: row.mailbox_id, p_user_id: userId });
+  if (roleError) throw new Error(roleError.message);
+  if (!role) return null;
   const mailbox = await loadMailbox(db, userId, row.mailbox_id);
   const m = await (await mailClient(db, mailbox)).getMessage(row.message_id);
   return {
@@ -177,8 +186,10 @@ export async function processMailbox(
   // Only when the mailbox's "Send summary email" setting is on, it has a recipient, and there is something to report.
   // Run until done: only with the last batch, covering every batch of the run.
   const pending = !!untilDone && remaining > 0;
-  const reportItems = untilDone && !pending ? await itemsSince(db, mailbox.id, startedAt) : items;
-  const to = mailbox.send_summary && !pending ? await summaryRecipient(db, userId, mailbox) : null;
+  // Once per run (the last batch): emails manually forwarded since they were processed, this run's included.
+  const manuallyForwarded = pending ? 0 : await markManuallyForwarded(db, run, mailbox, client);
+  const reportItems = (untilDone && !pending) || manuallyForwarded ? await itemsSince(db, mailbox.id, startedAt) : items;
+  const to = mailbox.send_summary && !pending ? await summaryRecipients(db, mailbox) : null;
   const report = !mailbox.send_summary ? "off" : pending ? "pending" : !to ? "no_recipient"
     : reportItems.length ? await sendReport(run, mailbox, client, to, reportItems, remaining, appUrl) : "skipped";
   const result = {
@@ -187,12 +198,75 @@ export async function processMailbox(
     processed: batch.length,
     remaining,
     counts,
+    manually_forwarded: manuallyForwarded,
     report,
     started_at: startedAt,
   };
-  const summary = Object.entries(counts).map(([k, n]) => `${n} ${k.replace("_", " ")}`).join(", ") || "nothing new";
+  const summary = [
+    ...Object.entries(counts).map(([k, n]) => `${n} ${k.replace("_", " ")}`),
+    ...(manuallyForwarded ? [`${manuallyForwarded} manually forwarded, now done`] : []),
+  ].join(", ") || "nothing new";
   await step(run, "process/finish", `Run finished in ${Math.round((Date.now() - started) / 1000)}s: ${summary}`, result);
   return result;
+}
+
+// Categories whose emails count as handled once someone forwards them manually (to the AP system, say), and how many
+// action-needed emails one run checks (the most recent).
+const DONE_WHEN_FORWARDED = ["invoice", "utility_bill"];
+const MAX_FORWARD_CHECKS = 100;
+// action_taken of those emails, shown in the Inbox.
+export const MANUALLY_FORWARDED = "Manually forwarded";
+// The email's details copied into its email_processing_log row (as inbox/index.ts does).
+const SNAPSHOT_COLUMNS =
+  "message_id, received_at, from_name, from_address, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step";
+
+// Marks done the invoices and utility bills still marked action needed that someone has since forwarded manually in
+// Outlook (the mailbox records it; Gmail doesn't, so nothing changes there). Each is logged like any other processing.
+// Returns how many; never fails the run.
+async function markManuallyForwarded(db: Db, run: Run, mailbox: Mailbox, client: MailClient): Promise<number> {
+  if (!client.forwardedAt) return 0;
+  try {
+    const { data: rows, error } = await db.from("processed_emails").select(`id, subject, ${SNAPSHOT_COLUMNS}`)
+      .eq("mailbox_id", mailbox.id).eq("status", "action_needed").in("category", DONE_WHEN_FORWARDED)
+      .order("received_at", { ascending: false }).limit(MAX_FORWARD_CHECKS);
+    if (error) throw new Error(error.message);
+    if (!rows?.length) return 0;
+    const forwarded = await client.forwardedAt(rows.map((r) => r.message_id));
+    let marked = 0;
+    for (const row of rows) {
+      const at = forwarded.get(row.message_id);
+      if (!at) continue;
+      const action = MANUALLY_FORWARDED;
+      const by = processedBy(run);
+      // Only if it is still action needed (someone may have marked it done meanwhile).
+      const { data: updated, error: updateError } = await db.from("processed_emails")
+        .update({ status: "done", action_taken: action, ...by, updated_at: by.processed_at })
+        .eq("id", row.id).eq("status", "action_needed").select("id");
+      if (updateError) throw new Error(updateError.message);
+      if (!updated?.length) continue;
+      marked++;
+      const { error: logError } = await db.from("email_processing_log").insert({
+        processed_email_id: row.id,
+        mailbox_id: mailbox.id,
+        mailbox_address: mailbox.email_address,
+        ...Object.fromEntries(SNAPSHOT_COLUMNS.split(", ").map((c) => [c, (row as Record<string, unknown>)[c]])),
+        subject: row.subject || "(no subject)",
+        owner_user_id: mailbox.owner_user_id,
+        ...by,
+        trigger: run.trigger,
+        run_id: run.id,
+        status: "done",
+        action,
+      });
+      if (logError) await logApi("process/log", logError.message, { userId: run.userId, level: "warn", context: { run: run.id, email_id: row.id } });
+      await step(run, "process/forwarded", `"${row.subject || "(no subject)"}" marked done: manually forwarded in Outlook at ${at}`,
+        { email_id: row.id, forwarded_at: at });
+    }
+    return marked;
+  } catch (err) {
+    await logApi("process/forwarded", err, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address } });
+    return 0;
+  }
 }
 
 // The emails of a run-until-done (processed since its first batch started), for its summary email.
@@ -214,28 +288,32 @@ async function itemsSince(db: Db, mailboxId: string, since: string): Promise<Rep
   }));
 }
 
-// Where the summary goes: the mailbox's summary address if set; otherwise an own mailbox gets it itself, and a shared
-// mailbox (read through another account or an organization connection) goes to the owner's account email.
-async function summaryRecipient(db: Db, userId: string, mailbox: Mailbox): Promise<string | null> {
-  if (mailbox.summary_address) return mailbox.summary_address;
+// Where the summary goes: the mailbox's summary addresses if set (comma-separated in summary_address); otherwise an own
+// mailbox gets it itself, and a shared mailbox (read through another account or an organization connection) goes to the
+// owner's account email (also when someone else in the organization ran it).
+async function summaryRecipients(db: Db, mailbox: Mailbox): Promise<string[] | null> {
+  const listed = (mailbox.summary_address ?? "").split(/[\s,;]+/).filter(Boolean);
+  if (listed.length) return listed;
   const shared = !!mailbox.delegate_address || mailbox.auth_type === "app";
-  if (!shared) return mailbox.email_address;
+  if (!shared) return [mailbox.email_address];
+  const userId = mailbox.owner_user_id;
   const { data, error } = await db.auth.admin.getUserById(userId);
   if (error) await logApi("process/report", error.message, { userId, level: "warn", context: { mailbox: mailbox.email_address } });
-  return data?.user?.email?.toLowerCase() || null;
+  const email = data?.user?.email?.toLowerCase();
+  return email ? [email] : null;
 }
 
-// Emails the run summary to `to`. Needs Mail.Send, like forwarding. For a shared mailbox connected by sign-in it is
+// Emails the run summary to the `to` addresses. Needs Mail.Send, like forwarding. For a shared mailbox connected by sign-in it is
 // sent from the signed-in user's own mailbox.
 async function sendReport(
-  run: Run, mailbox: Mailbox, client: MailClient, to: string, items: ReportItem[], remaining: number, appUrl: string | null,
+  run: Run, mailbox: Mailbox, client: MailClient, to: string[], items: ReportItem[], remaining: number, appUrl: string | null,
 ): Promise<"sent" | "failed"> {
   const order = ["action_needed", "error", "done", "no_action"];
   items.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   const { subject, html } = buildReport(mailbox.email_address, items, remaining, run.trigger, appUrl);
   try {
     await client.sendMail(to, subject, html);
-    await step(run, "process/report", `Summary email sent to ${to}: "${subject}"`);
+    await step(run, "process/report", `Summary email sent to ${to.join(", ")}: "${subject}"`);
     return "sent";
   } catch (err) {
     await logApi("process/report", err, { userId: run.userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, to } });
@@ -245,7 +323,7 @@ async function sendReport(
 
 type Db = ReturnType<typeof adminClient>;
 interface Mailbox {
-  id: string; provider: Provider; auth_type: "oauth" | "app"; connection_id: string | null; email_address: string;
+  id: string; owner_user_id: string; provider: Provider; auth_type: "oauth" | "app"; connection_id: string | null; email_address: string;
   delegate_address: string | null; credentials_secret_id: string | null; smart_ap_address: string | null;
   mailbox_type: MailboxType; forward_categories: string[]; send_summary: boolean;
   summary_address: string | null;
@@ -268,7 +346,7 @@ async function claim(db: Db, userId: string, mailbox: Mailbox, msg: MailMessage,
   const from = msg.from?.emailAddress ?? {};
   const { data, error } = await db.from("processed_emails").upsert({
     mailbox_id: mailbox.id,
-    owner_user_id: userId,
+    owner_user_id: mailbox.owner_user_id,
     message_id: msg.id,
     received_at: msg.receivedDateTime,
     from_name: from.name ?? null,
@@ -456,7 +534,7 @@ async function logProcessing(
     from_name: from.name ?? null,
     from_address: from.address?.toLowerCase() ?? null,
     web_link: msg.webLink ?? null,
-    owner_user_id: run.userId,
+    owner_user_id: mailbox.owner_user_id,
     processed_by: run.userId,
     processed_by_email: run.userEmail,
     processed_by_name: run.userName,

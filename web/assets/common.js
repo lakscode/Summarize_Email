@@ -83,33 +83,30 @@ async function requireSession() {
     location.replace(pageUrl("login"));
     return null;
   }
-  if (await switchToAppVersion(session)) return null;
   sb.auth.onAuthStateChange((event) => {
     if (event === "SIGNED_OUT") location.replace(pageUrl("login"));
   });
+  await joinOrganization(session);
   return session;
 }
 
-// --- App versions (migrations/*_organization_app_version.sql): web/ is "current", web/v1/ is "v1". Each
-// organization uses one; users in none use "current". ---
-
-const APP_VERSION = "current";
-// Where each version's pages are, relative to this page.
-const APP_VERSION_PAGES = { current: "./", v1: "v1/" };
-
-// Sends the user to the same page of their organization's version when it isn't this one. Returns true if it did.
-async function switchToAppVersion(session) {
-  session ??= await getSession();
-  if (!session) return false;
-  const { data, error } = await sb.from("organization_members").select("organizations(app_version)")
-    .eq("user_id", session.user.id).maybeSingle();
-  // Can't tell: stay here rather than block the page.
-  if (error) return false;
-  const version = data?.organizations?.app_version ?? "current";
-  if (version === APP_VERSION || !APP_VERSION_PAGES[version]) return false;
-  const page = location.pathname.split("/").pop();
-  location.replace(new URL(`${APP_VERSION_PAGES[version]}${page}${location.search}${location.hash}`, location.href).href);
-  return true;
+// Once per sign-in, on whichever page comes first: loading the organization joins one by invitation or by the
+// user's email domain (supabase/functions/organizations), so a new user lands in their company's organization and sees
+// its mailboxes without visiting Settings first.
+async function joinOrganization(session) {
+  const key = `org-joined:${session.user.id}:${session.user.last_sign_in_at ?? ""}`;
+  try {
+    if (sessionStorage.getItem(key)) return;
+  } catch {
+    // Storage blocked: check on every page.
+  }
+  const { error } = await callApi("organizations", { method: "GET" });
+  if (error) return;
+  try {
+    sessionStorage.setItem(key, "1");
+  } catch {
+    // Not remembered; checked again on the next page.
+  }
 }
 
 // Every error shown to the user is also recorded on the Logs page.

@@ -102,9 +102,11 @@ An **organization** groups a company's users; each user is in at most one. Organ
   members and rename it, but can't change its domain.
 - **Members** see their organization and who is in it, and can leave it.
 
-With a **domain** set (not a public one like gmail.com), anyone who signs
-in with Microsoft using an address at that domain joins automatically as a member, on their next visit to the
-dashboard; someone removed isn't joined again unless they are added back. Membership decides whose mailbox settings
+With a **domain** set (not a public one like gmail.com), anyone whose confirmed email address is at that domain joins
+automatically as a member the first time they open the app after signing in: an email sign-up once they click the
+confirmation link, or a Microsoft sign-in. Someone removed isn't joined again unless they are added back. Keep
+**Confirm email** on (Authentication > Providers > Email): with it off, sign-ups count as confirmed immediately, so
+anyone could join an organization by typing an address at its domain. Membership decides whose mailbox settings
 are reused (above). Not to be confused with the API-key organizations below.
 
 Make someone a super admin in the Supabase SQL editor (after they have signed in once):
@@ -181,34 +183,17 @@ With Docker installed you can run everything locally instead: `npm run db:start`
 and `npm run functions:serve`.
 
 Email confirmation is on by default for hosted projects: after signing up, click the email link to reach the
-dashboard. Turn it off under Authentication > Providers > Email to sign in immediately.
+dashboard. Turning it off (Authentication > Providers > Email) lets people sign in immediately, but then
+organization domains can't be trusted: anyone typing an address at a domain would join that organization.
 
-## App versions (v0 and v1)
-
-Two versions of the app run side by side on the same database: **v0** (stored as `current`) and **v1**. Each
-organization uses one; users in no organization use **v0**. A super admin picks it on the Organization page
-(**Edit details > App version**).
-
-| | v0 (`current`) | v1 |
-|---|---|---|
-| UI | `web/*.html`, `web/assets/` | `web/v1/*.html`, `web/v1/assets/` (images and `config.js` shared from `web/`) |
-| API | `functions/<name>`, `functions/_shared` | `functions/<name>-v1`, `functions/_shared_v1` |
-| Scheduler | `scheduler` (cron job `process-inbox-schedules`) | `scheduler-v1` (cron job `process-inbox-schedules-v1`) |
-
-- Signed-in pages send a user whose organization is on the other version to the same page of that version
-  (`switchToAppVersion` in `assets/common.js`); each scheduler only runs mailboxes whose owner is on its version.
-- v1 started as an identical copy; change files under `web/v1/` and `functions/*-v1`, `functions/_shared_v1` only.
-- Connecting a mailbox from v1 signs in through `mailboxes-v1`: add
-  `https://<project-ref>.supabase.co/functions/v1/mailboxes-v1` as a redirect URI in the Azure app registration
-  (and the Google OAuth client, for Gmail).
-- `npm run functions:deploy` deploys both versions.
-
-## Organization mailboxes (v1)
+## Organization mailboxes
 
 The person who connected a mailbox can tick **Organization mailbox** under it on the Settings page. Everyone in their
 organization can then use it, with a role per mailbox (**People and roles**). Shared mailboxes (added through a
-signed-in account, a shared mailbox sign-in or API keys) are ticked automatically when someone in an organization adds
-them, unless the organization already has that mailbox; personal mailboxes are not. Roles:
+signed-in account, a shared mailbox sign-in or API keys) are shared automatically: when someone in an organization adds
+them, when someone who has them joins an organization, and (once, `migrations/*_share_existing_shared_mailboxes.sql`)
+those added before this existed. One copy per address is shared, so the organization never has the same mailbox
+twice; personal mailboxes stay private. Roles:
 
 - **Member** (the default, also for people who join later): sees the mailbox, its emails and processing history,
   processes its inbox and marks emails done.
@@ -216,6 +201,6 @@ them, unless the organization already has that mailbox; personal mailboxes are n
   admins are always admins. Only the person who connected it can reconnect, disconnect or stop sharing it.
 
 Only people in the mailbox's organization see it: roles are in `mailbox_members` and checked by `mailbox_role()`
-(`migrations/*_organization_mailboxes.sql`), which RLS and the v1 functions use. When the owner leaves or moves to another
+(`migrations/*_organization_mailboxes.sql`), which RLS and the edge functions use. When the owner leaves or moves to another
 organization, their mailboxes stop being shared and the roles on them are removed
 (`migrations/*_organization_mailbox_membership.sql`); people who leave lose their roles on its mailboxes.

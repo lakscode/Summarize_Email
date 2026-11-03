@@ -88,10 +88,13 @@ export interface MailClient {
   // The whole message for the Inbox preview.
   getMessage(messageId: string): Promise<FullMessage>;
   attachmentBytes(messageId: string, attachmentId: string): Promise<Uint8Array>;
-  // Sends an HTML email from the connected mailbox (kept in its sent mail).
-  sendMail(to: string, subject: string, html: string): Promise<void>;
+  // Sends an HTML email to one or more addresses from the connected mailbox (kept in its sent mail).
+  sendMail(to: string[], subject: string, html: string): Promise<void>;
   // Forwards the message with its attachments, `comment` above the original.
   forwardMessage(messageId: string, to: string, comment: string): Promise<void>;
+  // Of these messages, the ones someone has forwarded (e.g. manually in Outlook), with when. Only where the provider
+  // records it on the message (Microsoft 365); messages no longer in the mailbox are left out.
+  forwardedAt?(messageIds: string[]): Promise<Map<string, string>>;
 }
 
 // fn over items, at most `limit` at a time; results in the items' order.

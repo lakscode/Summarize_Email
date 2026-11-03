@@ -446,24 +446,3 @@ verify_jwt = true
 # Called by pg_cron with the x-cron-secret header, not with a user JWT.
 [functions.scheduler]
 verify_jwt = false
-
-
-
-# v1 copies of the functions above (see migrations/*_organization_app_version.sql); same settings.
-[functions.profile-v1]
-verify_jwt = true
-
-[functions.mailboxes-v1]
-verify_jwt = false
-
-[functions.logs-v1]
-verify_jwt = true
-
-[functions.organizations-v1]
-verify_jwt = true
-
-[functions.inbox-v1]
-verify_jwt = true
-
-[functions.scheduler-v1]
-verify_jwt = false
