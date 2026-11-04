@@ -618,6 +618,14 @@ table.logs details .facts { margin: 8px 0; }
 .preview-frame { width: 100%; height: 60vh; min-height: 240px; border: 1px solid var(--border); border-radius: 8px; background: #ffffff; }
 a.button-link.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
 .email-detail-row .detail-links { display: flex; gap: 16px; }
+.status-history { margin: 12px 0; font-size: 0.88rem; }
+.status-history:empty { display: none; }
+.status-history-title { font-weight: 600; margin-bottom: 4px; }
+.status-history ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.status-history li { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.status-history .when { color: var(--muted); min-width: 120px; font-variant-numeric: tabular-nums; }
+.status-history li.by-user .what { font-weight: 600; }
+.status-history .who, .status-history .muted { color: var(--muted); }
 
 /* Settings page: tabs, then compact mailbox rows that open into Processing, Connection and Sharing sections. */
 .settings-tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; margin-bottom: 4px; }

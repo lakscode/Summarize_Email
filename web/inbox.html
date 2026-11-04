@@ -499,17 +499,24 @@
         const logsLink = el("a", "link-button", "View logs");
         logsLink.href = `logs.html?${new URLSearchParams({ email: e.id })}`;
         links.append(historyLink, logsLink);
-        cell.append(dl, links);
+        // Who changed it and when (runs, marked done, reopened), loaded the first time the row opens.
+        const statusHistory = el("div", "status-history");
+        cell.append(dl, statusHistory, links);
         detailRow.append(cell);
         rows.push(detailRow);
 
         const expand = el("button", "icon-button expand", "▸");
         expand.title = "Details";
         expand.setAttribute("aria-expanded", "false");
+        let historyLoaded = false;
         expand.addEventListener("click", () => {
           detailRow.hidden = !detailRow.hidden;
           expand.setAttribute("aria-expanded", String(!detailRow.hidden));
           tr.classList.toggle("open", !detailRow.hidden);
+          if (!detailRow.hidden && !historyLoaded) {
+            historyLoaded = true;
+            loadStatusHistory(e.id, statusHistory);
+          }
         });
         actions.append(expand);
       }
@@ -522,13 +529,42 @@
           const { error } = await callApi("inbox", { method: "PATCH", body: { id: e.id, status: next } });
           if (error) {
             toggle.disabled = false;
-            return showMessage(`Could not update: ${error}`, "error");
+            showMessage(`Could not update: ${error}`, "error");
+            // Someone else may have changed it first: show its current status.
+            return loadEmails();
           }
           await loadEmails();
         });
         actions.prepend(toggle);
       }
       return rows;
+    }
+
+    // The email's status history, oldest first: each run that processed it and each time someone marked it done or
+    // reopened it, with who and when.
+    async function loadStatusHistory(emailId, container) {
+      container.replaceChildren(el("div", "muted", "Loading history…"));
+      const { data, error } = await callApi(`inbox?${new URLSearchParams({ history: emailId })}`, { method: "GET" });
+      if (error) return container.replaceChildren(el("div", "error-text", `Could not load the history: ${error}`));
+      const heading = el("div", "status-history-title", "Status history");
+      if (!data.history.length) return container.replaceChildren(heading, el("div", "muted", "No changes recorded yet."));
+      const list = el("ol");
+      for (const h of data.history) {
+        const what = h.trigger === "user"
+          ? h.action || (h.status === "done" ? "Marked done" : "Reopened")
+          : `${h.trigger === "schedule" ? "Scheduled run" : "Processed"}: ${ACTION_LABELS[h.status] || h.status}`;
+        const li = el("li", h.trigger === "user" ? "by-user" : null);
+        li.append(el("span", "when", formatWhen(h.processed_at)), el("span", "what", what));
+        const who = h.processed_by_name || h.processed_by_email;
+        if (who) {
+          const whoNode = el("span", "who", who);
+          whoNode.title = h.processed_by_email || who;
+          li.append(whoNode);
+        }
+        if (h.error) li.append(el("span", "error-text", h.error));
+        list.append(li);
+      }
+      container.replaceChildren(heading, list);
     }
 
     // --- Email preview ---------------------------------------------------------------------------

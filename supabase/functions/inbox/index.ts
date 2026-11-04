@@ -2,10 +2,13 @@
 // (any role may process and mark emails; see migrations/*_organization_mailboxes.sql).
 //   GET   ?status=&mailbox_id=                          -> { emails: [...] } newest first
 //   GET   ?preview=<email id>                           -> { email: {...} } the message read live from the mailbox
+//   GET   ?history=<email id>                           -> { history: [...] } oldest first: each processing run and
+//         each time someone marked it done / reopened it, with who and when (email_processing_log)
 //   POST  {action: "process", mailbox_id, lookback_hours, reprocess?, all?, started_at?} -> process a batch now
 //         (see _shared/process.ts); with all, the page calls again until remaining is 0
 //   POST  {action: "preview", mailbox_id, lookback_hours} -> { new, already_processed, ... } to confirm a re-check first
-//   PATCH {id, status: "done" | "action_needed"}       -> employee marks an item handled / reopens it
+//   PATCH {id, status: "done" | "action_needed"}       -> employee marks an item handled / reopens it; 409 when it
+//         already has that status (someone else changed it first), naming who
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi, logStep } from "../_shared/log.ts";
 import { previewEmail, previewMailbox, processMailbox, processorOf, STATUSES } from "../_shared/process.ts";
@@ -40,6 +43,19 @@ Deno.serve(async (req) => {
       }
     }
 
+    if (req.method === "GET" && url.searchParams.has("history")) {
+      const id = url.searchParams.get("history")!;
+      // The caller's own client: RLS limits it to emails of mailboxes they have a role on.
+      const { data, error } = await sb.from("email_processing_log")
+        .select("id, processed_at, processed_by_name, processed_by_email, trigger, status, action, error")
+        .eq("processed_email_id", id)
+        .order("processed_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(200);
+      if (error) return await fail("inbox/history", error.message, 500, { userId: user.id, context: { email_id: id } });
+      return json({ history: data });
+    }
+
     if (req.method === "GET") {
       let query = sb
         .from("processed_emails")
@@ -60,13 +76,21 @@ Deno.serve(async (req) => {
       if (!body.id || !["done", "action_needed"].includes(body.status)) {
         return json({ error: "id and status (done | action_needed) are required" }, 400);
       }
+      // Only from another status, so two people changing the same email at once can't both log the change.
       const { data, error } = await sb.from("processed_emails")
         .update({ status: body.status, updated_at: new Date().toISOString() })
         .eq("id", body.id)
+        .neq("status", body.status)
         .select("id, status, mailbox_id, owner_user_id, subject, mailboxes(email_address), message_id, received_at, from_name, from_address, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step")
         .maybeSingle();
       if (error) return await fail("inbox/update", error.message, 500, { userId: user.id, context: { email_id: body.id } });
-      if (!data) return json({ error: "Email not found" }, 404);
+      if (!data) {
+        const { data: current } = await sb.from("processed_emails")
+          .select("status, processed_by_name, processed_by_email").eq("id", body.id).maybeSingle();
+        if (!current) return json({ error: "Email not found" }, 404);
+        const who = current.processed_by_name || current.processed_by_email || "someone";
+        return json({ error: `Already ${body.status === "done" ? "marked done" : "reopened"} by ${who}.` }, 409);
+      }
       // Marking done / reopening counts as processing it: this user and time become the email's "last processed".
       const db = adminClient();
       const processor = await processorOf(db, user.id);
