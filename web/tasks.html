@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tasks</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <link rel="icon" type="image/png" href="images/favicon.png" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="assets/brand.js"></script>
+  <script src="assets/common.js"></script>
+</head>
+<body>
+  <div class="shell" hidden>
+    <aside id="sidebar" class="sidebar"></aside>
+
+    <main class="content">
+      <div id="message" class="message" hidden></div>
+      <h1>Tasks</h1>
+      <p class="sub">Every user's tasks (emails assigned to someone) in all the mailboxes you have access to, and those
+        assigned to or by you. Assign an email from its details in the Inbox.</p>
+
+      <div class="toolbar">
+        <div class="tabs" role="tablist" id="whose-tabs">
+          <button class="tab active" data-whose="all">All tasks</button>
+          <button class="tab" data-whose="me">Assigned to me</button>
+          <button class="tab" data-whose="by_me">Assigned by me</button>
+        </div>
+        <div class="toolbar-actions">
+          <button class="secondary" id="refresh">Refresh</button>
+        </div>
+      </div>
+
+      <form class="log-filters" id="task-filters">
+        <label>Status
+          <select name="status">
+            <option value="open">Open</option>
+            <option value="done">Done</option>
+            <option value="" selected>All</option>
+          </select>
+        </label>
+        <label>Person
+          <select name="person"><option value="">Everyone</option></select>
+        </label>
+        <label>Mailbox
+          <select name="mailbox"><option value="">All mailboxes</option></select>
+        </label>
+      </form>
+
+      <div class="panel log-panel">
+        <table class="logs tasks">
+          <thead><tr><th>Status</th><th>Email</th><th>Vendor / amount</th><th>Assigned to</th><th>Assigned by</th><th>Assigned</th><th></th></tr></thead>
+          <tbody id="task-rows"></tbody>
+        </table>
+        <p class="empty" id="task-empty" hidden>No tasks here.</p>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const STATUS_LABELS = {
+      action_needed: "Action needed", done: "Done", no_action: "No action needed", ignored: "Not relevant",
+      processing: "Processing", error: "Error",
+    };
+    const MAX_TASKS = 500;
+    let whose = new URLSearchParams(location.search).get("whose") || "all";
+    let userId = null;
+    let tasks = [];
+
+    (async () => {
+      const session = await requireSession();
+      if (!session) return;
+      userId = session.user.id;
+      renderSidebar("tasks", session);
+      document.querySelector(".shell").hidden = false;
+      document.querySelectorAll("#whose-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.whose === whose));
+      await load();
+    })();
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    const formatWhen = (iso) => new Date(iso).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+
+    // Straight from the database: RLS returns only emails of mailboxes the user has access to.
+    async function load() {
+      let query = sb.from("processed_emails")
+        .select("id, mailbox_id, subject, from_name, from_address, vendor, amount, status, category, assigned_to, assigned_to_name, " +
+          "assigned_by, assigned_by_name, assigned_at, assignment_seen_at, processed_by_name, processed_at, mailboxes(email_address)")
+        .not("assigned_to", "is", null)
+        .order("assigned_at", { ascending: false })
+        .limit(MAX_TASKS);
+      if (whose === "me") query = query.eq("assigned_to", userId);
+      if (whose === "by_me") query = query.eq("assigned_by", userId);
+      const { data, error } = await query;
+      if (error) return showMessage(`Could not load the tasks: ${error.message}`, "error");
+      tasks = data;
+      fillMailboxFilter();
+      fillPersonFilter();
+      render();
+      // Looking at their own tasks counts as seeing them (the bell's count clears).
+      if (whose === "me" && tasks.some((t) => !t.assignment_seen_at)) {
+        const { error: seenError } = await callApi("inbox", { method: "POST", body: { action: "seen" } });
+        if (!seenError && typeof loadNotifications === "function") loadNotifications();
+      }
+    }
+
+    function fillMailboxFilter() {
+      const select = document.querySelector("#task-filters [name=mailbox]");
+      const current = select.value;
+      const boxes = [...new Map(tasks.map((t) => [t.mailbox_id, t.mailboxes?.email_address || "(mailbox)"])).entries()]
+        .sort((a, b) => a[1].localeCompare(b[1]));
+      select.replaceChildren(new Option("All mailboxes", ""), ...boxes.map(([id, address]) => new Option(address, id)));
+      select.value = boxes.some(([id]) => id === current) ? current : "";
+    }
+
+    // Everyone tasks were assigned to or by, so one person's can be picked (either way round).
+    function fillPersonFilter() {
+      const select = document.querySelector("#task-filters [name=person]");
+      const current = select.value;
+      const people = new Map();
+      for (const t of tasks) {
+        if (t.assigned_to) people.set(t.assigned_to, t.assigned_to === userId ? "You" : t.assigned_to_name || "Unknown");
+        if (t.assigned_by) people.set(t.assigned_by, t.assigned_by === userId ? "You" : t.assigned_by_name || "Unknown");
+      }
+      const sorted = [...people.entries()].sort((a, b) => (a[1] === "You" ? -1 : b[1] === "You" ? 1 : a[1].localeCompare(b[1])));
+      select.replaceChildren(new Option("Everyone", ""), ...sorted.map(([id, name]) => new Option(name, id)));
+      select.value = people.has(current) ? current : "";
+    }
+
+    function render() {
+      const form = document.getElementById("task-filters");
+      const status = form.status.value;
+      const mailbox = form.mailbox.value;
+      const person = form.person.value;
+      const shown = tasks
+        .filter((t) => !status || (status === "done" ? t.status === "done" : t.status !== "done"))
+        .filter((t) => !mailbox || t.mailbox_id === mailbox)
+        .filter((t) => !person || t.assigned_to === person || t.assigned_by === person)
+        // Open first, then done; newest assigned first within each.
+        .sort((a, b) => (a.status === "done") - (b.status === "done"));
+      document.getElementById("task-rows").replaceChildren(...shown.map(row));
+      document.getElementById("task-empty").hidden = shown.length > 0;
+      document.getElementById("task-empty").textContent = tasks.length
+        ? "No tasks match these filters."
+        : whose === "me" ? "Nothing is assigned to you." : whose === "by_me" ? "You haven't assigned anything." : "No tasks yet.";
+    }
+
+    function row(t) {
+      const tr = el("tr", `status-row-${t.status}`);
+      const mine = t.assigned_to === userId;
+
+      const statusCell = el("td");
+      const badges = el("div", "badges");
+      badges.append(el("span", `pill action-${t.status}`, STATUS_LABELS[t.status] || t.status));
+      if (mine && !t.assignment_seen_at) badges.append(el("span", "badge new", "New"));
+      statusCell.append(badges);
+
+      const email = el("td", "email-main");
+      const subject = el("a", "email-subject", t.subject || "(no subject)");
+      // Opens it in the Inbox: its mailbox selected, the email scrolled to and opened.
+      subject.href = mine
+        ? pageLink("inbox", { assigned: "1", mailbox: t.mailbox_id, email: t.id })
+        : pageLink("inbox", { tab: "all", mailbox: t.mailbox_id, email: t.id });
+      email.append(subject);
+      const from = t.from_name || t.from_address;
+      email.append(el("div", "email-oneline", [from, t.mailboxes?.email_address].filter(Boolean).join(" · ")));
+
+      const vendor = el("td", "email-vendor");
+      if (t.vendor) vendor.append(el("div", null, t.vendor));
+      if (t.amount) vendor.append(el("div", "email-amount", t.amount));
+
+      const to = el("td", "nowrap", mine ? "You" : t.assigned_to_name || "—");
+      const by = el("td", "nowrap", t.assigned_by === userId ? "You" : t.assigned_by_name || "—");
+      const when = el("td", "nowrap muted", t.assigned_at ? formatWhen(t.assigned_at) : "");
+      if (t.status === "done" && t.processed_at) {
+        when.append(el("div", "muted", `done ${formatWhen(t.processed_at)}${t.processed_by_name ? ` by ${t.processed_by_name}` : ""}`));
+      }
+
+      const actions = el("td", "nowrap");
+      if (t.status === "action_needed" || t.status === "done") {
+        const toggle = el("button", "secondary", t.status === "done" ? "Reopen" : "Mark done");
+        toggle.addEventListener("click", async () => {
+          toggle.disabled = true;
+          const next = t.status === "done" ? "action_needed" : "done";
+          const { error } = await callApi("inbox", { method: "PATCH", body: { id: t.id, status: next } });
+          if (error) showMessage(`Could not update: ${error}`, "error");
+          await load();
+        });
+        actions.append(toggle);
+      }
+
+      tr.append(statusCell, email, vendor, to, by, when, actions);
+      return tr;
+    }
+
+    for (const tab of document.querySelectorAll("#whose-tabs .tab")) {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll("#whose-tabs .tab").forEach((t) => t.classList.toggle("active", t === tab));
+        whose = tab.dataset.whose;
+        history.replaceState(null, "", whose === "all" ? location.pathname : `${location.pathname}?whose=${whose}`);
+        load();
+      });
+    }
+    document.getElementById("task-filters").addEventListener("change", render);
+    document.getElementById("refresh").addEventListener("click", load);
+  </script>
+</body>
+</html>

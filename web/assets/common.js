@@ -246,6 +246,7 @@ const ICONS = {
   profile: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
   settings: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
   schedules: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  tasks: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
   bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   collapse: '<path d="M15 18l-6-6 6-6"/>',
@@ -254,6 +255,8 @@ const ICONS = {
 // Daily work first, then setup, admin, troubleshooting, and the user's own account last.
 const NAV = [
   { page: "inbox", label: "Inbox" },
+  // Emails assigned to someone, across mailboxes: to the user, by the user, everyone's.
+  { page: "tasks", label: "Tasks" },
   // Mailbox setup: connecting mailboxes and how each one is handled.
   { page: "dashboard", label: "Settings" },
   // Organization details for everyone; what can be changed there depends on the user's role.
@@ -427,11 +430,9 @@ function openNotifications(bell) {
   renderNotificationList(list);
   const all = document.createElement("a");
   all.className = "notification-all";
-  // The mailbox of the user's newest task, as "Assigned to me" lists one mailbox at a time.
-  const newest = notifications.find(isMine)?.mailbox_id;
-  all.href = pageLink("inbox", { assigned: "1", ...(newest ? { mailbox: newest } : {}) });
-  openTaskOnClick(all, newest, null);
-  all.textContent = "View my tasks";
+  // Every task across mailboxes, on the Tasks page.
+  all.href = pageUrl("tasks");
+  all.textContent = "View all tasks";
   panel.append(head, list, all);
 
   // Below the bell, kept on screen.
