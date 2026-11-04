@@ -143,8 +143,11 @@
     function reportResult(r) {
       if (!r?.at) return { text: "Not sent yet", kind: "muted" };
       if (r.error) return { text: `Failed: ${r.error}`, kind: "error" };
-      if (!r.sent) return { text: "Nothing to send (no invoices forwarded)", kind: "muted" };
-      return { text: `Sent: ${plural(r.count ?? 0, "invoice")}${r.to?.length ? ` to ${r.to.join(", ")}` : ""}`, kind: "ok" };
+      // Earlier versions sent nothing when no invoices were forwarded.
+      if (!r.sent) return { text: "No invoices forwarded (nothing sent)", kind: "muted" };
+      const to = r.to?.length ? ` to ${r.to.join(", ")}` : "";
+      if (!r.count) return { text: `Sent "no invoices" email${to}`, kind: "ok" };
+      return { text: `Sent: ${plural(r.count, "invoice")}${to}`, kind: "ok" };
     }
 
     function render() {

@@ -25,7 +25,7 @@
         <div class="tabs" role="tablist" id="status-tabs">
           <button class="tab active" data-status="">All</button>
           <button class="tab" data-status="sent">Sent</button>
-          <button class="tab" data-status="empty">Nothing to send</button>
+          <button class="tab" data-status="empty">No invoices</button>
           <button class="tab" data-status="failed">Failed</button>
         </div>
         <div class="toolbar-actions">
@@ -77,7 +77,7 @@
     // Report history (supabase/migrations/*_reports.sql), read straight from the reports table: RLS returns the reports
     // of mailboxes the user can open (their own and their organization's).
     const MAX_ROWS = 200;
-    const STATUS_LABELS = { sent: "Sent", empty: "Nothing to send", failed: "Failed" };
+    const STATUS_LABELS = { sent: "Sent", empty: "No invoices", failed: "Failed" };
     const STATUS_CLASSES = { sent: "status-done", empty: "status-no_action", failed: "status-error" };
     const CATEGORY_LABELS = { invoice: "Invoice", utility_bill: "Utility bill" };
     let status = "";

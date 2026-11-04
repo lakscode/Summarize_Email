@@ -1,7 +1,7 @@
 // Weekly "forwarded invoices" report of a mailbox (see migrations/*_weekly_invoices_report.sql), separate from the daily
 // one (forward-report.ts, unchanged): the invoices and utility bills forwarded in the 7 days before it is sent, by the
 // app or manually in Outlook, emailed from the mailbox to its weekly report recipients, with a total per vendor. Sent by
-// the scheduler on the day and time set on the Settings page; nothing is sent in a week without any. Every run is kept
+// the scheduler on the day and time set on the Settings page; in a week without any, a short email says so. Every run is kept
 // in the report history (reports, kind 'weekly_invoices', shown on the Reports page). Subjects and vendors come from
 // email content, so everything inserted is HTML-escaped.
 import { APP_NAME } from "./brand.ts";
@@ -69,15 +69,14 @@ export async function sendWeeklyReport(
     rows = (data as Row[]).filter((r) => FORWARDED.test(r.action_taken ?? ""));
     if (!to.length) {
       result = { at: now.toISOString(), error: "No recipients set" };
-    } else if (!rows.length) {
-      result = { at: now.toISOString(), sent: false, count: 0 };
     } else {
+      // Sent also in a week without any (an email saying so), so recipients know the report ran.
       const report = buildWeeklyReport(m, rows, since, now);
       subject = report.subject;
       const sent = await (await mailClient(db, m)).sendMail(to, report.subject, report.html);
       result = { at: now.toISOString(), sent: true, count: rows.length, to, from: sent.from, ...(sent.fallback ? { warning: sent.fallback } : {}) };
       await logStep("weekly-report/sent",
-        `Weekly invoices report for ${m.email_address} sent from ${sent.from} to ${to.join(", ")}: ${rows.length} forwarded`,
+        `Weekly invoices report for ${m.email_address} sent from ${sent.from} to ${to.join(", ")}: ${rows.length || "no invoices"} forwarded`,
         m.owner_user_id, { mailbox: m.email_address, count: rows.length, from: sent.from });
       if (sent.fallback) await logApi("weekly-report", sent.fallback, { userId: m.owner_user_id, level: "warn", context: { mailbox: m.email_address } });
     }
@@ -96,7 +95,8 @@ export async function sendWeeklyReport(
     sent_by_name: by?.name ?? null,
     period_start: since.toISOString(),
     period_end: now.toISOString(),
-    status: result.error ? "failed" : result.sent ? "sent" : "empty",
+    // empty: the "no invoices" email was sent.
+    status: result.error ? "failed" : rows.length ? "sent" : "empty",
     recipients: to,
     sent_from: (result.from as string | undefined) ?? null,
     subject,
@@ -143,7 +143,20 @@ function buildWeeklyReport(m: WeeklyReportMailbox, rows: Row[], since: Date, unt
   const when = (d: Date | string) => new Date(d).toLocaleString("en-US", { timeZone: tz, dateStyle: "medium", timeStyle: "short" });
   const day = (d: Date) => new Date(d).toLocaleDateString("en-US", { timeZone: tz, dateStyle: "medium" });
   const n = rows.length;
-  const subject = `Weekly forwarded invoices – ${m.email_address} – ${localDate(since, tz)} to ${localDate(until, tz)} – ${n} forwarded`;
+  const subject = `Weekly forwarded invoices – ${m.email_address} – ${localDate(since, tz)} to ${localDate(until, tz)} – ${n ? `${n} forwarded` : "no invoices"}`;
+  if (!n) {
+    return {
+      subject,
+      html: renderEmail({
+        title: subject,
+        preheader: `No invoices were forwarded from ${m.email_address} this week.`,
+        heading: "No invoices to send this week",
+        intro: `From <strong>${esc(m.email_address)}</strong>, ${esc(day(since))} to ${esc(day(until))} (${esc(tz)}).`,
+        content: `<p style="font-size:14px;line-height:1.5;">No invoices or utility bills were forwarded this week, by ${esc(APP_NAME)} or manually.</p>`,
+        footer: `Sent by ${esc(APP_NAME)} for ${esc(m.email_address)} every ${esc(dayName(m.weekly_report_day))}. Change the day, time or recipients on the Settings page.`,
+      }),
+    };
+  }
   const th = (h: string, align = "left") =>
     `<th align="${align}" style="padding:8px;border-bottom:2px solid #dde1e7;font-size:11px;letter-spacing:0.4px;color:#5f6b7a;text-transform:uppercase;">${h}</th>`;
   const cell = (html: string, align = "left") =>

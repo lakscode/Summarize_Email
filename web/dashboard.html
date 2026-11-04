@@ -637,7 +637,7 @@
         if (last?.at) {
           const when = new Date(last.at).toLocaleString();
           parts.push(last.error ? `Last report ${when} failed: ${last.error}`
-            : last.sent ? `Last report ${when}: ${last.count} invoice${last.count === 1 ? "" : "s"}, sent${last.from ? ` from ${last.from}` : ""} to ${last.to.join(", ")}.${last.warning ? ` ${last.warning}` : ""}`
+            : last.sent ? `Last report ${when}: ${last.count ? `${last.count} invoice${last.count === 1 ? "" : "s"}` : "no invoices"}, sent${last.from ? ` from ${last.from}` : ""} to ${last.to.join(", ")}.${last.warning ? ` ${last.warning}` : ""}`
             : `Last report ${when}: nothing forwarded, so no email was sent.`);
         }
         if (m.forward_report_timezone && m.forward_report_timezone !== timezone) parts.push(`Times are in ${m.forward_report_timezone}.`);
@@ -693,7 +693,7 @@
         if (!r.error) m.forward_report_last_at = r.at;
         describe();
         showMessage(r.error ? `Could not send the report: ${r.error}`
-          : r.sent ? `Sent the report (${r.count} invoice${r.count === 1 ? "" : "s"}) from ${r.from} to ${r.to.join(", ")}.${r.warning ? ` ${r.warning}` : ""}`
+          : r.sent ? `Sent the report (${r.count ? `${r.count} invoice${r.count === 1 ? "" : "s"}` : "no invoices"}) from ${r.from} to ${r.to.join(", ")}.${r.warning ? ` ${r.warning}` : ""}`
           : "No invoices were forwarded since the last report, so nothing was sent.", r.error ? "error" : "ok");
       });
 
@@ -745,7 +745,7 @@
         if (last?.at) {
           const when = new Date(last.at).toLocaleString();
           parts.push(last.error ? `Last weekly report ${when} failed: ${last.error}`
-            : last.sent ? `Last weekly report ${when}: ${last.count} invoice${last.count === 1 ? "" : "s"}, sent${last.from ? ` from ${last.from}` : ""} to ${last.to.join(", ")}.${last.warning ? ` ${last.warning}` : ""}`
+            : last.sent ? `Last weekly report ${when}: ${last.count ? `${last.count} invoice${last.count === 1 ? "" : "s"}` : "no invoices"}, sent${last.from ? ` from ${last.from}` : ""} to ${last.to.join(", ")}.${last.warning ? ` ${last.warning}` : ""}`
             : `Last weekly report ${when}: nothing forwarded that week, so no email was sent.`);
         }
         if (m.weekly_report_timezone && m.weekly_report_timezone !== timezone) parts.push(`Times are in ${m.weekly_report_timezone}.`);
@@ -801,7 +801,7 @@
         if (!r.error) m.weekly_report_last_at = r.at;
         describe();
         showMessage(r.error ? `Could not send the weekly report: ${r.error}`
-          : r.sent ? `Sent the weekly report (${r.count} invoice${r.count === 1 ? "" : "s"}) from ${r.from} to ${r.to.join(", ")}.${r.warning ? ` ${r.warning}` : ""}`
+          : r.sent ? `Sent the weekly report (${r.count ? `${r.count} invoice${r.count === 1 ? "" : "s"}` : "no invoices"}) from ${r.from} to ${r.to.join(", ")}.${r.warning ? ` ${r.warning}` : ""}`
           : "No invoices were forwarded in the past 7 days, so nothing was sent.", r.error ? "error" : "ok");
       });
 
