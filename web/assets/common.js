@@ -349,11 +349,19 @@ function notificationBell() {
   return bell;
 }
 
+// Read straight from the database (RLS: only emails of mailboxes the user still has access to) rather than through the
+// inbox function, so every page load doesn't wait on a function start-up, and in the background (no "Loading…").
 async function loadNotifications() {
-  const { data, error } = await callApi("inbox?assigned=me", { method: "GET" });
-  if (error || !data) return;
-  notifications = data.emails;
-  setNotificationCount(data.unseen);
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return;
+  const { data, error } = await sb.from("processed_emails")
+    .select("id, mailbox_id, subject, assigned_to_name, assigned_by_name, assigned_at, assignment_seen_at")
+    .eq("assigned_to", session.user.id).neq("status", "done")
+    .order("assigned_at", { ascending: false })
+    .limit(300);
+  if (error) return;
+  notifications = data;
+  setNotificationCount(data.filter((e) => !e.assignment_seen_at).length);
 }
 
 // The count on the bell; 0 removes it.

@@ -222,13 +222,27 @@
       currentUserId = session.user.id;
       renderSidebar("inbox", session);
       document.querySelector(".shell").hidden = false;
-      await loadMailboxes();
       // A notification link (?mailbox=&email=) opens that task; "View my tasks" (?mailbox= only) its mailbox's tasks.
       const linked = new URLSearchParams(location.search);
-      if (linked.get("mailbox") || linked.get("email")) {
+      const opensTask = !!(linked.get("mailbox") || linked.get("email"));
+      // Otherwise the emails of the mailbox picked last time load alongside the mailbox list; only if that mailbox is
+      // gone (or none was remembered) do they load again for the one loadMailboxes picks.
+      let remembered = "";
+      try {
+        remembered = localStorage.getItem(SELECTED_KEY) || "";
+      } catch {
+        // Storage blocked: wait for the mailbox list.
+      }
+      let early = null;
+      if (!opensTask && remembered) {
+        document.getElementById("mailbox-select").value = remembered;
+        early = loadEmails();
+      }
+      await loadMailboxes();
+      if (opensTask) {
         await openTaskInInbox(linked.get("mailbox"), linked.get("email"));
         history.replaceState(null, "", `${location.pathname}?assigned=1`);
-      } else {
+      } else if (!early || document.getElementById("mailbox-select").value !== remembered) {
         await loadEmails();
       }
     })();
@@ -705,8 +719,9 @@
         const statusHistory = el("div", "status-history");
         cell.append(dl);
         if (e.category === "statement" && e.statement_invoices?.length) cell.append(statementSection(e));
-        if (e.status !== "processing") cell.append(categoryPicker(e), assignPicker(e));
-        cell.append(statusHistory, links);
+        // The category and assignee pickers are built the first time the row opens (the assignee list is a request).
+        const pickers = el("div");
+        cell.append(pickers, statusHistory, links);
         detailRow.append(cell);
         rows.push(detailRow);
 
@@ -720,6 +735,7 @@
           tr.classList.toggle("open", !detailRow.hidden);
           if (!detailRow.hidden && !historyLoaded) {
             historyLoaded = true;
+            if (e.status !== "processing") pickers.append(categoryPicker(e), assignPicker(e));
             loadStatusHistory(e.id, statusHistory);
           }
         });

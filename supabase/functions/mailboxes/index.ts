@@ -128,17 +128,17 @@ Deno.serve(async (req) => {
       const { error: expireError } = await adminClient().rpc("expire_mailbox_access");
       if (expireError) await logApi("mailboxes/expire", expireError.message, { userId: user.id, level: "warn" });
 
-      // RLS returns the caller's own mailboxes and those shared with their organization.
-      const { data, error } = await sb
+      // RLS returns the caller's own mailboxes and those shared with their organization. The connections load alongside.
+      const [{ data, error }, { data: connections, error: connError }] = await Promise.all([sb
         .from("mailboxes")
         .select("id, owner_user_id, org_id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, send_summary, summary_address, last_processed_at, last_processed_by_name, last_processed_trigger, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result, forward_report_enabled, forward_report_time, forward_report_timezone, forward_report_addresses, forward_report_next_at, forward_report_last_at, forward_report_last_result")
-        .order("created_at");
+        .order("created_at"),
+        sb.from("ms_connections").select("id, name, tenant_id, client_id, created_at").order("created_at"),
+      ]);
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
-      await addWeeklyReportSettings(user.id, sb, data);
-      const { data: connections, error: connError } = await sb.from("ms_connections")
-        .select("id, name, tenant_id, client_id, created_at").order("created_at");
       if (connError) return await fail("mailboxes/list", connError.message, 500, { userId: user.id });
-      const { mailboxes, organization } = await withRoles(user.id, sb, data);
+      // Both add to the same mailbox objects, so they run together.
+      const [, { mailboxes, organization }] = await Promise.all([addWeeklyReportSettings(user.id, sb, data), withRoles(user.id, sb, data)]);
       return json({ mailboxes, connections, categories: CATEGORIES, organization });
     }
 
@@ -241,23 +241,23 @@ async function profilesOf(ids: string[]): Promise<Map<string, { email: string | 
 // mailbox; RLS has already left out mailboxes the caller can't see), and returns the caller's organization.
 async function withRoles(userId: string, sb: SupabaseClient, rows: Record<string, unknown>[]) {
   const db = adminClient();
-  const [own, set] = await Promise.all([
+  const [own, set, owners] = await Promise.all([
     db.from("organization_members").select("org_id, role, organizations(name)").eq("user_id", userId).maybeSingle(),
     sb.from("mailbox_members").select("mailbox_id, role").eq("user_id", userId),
+    profilesOf(rows.map((m) => m.owner_user_id as string).filter((id) => id !== userId)),
   ]);
   for (const r of [own, set]) if (r.error) throw new Error(r.error.message);
   const roles = new Map((set.data ?? []).map((r) => [r.mailbox_id, r.role]));
-  const owners = await profilesOf(rows.map((m) => m.owner_user_id as string).filter((id) => id !== userId));
+  // Added to the rows themselves (not copies), so the weekly report settings added alongside are kept.
   const mailboxes = rows.map((m) => {
     const owner = owners.get(m.owner_user_id as string);
-    return {
-      ...m,
+    return Object.assign(m, {
       // Shared only with the caller's own organization; one left behind in an organization they're no longer in
       // (see *_organization_mailbox_membership.sql) shows as not shared.
       org_id: m.org_id && m.org_id === own.data?.org_id ? m.org_id : null,
       role: m.owner_user_id === userId ? "owner" : own.data?.role === "admin" ? "admin" : roles.get(m.id) ?? "member",
       owner_name: owner ? owner.full_name?.trim() || owner.email : null,
-    };
+    });
   });
   const org = own.data as { org_id: string; role: string; organizations: { name: string } | null } | null;
   return { mailboxes, organization: org ? { id: org.org_id, name: org.organizations?.name ?? "", role: org.role } : null };

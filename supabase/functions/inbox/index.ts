@@ -45,10 +45,17 @@ async function mailboxPeople(mailboxId: string): Promise<{ id: string; name: str
   if (!mailbox) return [];
   let ids = [mailbox.owner_user_id as string];
   if (mailbox.org_id) {
-    const { data: members, error: membersError } = await db.from("organization_members").select("user_id").eq("org_id", mailbox.org_id);
-    if (membersError) throw new Error(membersError.message);
-    const roles = await Promise.all(members.map((m) => db.rpc("mailbox_role", { p_mailbox_id: mailboxId, p_user_id: m.user_id })));
-    ids = [...new Set([...ids, ...members.filter((_, i) => roles[i].data).map((m) => m.user_id as string)])];
+    // mailbox_role()'s rules in two queries (not one call per member): only while the owner is in the organization;
+    // its admins always, other members unless given "no access".
+    const [members, hidden] = await Promise.all([
+      db.from("organization_members").select("user_id, role").eq("org_id", mailbox.org_id),
+      db.from("mailbox_members").select("user_id").eq("mailbox_id", mailboxId).eq("role", "none"),
+    ]);
+    for (const r of [members, hidden]) if (r.error) throw new Error(r.error.message);
+    const noAccess = new Set(hidden.data!.map((r) => r.user_id));
+    if (members.data!.some((m) => m.user_id === mailbox.owner_user_id)) {
+      ids = [...new Set([...ids, ...members.data!.filter((m) => m.role === "admin" || !noAccess.has(m.user_id)).map((m) => m.user_id as string)])];
+    }
   }
   const { data: profiles, error: profilesError } = await db.from("profiles").select("id, email, full_name").in("id", ids);
   if (profilesError) throw new Error(profilesError.message);
