@@ -1,7 +1,7 @@
 // Shared Supabase client and auth helpers for every page.
 // Load order: supabase-js UMD, config.js, assets/brand.js, then this file.
 
-const { SUPABASE_URL, SUPABASE_ANON_KEY } = window.APP_CONFIG ?? {};
+const { SUPABASE_URL, SUPABASE_ANON_KEY, FUNCTION_REGION } = window.APP_CONFIG ?? {};
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   document.addEventListener("DOMContentLoaded", () =>
     showMessage("Missing Supabase settings. Fill in web/.env and run `npm run config`.", "error"),
@@ -147,7 +147,13 @@ function showMessage(text, kind = "info") {
 async function callApi(name, options) {
   trackLoading(1);
   try {
-    const { data, error } = await sb.functions.invoke(name, options);
+    // Run the function next to the database (FUNCTION_REGION), not near the visitor: each of its queries is then a
+    // local hop instead of a trip across continents. A query parameter, not the x-region header, which the functions'
+    // CORS rules don't allow.
+    const target = FUNCTION_REGION
+      ? `${name}${name.includes("?") ? "&" : "?"}forceFunctionRegion=${encodeURIComponent(FUNCTION_REGION)}`
+      : name;
+    const { data, error } = await sb.functions.invoke(target, options);
     if (!error) return { data, error: null };
     let message = error.message;
     try {

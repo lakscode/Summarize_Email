@@ -188,6 +188,9 @@ Pointing at another project's function, every tick is refused (403) and nothing 
 2. Project Settings > Environment Variables (Production + Preview):
    - `SUPABASE_URL` = `https://<project-ref>.supabase.co`
    - `SUPABASE_ANON_KEY` = anon / publishable key from Supabase > Project Settings > API
+   - `SUPABASE_FUNCTION_REGION` (recommended) = the database's region from Supabase > Project Settings > General,
+     e.g. `us-west-2`. Without it, Edge Functions run near each visitor and every database query they make crosses to
+     the database's region: from India to a us-west-2 project that adds about a second to every page.
 3. Redeploy. The build fails with a clear message if either variable is missing.
 
 ## Local development

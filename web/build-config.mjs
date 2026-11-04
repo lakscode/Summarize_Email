@@ -8,6 +8,9 @@ const config = {
   SUPABASE_URL: process.env.SUPABASE_URL ?? "",
   SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY ?? "",
 };
+// Optional: the region of the project's database (Dashboard > Project Settings > General, e.g. us-west-2). Edge
+// functions then run there instead of near the visitor, so their database queries don't cross continents.
+const FUNCTION_REGION = process.env.SUPABASE_FUNCTION_REGION?.trim() || null;
 const missing = Object.entries(config).filter(([, v]) => !v || v.includes("<")).map(([k]) => k);
 if (missing.length) {
   // On Vercel these come from Project Settings > Environment Variables; fail rather than ship a blank config.
@@ -22,6 +25,6 @@ const brand = JSON.parse(readFileSync(new URL("../brand.json", import.meta.url),
 
 writeFileSync(
   new URL("config.js", import.meta.url),
-  `// Generated from web/.env and brand.json by web/build-config.mjs - do not edit.\nwindow.APP_CONFIG = ${JSON.stringify({ ...config, BRAND: brand }, null, 2)};\n`,
+  `// Generated from web/.env and brand.json by web/build-config.mjs - do not edit.\nwindow.APP_CONFIG = ${JSON.stringify({ ...config, FUNCTION_REGION, BRAND: brand }, null, 2)};\n`,
 );
 console.log("Wrote web/config.js");
