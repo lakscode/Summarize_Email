@@ -630,6 +630,12 @@ table.logs details .facts { margin: 8px 0; }
 .dialog-preview { width: min(900px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }
 .dialog-preview[open] { display: flex; flex-direction: column; gap: 12px; }
 .preview-head { display: flex; align-items: flex-start; gap: 12px; }
+/* An email's history popup (Inbox): the table scrolls inside the popup. */
+.history-scroll { min-height: 0; overflow: auto; }
+#history-dialog > * { flex: none; }
+#history-dialog > .history-scroll { flex: 1 1 auto; }
+#history-dialog .tabs { align-self: flex-start; }
+#history-table td:first-child { white-space: nowrap; }
 .preview-head h2 { flex: 1; word-break: break-word; }
 .preview-meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; font-size: 0.88rem; }
 .preview-meta dt { color: var(--muted); }

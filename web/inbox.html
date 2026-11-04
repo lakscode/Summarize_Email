@@ -132,6 +132,30 @@
   </div>
 
   <!-- Opened by clicking an email's subject: the message read live from the mailbox. -->
+  <!-- Opened by an email's "Logs" link: its errors, steps and processing history, without leaving the Inbox. -->
+  <dialog class="dialog dialog-preview" id="history-dialog" aria-labelledby="history-title">
+    <div class="preview-head">
+      <h2 id="history-title">Logs</h2>
+      <button type="button" class="icon-button" id="history-close" aria-label="Close">✕</button>
+    </div>
+    <p class="hint" id="history-subject"></p>
+    <div class="tabs" role="tablist" id="history-tabs">
+      <button class="tab active" data-kind="emails">Processing history</button>
+      <button class="tab" data-kind="steps">Steps</button>
+      <button class="tab" data-kind="problems">Errors</button>
+    </div>
+    <p class="preview-status" id="history-status"></p>
+    <div class="history-scroll">
+      <table class="logs" id="history-table" hidden>
+        <thead id="history-head"></thead>
+        <tbody id="history-rows"></tbody>
+      </table>
+    </div>
+    <div class="dialog-actions">
+      <a class="button-link secondary" id="history-open-logs" target="_blank" rel="noopener">Open in Logs</a>
+    </div>
+  </dialog>
+
   <dialog class="dialog dialog-preview" id="preview-dialog" aria-labelledby="preview-subject">
     <div class="preview-head">
       <h2 id="preview-subject"></h2>
@@ -425,6 +449,89 @@
       error: "Error",
     };
 
+    // --- One email's history in a popup (supabase/functions/logs ?email=): "Processing history" is every processing
+    // of it (runs, marked done, reopened, category changes) with the details as each left them; "Steps" and "Errors" are
+    // its app logs (errors and warnings; every step: read, classified, forwarded, moved). The same tabs as the Logs page, for one email. ---
+
+    const historyDialog = document.getElementById("history-dialog");
+    const TRIGGER_LABELS = { manual: "Process inbox", schedule: "Scheduled run", user: "By hand" };
+    let historyEmail = null;
+    let historyRequest = 0;
+
+    function openHistory(e, kind) {
+      historyEmail = e;
+      document.getElementById("history-subject").textContent = e.subject || "(no subject)";
+      if (!historyDialog.open) historyDialog.showModal();
+      showHistory(kind);
+    }
+
+    async function showHistory(kind) {
+      const request = ++historyRequest;
+      for (const t of document.querySelectorAll("#history-tabs .tab")) t.classList.toggle("active", t.dataset.kind === kind);
+      const params = { email: historyEmail.id, kind };
+      document.getElementById("history-open-logs").href = `logs.html?${new URLSearchParams(params)}`;
+      const status = document.getElementById("history-status");
+      const table = document.getElementById("history-table");
+      status.textContent = "Loading…";
+      status.hidden = false;
+      table.hidden = true;
+
+      const { data, error } = await callApi(`logs?${new URLSearchParams(params)}`, { method: "GET" });
+      if (request !== historyRequest) return;
+      if (error) {
+        status.textContent = `Could not load the history: ${error}`;
+        return;
+      }
+      if (!data.logs.length) {
+        status.textContent = { emails: "No processing history for this email yet.", steps: "No logged steps for this email.",
+          problems: "No errors for this email." }[kind];
+        return;
+      }
+      const heads = kind === "emails" ? ["When", "By", "How", "Result", "Details"] : ["When", "Level", "What happened"];
+      const headRow = el("tr");
+      for (const h of heads) headRow.append(el("th", null, h));
+      document.getElementById("history-head").replaceChildren(headRow);
+      document.getElementById("history-rows").replaceChildren(...data.logs.map(kind === "emails" ? historyRow : stepRow));
+      status.hidden = true;
+      table.hidden = false;
+    }
+
+    // One processing: when, who, how (run or by hand), the status it left, and what it found.
+    function historyRow(h) {
+      const tr = el("tr");
+      const result = el("td");
+      result.append(el("span", `badge status-${h.status}`, ACTION_LABELS[h.status] || h.status));
+      if (h.category) result.append(" ", el("span", `badge cat-${h.category}`, CATEGORY_LABELS[h.category] || h.category));
+      const details = el("td");
+      for (const line of [h.action, h.error && `Error: ${h.error}`, h.next_step && `Next step: ${h.next_step}`,
+        [h.vendor, h.invoice_number && `#${h.invoice_number}`, h.amount, h.due_date && `due ${h.due_date}`].filter(Boolean).join(" · ")]) {
+        if (line) details.append(el("div", line.startsWith("Error") ? "error-text" : null, line));
+      }
+      tr.append(el("td", "muted", formatWhen(h.processed_at)), el("td", null, h.processed_by_name || h.processed_by_email || "—"),
+        el("td", "muted", TRIGGER_LABELS[h.trigger] || h.trigger || ""), result, details);
+      return tr;
+    }
+
+    // One logged step of the email: reading, classifying, forwarding, moving, errors.
+    function stepRow(log) {
+      const tr = el("tr");
+      const level = el("td");
+      level.append(el("span", `badge level-${log.level}`, log.level));
+      tr.append(el("td", "muted", formatWhen(log.created_at)), level, el("td", log.level === "error" ? "error-text" : null, log.message));
+      return tr;
+    }
+
+    for (const tab of document.querySelectorAll("#history-tabs .tab")) {
+      tab.addEventListener("click", () => showHistory(tab.dataset.kind));
+    }
+    document.getElementById("history-close").addEventListener("click", () => historyDialog.close());
+    historyDialog.addEventListener("click", (ev) => {
+      const r = historyDialog.getBoundingClientRect();
+      const outside = ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom;
+      if (ev.target === historyDialog && outside) historyDialog.close();
+    });
+    historyDialog.addEventListener("close", () => historyRequest++);
+
     // One table row per email (status, subject + summary, vendor, next step), plus a hidden row with the
     // extracted details that the row's chevron opens.
     // allMailboxes: the "Assigned to me" list, which spans mailboxes, so each row says which one.
@@ -523,14 +630,17 @@
         cell.colSpan = 7;
         const dl = el("dl", "facts");
         for (const [k, v] of facts) dl.append(el("dt", null, k), el("dd", null, v));
-        // On the Logs page: every processing of this email (who, when, the details as each left them), and every
-        // app log of it (reading, classifying, forwarding, errors, marked done...).
+        // This email's logs (errors, steps, processing history) in a popup, as on the Logs page; Ctrl / Cmd / Shift +
+        // click opens the Logs page itself.
         const links = el("div", "detail-links");
-        const historyLink = el("a", "link-button", "Processing history");
-        historyLink.href = `logs.html?${new URLSearchParams({ kind: "emails", email: e.id })}`;
         const logsLink = el("a", "link-button", "View logs");
-        logsLink.href = `logs.html?${new URLSearchParams({ email: e.id })}`;
-        links.append(historyLink, logsLink);
+        logsLink.href = `logs.html?${new URLSearchParams({ kind: "emails", email: e.id })}`;
+        logsLink.addEventListener("click", (ev) => {
+          if (ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+          ev.preventDefault();
+          openHistory(e, "emails");
+        });
+        links.append(logsLink);
         // Who changed it and when (runs, marked done, reopened), loaded the first time the row opens.
         const statusHistory = el("div", "status-history");
         cell.append(dl);
