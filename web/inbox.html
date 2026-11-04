@@ -404,7 +404,7 @@
       document.getElementById("email-empty").hidden = data.emails.length > 0;
       if (assigned && data.unseen) {
         const { error: seenError } = await callApi("inbox", { method: "POST", body: { action: "seen" } });
-        if (!seenError) setAssignedBadge(0);
+        if (!seenError) setNotificationCount(0);
       }
     }
 

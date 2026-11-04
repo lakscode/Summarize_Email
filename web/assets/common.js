@@ -223,6 +223,7 @@ const ICONS = {
   reports: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
   profile: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
   settings: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+  bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   collapse: '<path d="M15 18l-6-6 6-6"/>',
 };
@@ -281,7 +282,7 @@ function renderSidebar(active, session) {
   // Every page opens with the menu expanded; collapsing lasts until the next page. (Earlier versions remembered it.)
   try { localStorage.removeItem("sidebar-collapsed"); } catch {}
   setCollapsed(shell, toggle, false);
-  brand.append(logo, name, toggle);
+  brand.append(logo, name, notificationBell(), toggle);
 
   const nav = document.createElement("nav");
   for (const item of NAV) {
@@ -290,7 +291,6 @@ function renderSidebar(active, session) {
     a.title = item.label;
     a.append(...labelled(item.page, item.label));
     if (item.page === active) a.className = "active";
-    if (item.page === "inbox") a.dataset.page = "inbox";
     nav.append(a);
   }
 
@@ -317,85 +317,125 @@ function renderSidebar(active, session) {
   foot.append(email, logout, legal);
 
   aside.replaceChildren(brand, nav, foot);
-  showAssignedTasks(session);
+  loadNotifications();
 }
 
-// --- Tasks assigned to the user (inbox/index.ts assignEmail). The Inbox menu item counts the new ones (not yet seen
-// in the Inbox's "Assigned to me" tab); the first page after signing in also lists them in a notification. ---
+// --- Notifications: tasks assigned to the user (inbox/index.ts assignEmail). A bell in the sidebar counts the new
+// ones (not yet seen); clicking it lists the open tasks, newest first, and counts as seeing them. ---
 
-const ASSIGNED_URL = () => `${pageUrl("inbox")}?assigned=1`;
+let notifications = [];
 
-async function showAssignedTasks(session) {
+function notificationBell() {
+  const bell = document.createElement("button");
+  bell.type = "button";
+  bell.id = "notification-bell";
+  bell.className = "side-toggle notification-bell";
+  bell.title = "Notifications";
+  bell.setAttribute("aria-label", "Notifications");
+  bell.setAttribute("aria-haspopup", "dialog");
+  bell.setAttribute("aria-expanded", "false");
+  bell.append(icon("bell"));
+  bell.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    if (document.getElementById("notification-panel")) closeNotifications();
+    else openNotifications(bell);
+  });
+  return bell;
+}
+
+async function loadNotifications() {
   const { data, error } = await callApi("inbox?assigned=me", { method: "GET" });
   if (error || !data) return;
-  setAssignedBadge(data.unseen);
-  const key = `assigned-notified:${session.user.id}:${session.user.last_sign_in_at ?? ""}`;
-  try {
-    if (sessionStorage.getItem(key)) return;
-    sessionStorage.setItem(key, "1");
-  } catch {
-    // Storage blocked: notify on this page only.
-  }
-  const fresh = data.emails.filter((e) => !e.assignment_seen_at);
-  if (!fresh.length || new URLSearchParams(location.search).has("assigned")) return;
-  notifyAssigned(fresh);
+  notifications = data.emails;
+  setNotificationCount(data.unseen);
 }
 
-// The count on the Inbox menu item; 0 removes it.
-function setAssignedBadge(count) {
-  const link = document.querySelector('#sidebar nav a[data-page="inbox"]');
-  if (!link) return;
-  link.querySelector(".nav-count")?.remove();
+// The count on the bell; 0 removes it.
+function setNotificationCount(count) {
+  const bell = document.getElementById("notification-bell");
+  if (!bell) return;
+  bell.querySelector(".nav-count")?.remove();
+  bell.title = count ? `Notifications: ${count} new` : "Notifications";
+  bell.setAttribute("aria-label", bell.title);
   if (!count) return;
   const badge = document.createElement("span");
   badge.className = "nav-count";
-  badge.textContent = String(count);
-  badge.title = `${count} new task${count === 1 ? "" : "s"} assigned to you`;
-  link.append(badge);
+  badge.textContent = count > 99 ? "99+" : String(count);
+  bell.append(badge);
 }
 
-// A card in the corner: the new tasks (up to five), who assigned them, and a link to the list.
-function notifyAssigned(emails) {
-  document.getElementById("assigned-notice")?.remove();
-  const card = document.createElement("aside");
-  card.id = "assigned-notice";
-  card.className = "assigned-notice";
-  card.setAttribute("role", "status");
+function openNotifications(bell) {
+  const panel = document.createElement("div");
+  panel.id = "notification-panel";
+  panel.className = "notification-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", "Notifications");
+  panel.addEventListener("click", (ev) => ev.stopPropagation());
   const title = document.createElement("strong");
-  title.textContent = `${emails.length} new task${emails.length === 1 ? "" : "s"} assigned to you`;
-  const close = document.createElement("button");
-  close.type = "button";
-  close.className = "icon-button";
-  close.title = "Dismiss";
-  close.textContent = "×";
-  close.addEventListener("click", () => card.remove());
+  title.textContent = "Notifications";
   const head = document.createElement("div");
-  head.className = "assigned-notice-head";
-  head.append(title, close);
+  head.className = "notification-head";
+  head.append(title);
+
   const list = document.createElement("ul");
-  for (const e of emails.slice(0, 5)) {
+  for (const e of notifications.slice(0, 20)) {
     const li = document.createElement("li");
-    const subject = document.createElement("div");
-    subject.textContent = e.subject || "(no subject)";
-    const by = document.createElement("div");
-    by.className = "muted";
-    by.textContent = [e.assigned_by_name && `by ${e.assigned_by_name}`, e.assigned_at && new Date(e.assigned_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })]
-      .filter(Boolean).join(" · ");
-    li.append(subject, by);
+    if (!e.assignment_seen_at) li.className = "unread";
+    const a = document.createElement("a");
+    a.href = `${pageUrl("inbox")}?assigned=1`;
+    const what = document.createElement("div");
+    what.className = "notification-what";
+    what.textContent = `${e.assigned_by_name && e.assigned_by_name !== e.assigned_to_name ? `${e.assigned_by_name} assigned you` : "Assigned to you"}: ${e.subject || "(no subject)"}`;
+    const when = document.createElement("div");
+    when.className = "notification-when";
+    when.textContent = e.assigned_at ? new Date(e.assigned_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "";
+    a.append(what, when);
+    li.append(a);
     list.append(li);
   }
-  if (emails.length > 5) {
-    const more = document.createElement("li");
-    more.className = "muted";
-    more.textContent = `and ${emails.length - 5} more`;
-    list.append(more);
+  if (!notifications.length) {
+    const empty = document.createElement("li");
+    empty.className = "notification-empty";
+    empty.textContent = "No notifications. Tasks assigned to you show here.";
+    list.append(empty);
   }
-  const view = document.createElement("a");
-  view.className = "button-link";
-  view.href = ASSIGNED_URL();
-  view.textContent = "View my tasks";
-  card.append(head, list, view);
-  document.body.append(card);
+  const all = document.createElement("a");
+  all.className = "notification-all";
+  all.href = `${pageUrl("inbox")}?assigned=1`;
+  all.textContent = notifications.length > 20 ? `View all ${notifications.length} tasks` : "View my tasks";
+  panel.append(head, list, all);
+
+  // Below the bell, kept on screen.
+  const rect = bell.getBoundingClientRect();
+  panel.style.top = `${rect.bottom + 6}px`;
+  panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 348))}px`;
+  document.body.append(panel);
+  bell.setAttribute("aria-expanded", "true");
+  document.addEventListener("click", closeNotifications);
+  document.addEventListener("keydown", closeOnEscape);
+  markNotificationsSeen();
+}
+
+function closeNotifications() {
+  document.getElementById("notification-panel")?.remove();
+  document.getElementById("notification-bell")?.setAttribute("aria-expanded", "false");
+  document.removeEventListener("click", closeNotifications);
+  document.removeEventListener("keydown", closeOnEscape);
+}
+
+function closeOnEscape(ev) {
+  if (ev.key === "Escape") closeNotifications();
+}
+
+// Opening the panel (or the Inbox's "Assigned to me" tab) counts as seeing them; the panel keeps them highlighted
+// until it closes.
+async function markNotificationsSeen() {
+  if (!notifications.some((e) => !e.assignment_seen_at)) return;
+  const { error } = await callApi("inbox", { method: "POST", body: { action: "seen" } });
+  if (error) return;
+  const now = new Date().toISOString();
+  notifications = notifications.map((e) => ({ ...e, assignment_seen_at: e.assignment_seen_at ?? now }));
+  setNotificationCount(0);
 }
 
 // Disables the form while it submits; the `busy` class puts a spinner in its submit button.

@@ -235,17 +235,25 @@ a.side-email:hover { color: var(--accent); text-decoration: underline; }
 .sidebar .icon svg { width: 100%; height: 100%; }
 .sidebar nav a, .side-logout { display: flex; align-items: center; gap: 10px; }
 .sidebar nav a[hidden] { display: none; }
-.sidebar nav a .nav-count { margin-left: auto; min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--error-text); color: #fff; font-size: 0.72rem; font-weight: 700; text-align: center; }
-
-/* Tasks assigned to the user: a card in the corner on the first page after signing in (common.js notifyAssigned). */
-.assigned-notice { position: fixed; right: 16px; bottom: 16px; z-index: 50; width: min(360px, calc(100vw - 32px)); display: grid; gap: 10px;
-  padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); font-size: 0.9rem; }
-.assigned-notice-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.assigned-notice ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.assigned-notice li div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.assigned-notice .muted { color: var(--muted); font-size: 0.82rem; }
-.assigned-notice .button-link { justify-self: start; }
+/* Notifications: a bell in the sidebar header with the count of new ones, and a panel it opens (common.js). */
+.notification-bell { position: relative; }
+.notification-bell + .side-toggle { margin-left: 0; }
+.notification-bell .nav-count { position: absolute; top: -4px; right: -6px; min-width: 18px; padding: 1px 5px; border-radius: 999px;
+  background: var(--error-text); color: #fff; font-size: 0.68rem; font-weight: 700; line-height: 1.3; text-align: center; }
+.notification-panel { position: fixed; z-index: 50; width: min(340px, calc(100vw - 16px)); max-height: min(480px, calc(100vh - 80px));
+  display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); font-size: 0.88rem; overflow: hidden; }
+.notification-head { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.notification-panel ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
+.notification-panel li + li { border-top: 1px solid var(--border); }
+.notification-panel li a { display: block; padding: 10px 14px; color: var(--text); text-decoration: none; }
+.notification-panel li a:hover { background: var(--bg); }
+.notification-panel li.unread a { box-shadow: inset 3px 0 0 var(--accent); }
+.notification-panel li.unread .notification-what { font-weight: 600; }
+.notification-what { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.notification-when, .notification-empty { color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
+.notification-empty { padding: 14px; }
+.notification-all { padding: 10px 14px; border-top: 1px solid var(--border); font-weight: 600; }
 .side-logout { justify-content: center; }
 .sidebar .label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .side-toggle {
@@ -266,7 +274,9 @@ a.side-email:hover { color: var(--accent); text-decoration: underline; }
   .sidebar-collapsed .side-legal { display: none; }
   .sidebar-collapsed .sidebar .brand { padding: 0; }
   .sidebar-collapsed .side-toggle { margin: 0; }
+  .sidebar-collapsed .sidebar .brand { flex-direction: column; gap: 6px; }
   .sidebar-collapsed .side-toggle .icon { transform: rotate(180deg); }
+  .sidebar-collapsed .notification-bell .icon { transform: none; }
   .sidebar-collapsed .sidebar nav a { justify-content: center; padding: 9px; }
   .sidebar-collapsed .side-foot { padding: 14px 0 0; }
   .sidebar-collapsed .side-logout { padding: 9px; }
@@ -605,6 +615,7 @@ table.logs details .facts { margin: 8px 0; }
 @media (max-width: 720px) {
   .shell { grid-template-columns: minmax(0, 1fr); }
   .side-toggle { display: none; }
+  .side-toggle.notification-bell { display: inline-flex; }
   .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--border); }
   .sidebar nav { display: flex; }
   .side-foot { margin: 0 0 0 auto; display: flex; align-items: center; padding: 0; border-top: 0; }
