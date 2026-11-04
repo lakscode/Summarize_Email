@@ -214,7 +214,7 @@
     };
     // ?assigned=1 (the sign-in notification's link) opens the "Assigned to me" tab.
     let status = new URLSearchParams(location.search).has("assigned") ? "assigned" : "action_needed";
-    document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.status === status));
+    document.querySelectorAll(".tab[data-status]").forEach((t) => t.classList.toggle("active", t.dataset.status === status));
 
     (async () => {
       const session = await requireSession();
@@ -222,14 +222,44 @@
       currentUserId = session.user.id;
       renderSidebar("inbox", session);
       document.querySelector(".shell").hidden = false;
-      // A notification link (?mailbox=&email=) opens that email: its mailbox selected, the email scrolled to and opened.
-      const linked = new URLSearchParams(location.search);
-      if (linked.get("mailbox")) document.getElementById("mailbox-select").value = linked.get("mailbox");
       await loadMailboxes();
-      await loadEmails();
-      if (linked.get("email")) showLinkedEmail(linked.get("email"));
-      if (linked.has("mailbox") || linked.has("email")) history.replaceState(null, "", `${location.pathname}${status === "assigned" ? "?assigned=1" : ""}`);
+      // A notification link (?mailbox=&email=) opens that task; "View my tasks" (?mailbox= only) its mailbox's tasks.
+      const linked = new URLSearchParams(location.search);
+      if (linked.get("mailbox") || linked.get("email")) {
+        await openTaskInInbox(linked.get("mailbox"), linked.get("email"));
+        history.replaceState(null, "", `${location.pathname}?assigned=1`);
+      } else {
+        await loadEmails();
+      }
     })();
+
+    // Opens the "Assigned to me" tab of the task's mailbox and, given an email, scrolls to it, opens it and outlines it.
+    // Also called by the bell (common.js) while already on the Inbox, so a notification needs no page reload.
+    async function openTaskInInbox(mailboxId, emailId) {
+      const select = document.getElementById("mailbox-select");
+      // The task's mailbox isn't one this user has in the Inbox (e.g. not shared with them): say so rather than
+      // quietly showing another mailbox instead.
+      if (mailboxId && !mailboxes.some((m) => m.id === mailboxId)) {
+        return showMessage("This task is in a mailbox that isn't in your Inbox list, so it can't be opened here. " +
+          "Ask the person who assigned it to share that mailbox with you.", "error");
+      }
+      showMessage("");
+      status = "assigned";
+      document.querySelectorAll(".tab[data-status]").forEach((t) => t.classList.toggle("active", t.dataset.status === status));
+      if (mailboxId && mailboxId !== select.value) {
+        select.value = mailboxId;
+        try {
+          localStorage.setItem(SELECTED_KEY, mailboxId);
+        } catch {
+          // Not remembered; harmless.
+        }
+        renderMailboxNav();
+        renderDetailHead();
+        fillSchedule();
+      }
+      await loadEmails();
+      if (emailId) showLinkedEmail(emailId);
+    }
 
     function showLinkedEmail(id) {
       const row = document.querySelector(`#email-list tr[data-email-id="${CSS.escape(id)}"]`);
@@ -989,9 +1019,10 @@
       await Promise.all([loadEmails(), loadMailboxes()]);
     });
 
-    for (const tab of document.querySelectorAll(".tab")) {
+    // The email list's tabs only (data-status); the logs popup has its own.
+    for (const tab of document.querySelectorAll(".tab[data-status]")) {
       tab.addEventListener("click", () => {
-        document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
+        document.querySelectorAll(".tab[data-status]").forEach((t) => t.classList.toggle("active", t === tab));
         status = tab.dataset.status;
         loadEmails();
       });

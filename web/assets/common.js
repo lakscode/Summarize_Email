@@ -24,6 +24,9 @@ const sb = window.supabase.createClient(SUPABASE_URL || "http://invalid", SUPABA
 });
 
 const pageUrl = (name) => new URL(`${name}.html`, location.href).href;
+// A page link that carries ?details: without ".html", because the local server (npx serve) answers "x.html?..." with
+// a redirect to "x" that drops them (Vercel keeps them). Both serve "x" directly.
+const pageLink = (name, params) => `${new URL(name, location.href).href}?${new URLSearchParams(params)}`;
 
 async function getSession() {
   const { data } = await sb.auth.getSession();
@@ -383,7 +386,8 @@ function openNotifications(bell) {
     if (!e.assignment_seen_at) li.className = "unread";
     const a = document.createElement("a");
     // Opens this email in the Inbox: its mailbox selected, the email scrolled to and opened.
-    a.href = `${pageUrl("inbox")}?${new URLSearchParams({ assigned: "1", mailbox: e.mailbox_id, email: e.id })}`;
+    a.href = pageLink("inbox", { assigned: "1", mailbox: e.mailbox_id, email: e.id });
+    openTaskOnClick(a, e.mailbox_id, e.id);
     const what = document.createElement("div");
     what.className = "notification-what";
     what.textContent = `${e.assigned_by_name && e.assigned_by_name !== e.assigned_to_name ? `${e.assigned_by_name} assigned you` : "Assigned to you"}: ${e.subject || "(no subject)"}`;
@@ -402,7 +406,10 @@ function openNotifications(bell) {
   }
   const all = document.createElement("a");
   all.className = "notification-all";
-  all.href = `${pageUrl("inbox")}?assigned=1`;
+  // The mailbox of the newest task, as "Assigned to me" lists one mailbox at a time.
+  const newest = notifications[0]?.mailbox_id;
+  all.href = pageLink("inbox", { assigned: "1", ...(newest ? { mailbox: newest } : {}) });
+  openTaskOnClick(all, newest, null);
   all.textContent = notifications.length > 20 ? `View all ${notifications.length} tasks` : "View my tasks";
   panel.append(head, list, all);
 
@@ -415,6 +422,17 @@ function openNotifications(bell) {
   document.addEventListener("click", closeNotifications);
   document.addEventListener("keydown", closeOnEscape);
   markNotificationsSeen();
+}
+
+// Already on the Inbox: open the task there (inbox.html openTaskInInbox) instead of reloading the page. Elsewhere, or
+// with Ctrl / Cmd / Shift held, the link opens normally.
+function openTaskOnClick(link, mailboxId, emailId) {
+  link.addEventListener("click", (ev) => {
+    if (typeof openTaskInInbox !== "function" || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    ev.preventDefault();
+    closeNotifications();
+    openTaskInInbox(mailboxId, emailId);
+  });
 }
 
 function closeNotifications() {
