@@ -135,10 +135,9 @@
   <!-- Opened by an email's "Logs" link: its errors, steps and processing history, without leaving the Inbox. -->
   <dialog class="dialog dialog-preview" id="history-dialog" aria-labelledby="history-title">
     <div class="preview-head">
-      <h2 id="history-title">Logs</h2>
+      <h2 id="history-title"></h2>
       <button type="button" class="icon-button" id="history-close" aria-label="Close">✕</button>
     </div>
-    <p class="hint" id="history-subject"></p>
     <div class="tabs" role="tablist" id="history-tabs">
       <button class="tab active" data-kind="emails">Processing history</button>
       <button class="tab" data-kind="steps">Steps</button>
@@ -152,7 +151,7 @@
       </table>
     </div>
     <div class="dialog-actions">
-      <a class="button-link secondary" id="history-open-logs" target="_blank" rel="noopener">Open in Logs</a>
+      <a class="button-link secondary" id="history-open-logs" target="_blank" rel="noopener">Open Logs page</a>
     </div>
   </dialog>
 
@@ -460,7 +459,7 @@
 
     function openHistory(e, kind) {
       historyEmail = e;
-      document.getElementById("history-subject").textContent = e.subject || "(no subject)";
+      document.getElementById("history-title").textContent = e.subject || "(no subject)";
       if (!historyDialog.open) historyDialog.showModal();
       showHistory(kind);
     }

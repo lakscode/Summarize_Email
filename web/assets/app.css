@@ -343,6 +343,8 @@ a.button-link { display: inline-block; padding: 10px 14px; border-radius: 8px; b
 .dialog::backdrop { background: rgba(15, 18, 25, 0.5); }
 /* While a dialog is open, scrolling moves only the dialog, never the page behind it. */
 html:has(dialog[open]) { overflow: hidden; }
+/* Popups show their own "Loading…", so the page-wide indicator behind them stays out of sight. */
+html:has(dialog[open]) .loading { display: none; }
 .dialog h2 { margin: 0 0 4px; font-size: 1.2rem; }
 .dialog .hint { margin: -6px 0 0; }
 .dialog textarea { font: inherit; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); resize: vertical; }
