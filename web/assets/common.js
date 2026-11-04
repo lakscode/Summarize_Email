@@ -290,6 +290,7 @@ function renderSidebar(active, session) {
     a.title = item.label;
     a.append(...labelled(item.page, item.label));
     if (item.page === active) a.className = "active";
+    if (item.page === "inbox") a.dataset.page = "inbox";
     nav.append(a);
   }
 
@@ -316,6 +317,85 @@ function renderSidebar(active, session) {
   foot.append(email, logout, legal);
 
   aside.replaceChildren(brand, nav, foot);
+  showAssignedTasks(session);
+}
+
+// --- Tasks assigned to the user (inbox/index.ts assignEmail). The Inbox menu item counts the new ones (not yet seen
+// in the Inbox's "Assigned to me" tab); the first page after signing in also lists them in a notification. ---
+
+const ASSIGNED_URL = () => `${pageUrl("inbox")}?assigned=1`;
+
+async function showAssignedTasks(session) {
+  const { data, error } = await callApi("inbox?assigned=me", { method: "GET" });
+  if (error || !data) return;
+  setAssignedBadge(data.unseen);
+  const key = `assigned-notified:${session.user.id}:${session.user.last_sign_in_at ?? ""}`;
+  try {
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, "1");
+  } catch {
+    // Storage blocked: notify on this page only.
+  }
+  const fresh = data.emails.filter((e) => !e.assignment_seen_at);
+  if (!fresh.length || new URLSearchParams(location.search).has("assigned")) return;
+  notifyAssigned(fresh);
+}
+
+// The count on the Inbox menu item; 0 removes it.
+function setAssignedBadge(count) {
+  const link = document.querySelector('#sidebar nav a[data-page="inbox"]');
+  if (!link) return;
+  link.querySelector(".nav-count")?.remove();
+  if (!count) return;
+  const badge = document.createElement("span");
+  badge.className = "nav-count";
+  badge.textContent = String(count);
+  badge.title = `${count} new task${count === 1 ? "" : "s"} assigned to you`;
+  link.append(badge);
+}
+
+// A card in the corner: the new tasks (up to five), who assigned them, and a link to the list.
+function notifyAssigned(emails) {
+  document.getElementById("assigned-notice")?.remove();
+  const card = document.createElement("aside");
+  card.id = "assigned-notice";
+  card.className = "assigned-notice";
+  card.setAttribute("role", "status");
+  const title = document.createElement("strong");
+  title.textContent = `${emails.length} new task${emails.length === 1 ? "" : "s"} assigned to you`;
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "icon-button";
+  close.title = "Dismiss";
+  close.textContent = "×";
+  close.addEventListener("click", () => card.remove());
+  const head = document.createElement("div");
+  head.className = "assigned-notice-head";
+  head.append(title, close);
+  const list = document.createElement("ul");
+  for (const e of emails.slice(0, 5)) {
+    const li = document.createElement("li");
+    const subject = document.createElement("div");
+    subject.textContent = e.subject || "(no subject)";
+    const by = document.createElement("div");
+    by.className = "muted";
+    by.textContent = [e.assigned_by_name && `by ${e.assigned_by_name}`, e.assigned_at && new Date(e.assigned_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })]
+      .filter(Boolean).join(" · ");
+    li.append(subject, by);
+    list.append(li);
+  }
+  if (emails.length > 5) {
+    const more = document.createElement("li");
+    more.className = "muted";
+    more.textContent = `and ${emails.length - 5} more`;
+    list.append(more);
+  }
+  const view = document.createElement("a");
+  view.className = "button-link";
+  view.href = ASSIGNED_URL();
+  view.textContent = "View my tasks";
+  card.append(head, list, view);
+  document.body.append(card);
 }
 
 // Disables the form while it submits; the `busy` class puts a spinner in its submit button.

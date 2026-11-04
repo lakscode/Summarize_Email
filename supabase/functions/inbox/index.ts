@@ -10,6 +10,10 @@
 //   PATCH {id, status: "done" | "action_needed"}       -> employee marks an item handled / reopens it; 409 when it
 //         already has that status (someone else changed it first), naming who
 //   PATCH {id, category}                                -> corrects the category (see changeCategory)
+//   GET   ?assignees=<mailbox id>                       -> { people: [{id, name, email}] } who an email can be assigned to
+//   GET   ?assigned=me                                  -> { emails, unseen } the caller's open tasks (not done), any mailbox
+//   PATCH {id, assign_to: <user id> | null}             -> assigns the email to someone / unassigns it (see assignEmail)
+//   POST  {action: "seen"}                              -> the caller has seen their assigned tasks (clears the badge)
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi, logStep } from "../_shared/log.ts";
 import { previewEmail, previewMailbox, processMailbox, processorOf, STATUSES } from "../_shared/process.ts";
@@ -23,6 +27,82 @@ import type { SupabaseClient, User } from "jsr:@supabase/supabase-js@2";
 // PATCH select below.
 const SNAPSHOT_COLUMNS =
   "message_id, received_at, from_name, from_address, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step";
+// What the Inbox lists of each email.
+const LIST_COLUMNS =
+  "id, mailbox_id, received_at, from_name, from_address, subject, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step, action_taken, status, error, processed_by_email, processed_by_name, processed_at, category_changed_by_name, category_changed_at, assigned_to, assigned_to_name, assigned_by_name, assigned_at, assignment_seen_at";
+
+// The people with access to the mailbox (mailbox_role: its owner, and the members of its organization who weren't given
+// "no access"), who its emails can be assigned to.
+async function mailboxPeople(mailboxId: string): Promise<{ id: string; name: string; email: string | null }[]> {
+  const db = adminClient();
+  const { data: mailbox, error } = await db.from("mailboxes").select("owner_user_id, org_id").eq("id", mailboxId).maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!mailbox) return [];
+  let ids = [mailbox.owner_user_id as string];
+  if (mailbox.org_id) {
+    const { data: members, error: membersError } = await db.from("organization_members").select("user_id").eq("org_id", mailbox.org_id);
+    if (membersError) throw new Error(membersError.message);
+    const roles = await Promise.all(members.map((m) => db.rpc("mailbox_role", { p_mailbox_id: mailboxId, p_user_id: m.user_id })));
+    ids = [...new Set([...ids, ...members.filter((_, i) => roles[i].data).map((m) => m.user_id as string)])];
+  }
+  const { data: profiles, error: profilesError } = await db.from("profiles").select("id, email, full_name").in("id", ids);
+  if (profilesError) throw new Error(profilesError.message);
+  return profiles.map((p) => ({ id: p.id, name: p.full_name?.trim() || p.email || "Unknown user", email: p.email }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Assigns the email to someone with access to its mailbox (null: unassigns it). The assignee is notified (their
+// assignment_seen_at is cleared) unless they assigned it to themselves. Logged in email_processing_log like marking done.
+async function assignEmail(user: User, sb: SupabaseClient, id: string, assignTo: string | null) {
+  // The caller's own client first: RLS says whether they may see (and so assign) the email.
+  const { data: email, error } = await sb.from("processed_emails")
+    .select(`id, status, mailbox_id, owner_user_id, subject, assigned_to, assigned_to_name, mailboxes(email_address), ${SNAPSHOT_COLUMNS}`)
+    .eq("id", id).maybeSingle();
+  if (error) return await fail("inbox/assign", error.message, 500, { userId: user.id, context: { email_id: id } });
+  if (!email) return json({ error: "Email not found" }, 404);
+  if ((email.assigned_to ?? null) === assignTo) return json({ email: { id, assigned_to: assignTo } });
+  let assignee: { id: string; name: string } | null = null;
+  if (assignTo) {
+    assignee = (await mailboxPeople(email.mailbox_id)).find((p) => p.id === assignTo) ?? null;
+    if (!assignee) return json({ error: "That person has no access to this mailbox" }, 400);
+  }
+
+  const db = adminClient();
+  const processor = await processorOf(db, user.id);
+  const by = { processed_by: user.id, processed_by_email: processor.email ?? user.email ?? null, processed_by_name: processor.name ?? user.email ?? null };
+  const at = new Date().toISOString();
+  const { error: updateError } = await db.from("processed_emails").update({
+    assigned_to: assignee?.id ?? null,
+    assigned_to_name: assignee?.name ?? null,
+    assigned_by: assignee ? user.id : null,
+    assigned_by_name: assignee ? by.processed_by_name : null,
+    assigned_at: assignee ? at : null,
+    assignment_seen_at: assignee?.id === user.id ? at : null,
+    updated_at: at,
+  }).eq("id", id);
+  if (updateError) return await fail("inbox/assign", updateError.message, 500, { userId: user.id, context: { email_id: id } });
+
+  const action = assignee ? `Assigned to ${assignee.name}` : `Unassigned${email.assigned_to_name ? ` (was ${email.assigned_to_name})` : ""}`;
+  const mailboxAddress = (email.mailboxes as { email_address?: string } | null)?.email_address ?? null;
+  const logContext = { email_id: id, subject: email.subject, mailbox: mailboxAddress };
+  const { error: logError } = await db.from("email_processing_log").insert({
+    processed_email_id: id,
+    mailbox_id: email.mailbox_id,
+    mailbox_address: mailboxAddress,
+    ...Object.fromEntries(SNAPSHOT_COLUMNS.split(", ").map((c) => [c, (email as Record<string, unknown>)[c]])),
+    subject: email.subject,
+    owner_user_id: email.owner_user_id,
+    ...by,
+    processed_at: at,
+    trigger: "user",
+    status: email.status,
+    action,
+  });
+  if (logError) await logApi("inbox/assign", logError.message, { userId: user.id, level: "warn", context: logContext });
+  await logStep("inbox/assign", `"${email.subject || "(no subject)"}": ${action.toLowerCase()} by ${by.processed_by_name ?? "unknown"}`,
+    user.id, { ...logContext, assigned_to: assignee?.id ?? null });
+  return json({ email: { id, assigned_to: assignee?.id ?? null, assigned_to_name: assignee?.name ?? null } });
+}
 
 // Someone corrects an email's category to another of its mailbox type's (classify.ts CATEGORIES). Unless it is done,
 // its status follows: "other" has nothing to do, any other category needs action. Nothing is forwarded; a re-check
@@ -116,10 +196,28 @@ Deno.serve(async (req) => {
       return json({ history: data });
     }
 
+    if (req.method === "GET" && url.searchParams.has("assignees")) {
+      const mailboxId = url.searchParams.get("assignees")!;
+      // Only for a mailbox the caller can see (RLS).
+      const { data: mailbox } = await sb.from("mailboxes").select("id").eq("id", mailboxId).maybeSingle();
+      if (!mailbox) return json({ error: "Mailbox not found" }, 404);
+      return json({ people: await mailboxPeople(mailboxId) });
+    }
+
+    if (req.method === "GET" && url.searchParams.get("assigned") === "me") {
+      // The caller's own client: an email of a mailbox they have since lost access to drops out.
+      const { data, error } = await sb.from("processed_emails").select(LIST_COLUMNS)
+        .eq("assigned_to", user.id).neq("status", "done")
+        .order("assigned_at", { ascending: false })
+        .limit(300);
+      if (error) return await fail("inbox/assigned", error.message, 500, { userId: user.id });
+      return json({ emails: data, unseen: data.filter((e) => !e.assignment_seen_at).length });
+    }
+
     if (req.method === "GET") {
       let query = sb
         .from("processed_emails")
-        .select("id, mailbox_id, received_at, from_name, from_address, subject, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step, action_taken, status, error, processed_by_email, processed_by_name, processed_at, category_changed_by_name, category_changed_at")
+        .select(LIST_COLUMNS)
         .order("received_at", { ascending: false })
         .limit(300);
       const status = url.searchParams.get("status");
@@ -134,6 +232,10 @@ Deno.serve(async (req) => {
     if (req.method === "PATCH") {
       const body = await req.json().catch(() => ({}));
       if (body.id && typeof body.category === "string") return await changeCategory(user, sb, body.id, body.category);
+      if (body.id && "assign_to" in body) {
+        if (body.assign_to !== null && typeof body.assign_to !== "string") return json({ error: "assign_to must be a user id or null" }, 400);
+        return await assignEmail(user, sb, body.id, body.assign_to);
+      }
       if (!body.id || !["done", "action_needed"].includes(body.status)) {
         return json({ error: "id and status (done | action_needed) are required" }, 400);
       }
@@ -182,6 +284,12 @@ Deno.serve(async (req) => {
 
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
+      if (body.action === "seen") {
+        const { error } = await adminClient().from("processed_emails").update({ assignment_seen_at: new Date().toISOString() })
+          .eq("assigned_to", user.id).is("assignment_seen_at", null);
+        if (error) return await fail("inbox/seen", error.message, 500, { userId: user.id });
+        return json({ ok: true });
+      }
       if (!["process", "preview"].includes(body.action) || !body.mailbox_id) {
         return json({ error: "action ('process' | 'preview') and mailbox_id are required" }, 400);
       }

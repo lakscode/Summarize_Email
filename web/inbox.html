@@ -109,6 +109,7 @@
           <button class="tab" data-status="no_action">No action</button>
           <button class="tab" data-status="error">Errors</button>
           <button class="tab" data-status="">All</button>
+          <button class="tab" data-status="assigned">Assigned to me</button>
         </div>
         <div class="toolbar-actions">
           <a class="button-link secondary" id="history-link" href="logs.html?kind=emails">Processing history</a>
@@ -188,11 +189,14 @@
       ignored: "Not relevant",
       error: "Error",
     };
-    let status = "action_needed";
+    // ?assigned=1 (the sign-in notification's link) opens the "Assigned to me" tab.
+    let status = new URLSearchParams(location.search).has("assigned") ? "assigned" : "action_needed";
+    document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.status === status));
 
     (async () => {
       const session = await requireSession();
       if (!session) return;
+      currentUserId = session.user.id;
       renderSidebar("inbox", session);
       document.querySelector(".shell").hidden = false;
       await loadMailboxes();
@@ -200,6 +204,7 @@
     })();
 
     let mailboxes = [];
+    let currentUserId = null;
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
     // The selected mailbox lives in the process form's hidden mailbox_id field; the last one picked is remembered
@@ -389,12 +394,18 @@
         document.getElementById("email-empty").hidden = false;
         return;
       }
-      const query = new URLSearchParams({ mailbox_id: mailboxId, ...(status ? { status } : {}) });
+      // "Assigned to me": the caller's open tasks in every mailbox; opening it counts as seeing them.
+      const assigned = status === "assigned";
+      const query = new URLSearchParams(assigned ? { assigned: "me" } : { mailbox_id: mailboxId, ...(status ? { status } : {}) });
       const { data, error } = await callApi(`inbox?${query}`, { method: "GET" });
       if (request !== emailsRequest) return;
       if (error) return showMessage(`Could not load emails: ${error}`, "error");
-      document.getElementById("email-list").replaceChildren(...data.emails.flatMap(emailRows));
+      document.getElementById("email-list").replaceChildren(...data.emails.flatMap((e) => emailRows(e, assigned)));
       document.getElementById("email-empty").hidden = data.emails.length > 0;
+      if (assigned && data.unseen) {
+        const { error: seenError } = await callApi("inbox", { method: "POST", body: { action: "seen" } });
+        if (!seenError) setAssignedBadge(0);
+      }
     }
 
     function el(tag, className, text) {
@@ -416,7 +427,8 @@
 
     // One table row per email (status, subject + summary, vendor, next step), plus a hidden row with the
     // extracted details that the row's chevron opens.
-    function emailRows(e) {
+    // allMailboxes: the "Assigned to me" list, which spans mailboxes, so each row says which one.
+    function emailRows(e, allMailboxes = false) {
       const tr = el("tr", `email-row status-row-${e.status}`);
 
       const statusCell = el("td", "email-status");
@@ -427,6 +439,15 @@
       // Someone forwarded it themselves in Outlook, so the app marked it done (see _shared/process.ts).
       const manuallyForwarded = e.status === "done" && (e.action_taken ?? "").startsWith("Manually forwarded");
       if (manuallyForwarded) badges.append(el("span", "badge status-done", "Manually forwarded"));
+      // Who it is assigned to; "New" while the assignee hasn't opened their list since.
+      if (e.assigned_to) {
+        const mine = e.assigned_to === currentUserId;
+        const assignedBadge = el("span", `badge assigned${mine ? " mine" : ""}`, mine ? "Assigned to you" : `→ ${e.assigned_to_name || "someone"}`);
+        assignedBadge.title = [`Assigned to ${e.assigned_to_name || "someone"}`, e.assigned_by_name && `by ${e.assigned_by_name}`,
+          e.assigned_at && formatWhen(e.assigned_at)].filter(Boolean).join(" · ");
+        badges.append(assignedBadge);
+        if (mine && !e.assignment_seen_at) badges.append(el("span", "badge new", "New"));
+      }
       statusCell.append(badges);
 
       const date = e.received_at ? new Date(e.received_at) : null;
@@ -449,6 +470,10 @@
       summary.title = e.summary || "";
       const emailCell = el("td", "email-main");
       emailCell.append(subject, summary);
+      if (allMailboxes) {
+        const box = mailboxes.find((m) => m.id === e.mailbox_id);
+        if (box) emailCell.append(el("div", "email-oneline", box.email_address));
+      }
 
       const vendorCell = el("td", "email-vendor");
       if (e.vendor) vendorCell.append(el("div", null, e.vendor));
@@ -487,6 +512,7 @@
         ["Action taken", e.action_taken],
         ["Error", e.error],
         ["Last processed", e.processed_at && `${formatWhen(e.processed_at)}${processedBy ? ` by ${processedBy}` : ""}`],
+        ["Assigned", e.assigned_at && `to ${e.assigned_to_name || "someone"}${e.assigned_by_name ? ` by ${e.assigned_by_name}` : ""}, ${formatWhen(e.assigned_at)}`],
         ["Category changed", e.category_changed_at && `${formatWhen(e.category_changed_at)}${e.category_changed_by_name ? ` by ${e.category_changed_by_name}` : ""}`],
       ].filter(([, v]) => v);
       const rows = [tr];
@@ -508,7 +534,7 @@
         // Who changed it and when (runs, marked done, reopened), loaded the first time the row opens.
         const statusHistory = el("div", "status-history");
         cell.append(dl);
-        if (e.status !== "processing") cell.append(categoryPicker(e));
+        if (e.status !== "processing") cell.append(categoryPicker(e), assignPicker(e));
         cell.append(statusHistory, links);
         detailRow.append(cell);
         rows.push(detailRow);
@@ -562,6 +588,33 @@
         const { error } = await callApi("inbox", { method: "PATCH", body: { id: e.id, category: select.value } });
         if (error) showMessage(`Could not change the category: ${error}`, "error");
         else showMessage(`"${e.subject || "(no subject)"}" is now ${CATEGORY_LABELS[select.value] || select.value}.`, "ok");
+        await loadEmails();
+      });
+      label.append(select);
+      return label;
+    }
+
+    // Assigns the email to someone with access to its mailbox; they are notified the next time they sign in (and see
+    // the count on the Inbox menu item). The people are loaded once per mailbox (a shared promise).
+    const peopleByMailbox = new Map();
+    function assignPicker(e) {
+      const label = el("label", "category-picker", "Assign to");
+      const select = el("select");
+      select.append(new Option(e.assigned_to ? e.assigned_to_name || "Assigned" : "Unassigned", e.assigned_to || "", true, true));
+      if (!peopleByMailbox.has(e.mailbox_id)) {
+        peopleByMailbox.set(e.mailbox_id, callApi(`inbox?${new URLSearchParams({ assignees: e.mailbox_id })}`, { method: "GET" }));
+      }
+      peopleByMailbox.get(e.mailbox_id).then(({ data, error }) => {
+        if (error) return peopleByMailbox.delete(e.mailbox_id); // tried again with the next list; the current assignee stays
+        select.replaceChildren(new Option("Unassigned", "", false, !e.assigned_to),
+          ...data.people.map((p) => new Option(p.id === currentUserId ? `${p.name} (you)` : p.name, p.id, false, p.id === e.assigned_to)));
+      });
+      select.addEventListener("change", async () => {
+        if (select.value === (e.assigned_to || "")) return;
+        select.disabled = true;
+        const { data, error } = await callApi("inbox", { method: "PATCH", body: { id: e.id, assign_to: select.value || null } });
+        if (error) showMessage(`Could not assign it: ${error}`, "error");
+        else showMessage(data.email.assigned_to ? `"${e.subject || "(no subject)"}" assigned to ${data.email.assigned_to_name}.` : `"${e.subject || "(no subject)"}" unassigned.`, "ok");
         await loadEmails();
       });
       label.append(select);
