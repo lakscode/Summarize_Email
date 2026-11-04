@@ -382,7 +382,8 @@ function openNotifications(bell) {
     const li = document.createElement("li");
     if (!e.assignment_seen_at) li.className = "unread";
     const a = document.createElement("a");
-    a.href = `${pageUrl("inbox")}?assigned=1`;
+    // Opens this email in the Inbox: its mailbox selected, the email scrolled to and opened.
+    a.href = `${pageUrl("inbox")}?${new URLSearchParams({ assigned: "1", mailbox: e.mailbox_id, email: e.id })}`;
     const what = document.createElement("div");
     what.className = "notification-what";
     what.textContent = `${e.assigned_by_name && e.assigned_by_name !== e.assigned_to_name ? `${e.assigned_by_name} assigned you` : "Assigned to you"}: ${e.subject || "(no subject)"}`;

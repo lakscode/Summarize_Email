@@ -11,9 +11,11 @@
 //         already has that status (someone else changed it first), naming who
 //   PATCH {id, category}                                -> corrects the category (see changeCategory)
 //   GET   ?assignees=<mailbox id>                       -> { people: [{id, name, email}] } who an email can be assigned to
-//   GET   ?assigned=me                                  -> { emails, unseen } the caller's open tasks (not done), any mailbox
+//   GET   ?assigned=me&mailbox_id=                      -> { emails, unseen } the caller's open tasks (not done), in that
+//                                                          mailbox (the Inbox tab) or, without mailbox_id, any (the bell)
 //   PATCH {id, assign_to: <user id> | null}             -> assigns the email to someone / unassigns it (see assignEmail)
-//   POST  {action: "seen"}                              -> the caller has seen their assigned tasks (clears the badge)
+//   POST  {action: "seen", mailbox_id?}                 -> the caller has seen their assigned tasks (of that mailbox only,
+//                                                          when given), so they no longer count as new on the bell
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi, logStep } from "../_shared/log.ts";
 import { previewEmail, previewMailbox, processMailbox, processorOf, STATUSES } from "../_shared/process.ts";
@@ -206,10 +208,11 @@ Deno.serve(async (req) => {
 
     if (req.method === "GET" && url.searchParams.get("assigned") === "me") {
       // The caller's own client: an email of a mailbox they have since lost access to drops out.
-      const { data, error } = await sb.from("processed_emails").select(LIST_COLUMNS)
-        .eq("assigned_to", user.id).neq("status", "done")
-        .order("assigned_at", { ascending: false })
-        .limit(300);
+      let query = sb.from("processed_emails").select(LIST_COLUMNS)
+        .eq("assigned_to", user.id).neq("status", "done");
+      const mailboxId = url.searchParams.get("mailbox_id");
+      if (mailboxId) query = query.eq("mailbox_id", mailboxId);
+      const { data, error } = await query.order("assigned_at", { ascending: false }).limit(300);
       if (error) return await fail("inbox/assigned", error.message, 500, { userId: user.id });
       return json({ emails: data, unseen: data.filter((e) => !e.assignment_seen_at).length });
     }
@@ -285,8 +288,10 @@ Deno.serve(async (req) => {
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
       if (body.action === "seen") {
-        const { error } = await adminClient().from("processed_emails").update({ assignment_seen_at: new Date().toISOString() })
+        let seen = adminClient().from("processed_emails").update({ assignment_seen_at: new Date().toISOString() })
           .eq("assigned_to", user.id).is("assignment_seen_at", null);
+        if (body.mailbox_id) seen = seen.eq("mailbox_id", body.mailbox_id);
+        const { error } = await seen;
         if (error) return await fail("inbox/seen", error.message, 500, { userId: user.id });
         return json({ ok: true });
       }

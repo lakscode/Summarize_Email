@@ -222,9 +222,24 @@
       currentUserId = session.user.id;
       renderSidebar("inbox", session);
       document.querySelector(".shell").hidden = false;
+      // A notification link (?mailbox=&email=) opens that email: its mailbox selected, the email scrolled to and opened.
+      const linked = new URLSearchParams(location.search);
+      if (linked.get("mailbox")) document.getElementById("mailbox-select").value = linked.get("mailbox");
       await loadMailboxes();
       await loadEmails();
+      if (linked.get("email")) showLinkedEmail(linked.get("email"));
+      if (linked.has("mailbox") || linked.has("email")) history.replaceState(null, "", `${location.pathname}${status === "assigned" ? "?assigned=1" : ""}`);
     })();
+
+    function showLinkedEmail(id) {
+      const row = document.querySelector(`#email-list tr[data-email-id="${CSS.escape(id)}"]`);
+      if (!row) return showMessage("That task is no longer open: it was done, reassigned or removed.", "info");
+      const expand = row.querySelector("button.expand");
+      if (expand?.getAttribute("aria-expanded") === "false") expand.click();
+      row.scrollIntoView({ block: "center", behavior: "smooth" });
+      row.classList.add("linked");
+      setTimeout(() => row.classList.remove("linked"), 4000);
+    }
 
     let mailboxes = [];
     let currentUserId = null;
@@ -417,17 +432,18 @@
         document.getElementById("email-empty").hidden = false;
         return;
       }
-      // "Assigned to me": the caller's open tasks in every mailbox; opening it counts as seeing them.
+      // "Assigned to me": the caller's open tasks in the selected mailbox only; opening it counts as seeing them.
       const assigned = status === "assigned";
-      const query = new URLSearchParams(assigned ? { assigned: "me" } : { mailbox_id: mailboxId, ...(status ? { status } : {}) });
+      const query = new URLSearchParams(assigned ? { assigned: "me", mailbox_id: mailboxId } : { mailbox_id: mailboxId, ...(status ? { status } : {}) });
       const { data, error } = await callApi(`inbox?${query}`, { method: "GET" });
       if (request !== emailsRequest) return;
       if (error) return showMessage(`Could not load emails: ${error}`, "error");
-      document.getElementById("email-list").replaceChildren(...data.emails.flatMap((e) => emailRows(e, assigned)));
+      document.getElementById("email-list").replaceChildren(...data.emails.flatMap((e) => emailRows(e)));
       document.getElementById("email-empty").hidden = data.emails.length > 0;
       if (assigned && data.unseen) {
-        const { error: seenError } = await callApi("inbox", { method: "POST", body: { action: "seen" } });
-        if (!seenError) setNotificationCount(0);
+        // Only this mailbox's tasks are marked seen; the bell keeps counting new ones in other mailboxes.
+        const { error: seenError } = await callApi("inbox", { method: "POST", body: { action: "seen", mailbox_id: mailboxId } });
+        if (!seenError) loadNotifications();
       }
     }
 
@@ -536,6 +552,7 @@
     // allMailboxes: the "Assigned to me" list, which spans mailboxes, so each row says which one.
     function emailRows(e, allMailboxes = false) {
       const tr = el("tr", `email-row status-row-${e.status}`);
+      tr.dataset.emailId = e.id;
 
       const statusCell = el("td", "email-status");
       const badges = el("div", "badges");
