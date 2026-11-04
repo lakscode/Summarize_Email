@@ -16,12 +16,15 @@
 //   PATCH {id, assign_to: <user id> | null}             -> assigns the email to someone / unassigns it (see assignEmail)
 //   POST  {action: "seen", mailbox_id?}                 -> the caller has seen their assigned tasks (of that mailbox only,
 //                                                          when given), so they no longer count as new on the bell
+//   POST  {action: "check_statement", id}               -> checks a statement's invoices again (_shared/statement.ts), e.g.
+//         after more invoices came in -> { statement_check, statement_checked_at }
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi, logStep } from "../_shared/log.ts";
 import { previewEmail, previewMailbox, processMailbox, processorOf, STATUSES } from "../_shared/process.ts";
 import { CATEGORIES, type MailboxType } from "../_shared/classify.ts";
 import { isNotFound } from "../_shared/mail.ts";
 import { CATEGORY_LABELS } from "../_shared/report.ts";
+import { checkStatement } from "../_shared/statement.ts";
 import { adminClient, callerUser } from "../_shared/supabase.ts";
 import type { SupabaseClient, User } from "jsr:@supabase/supabase-js@2";
 
@@ -31,7 +34,7 @@ const SNAPSHOT_COLUMNS =
   "message_id, received_at, from_name, from_address, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step";
 // What the Inbox lists of each email.
 const LIST_COLUMNS =
-  "id, mailbox_id, received_at, from_name, from_address, subject, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step, action_taken, status, error, processed_by_email, processed_by_name, processed_at, category_changed_by_name, category_changed_at, assigned_to, assigned_to_name, assigned_by_name, assigned_at, assignment_seen_at";
+  "id, mailbox_id, received_at, from_name, from_address, subject, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step, action_taken, status, error, processed_by_email, processed_by_name, processed_at, processed_trigger, category_changed_by_name, category_changed_at, assigned_to, assigned_to_name, assigned_by_name, assigned_at, assignment_seen_at, statement_invoices, statement_check, statement_checked_at";
 
 // The people with access to the mailbox (mailbox_role: its owner, and the members of its organization who weren't given
 // "no access"), who its emails can be assigned to.
@@ -133,7 +136,7 @@ async function changeCategory(user: User, sb: SupabaseClient, id: string, catego
     : `Changed to ${label(category)} by ${by.processed_by_name}: check it and handle it.`;
   // Only from the category read above, so a change made meanwhile by someone else isn't overwritten unseen.
   const { data: updated, error: updateError } = await db.from("processed_emails").update({
-    category, status, next_step: nextStep, ...by, processed_at: at, updated_at: at,
+    category, status, next_step: nextStep, ...by, processed_trigger: "user", processed_at: at, updated_at: at,
     category_changed_by: user.id, category_changed_by_name: by.processed_by_name, category_changed_at: at,
   }).eq("id", id).filter("category", email.category === null ? "is" : "eq", email.category).select("id");
   if (updateError) return await fail("inbox/category", updateError.message, 500, { userId: user.id, context: { email_id: id } });
@@ -262,7 +265,7 @@ Deno.serve(async (req) => {
       const processor = await processorOf(db, user.id);
       const by = { processed_by: user.id, processed_by_email: processor.email ?? user.email ?? null, processed_by_name: processor.name ?? user.email ?? null };
       const processedAt = new Date().toISOString();
-      const { error: byError } = await db.from("processed_emails").update({ ...by, processed_at: processedAt }).eq("id", data.id);
+      const { error: byError } = await db.from("processed_emails").update({ ...by, processed_trigger: "user", processed_at: processedAt }).eq("id", data.id);
       const mailboxAddress = (data.mailboxes as { email_address?: string } | null)?.email_address ?? null;
       const logContext = { email_id: data.id, subject: data.subject, mailbox: mailboxAddress };
       if (byError) await logApi("inbox/update", byError.message, { userId: user.id, level: "warn", context: logContext });
@@ -287,6 +290,23 @@ Deno.serve(async (req) => {
 
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
+      if (body.action === "check_statement") {
+        if (!body.id) return json({ error: "id is required" }, 400);
+        // The caller's own client: RLS says whether they may see the statement.
+        const { data: email, error } = await sb.from("processed_emails").select("id, mailbox_id, category, statement_invoices")
+          .eq("id", body.id).maybeSingle();
+        if (error) return await fail("inbox/statement", error.message, 500, { userId: user.id, context: { email_id: body.id } });
+        if (!email) return json({ error: "Email not found" }, 404);
+        if (email.category !== "statement" || !email.statement_invoices?.length) {
+          return json({ error: "No invoice numbers were read from this statement. Process it again to read them." }, 400);
+        }
+        const db = adminClient();
+        const check = await checkStatement(db, email.mailbox_id, email.id, email.statement_invoices);
+        const at = new Date().toISOString();
+        const { error: updateError } = await db.from("processed_emails").update({ statement_check: check, statement_checked_at: at }).eq("id", email.id);
+        if (updateError) return await fail("inbox/statement", updateError.message, 500, { userId: user.id, context: { email_id: body.id } });
+        return json({ statement_check: check, statement_checked_at: at });
+      }
       if (body.action === "seen") {
         let seen = adminClient().from("processed_emails").update({ assignment_seen_at: new Date().toISOString() })
           .eq("assigned_to", user.id).is("assignment_seen_at", null);

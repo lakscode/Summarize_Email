@@ -267,8 +267,11 @@
       const sender = h.from_name ? `${h.from_name} <${h.from_address}>` : h.from_address;
       if (sender) email.append(Object.assign(document.createElement("div"), { className: "muted", textContent: sender }));
 
-      const who = cell(h.processed_by_name || h.processed_by_email || "—", "nowrap");
-      if (h.processed_by_email) who.title = h.processed_by_email;
+      // A scheduled run is recorded as the mailbox owner (whose account it runs as): say it was the scheduler.
+      const scheduled = h.trigger === "schedule";
+      const who = cell(scheduled ? "Scheduler" : h.processed_by_name || h.processed_by_email || "—", "nowrap");
+      if (scheduled) who.title = `Automatic, as ${h.processed_by_name || h.processed_by_email || "the mailbox owner"}`;
+      else if (h.processed_by_email) who.title = h.processed_by_email;
       tr.append(
         cell(new Date(h.processed_at).toLocaleString(), "nowrap"),
         cell(h.mailbox_address || "—"),

@@ -154,6 +154,20 @@ Each mailbox has its own settings on the dashboard:
 Forwarding and the summary email are sent from the mailbox itself. The scheduler processes three mailboxes at a time,
 so dozens of mailboxes on the same schedule are worked through over a few 5-minute ticks.
 
+**Scheduler URL, once per Supabase project.** Scheduled processing and the daily and weekly reports all run from one
+pg_cron job that calls the `scheduler` function at the URL in the Vault secret `scheduler_url`. The schedules migration
+creates that secret with the first project's URL, so in any other project (e.g. a separate production project) point it
+at that project's own function, in the SQL editor:
+
+```sql
+select vault.update_secret(
+  (select id from vault.secrets where name = 'scheduler_url'),
+  'https://<project ref>.supabase.co/functions/v1/scheduler');
+```
+
+Pointing at another project's function, every tick is refused (403) and nothing scheduled runs. To check the last calls:
+`select status_code, content::text, created from net._http_response order by created desc limit 5;` (200 is working).
+
 ## 1c. Gmail mailbox connection (optional)
 
 1. Google Cloud console > create or pick a project > APIs & Services > Library > enable **Gmail API**.

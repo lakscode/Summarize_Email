@@ -25,6 +25,8 @@ export interface Classification {
   due_date: string;
   summary: string;
   next_step: string;
+  // AP statements only: every invoice number the statement lists (see statement.ts).
+  statement_invoices?: string[];
 }
 
 export interface AttachmentFile {
@@ -57,7 +59,8 @@ const MAX_BODY_CHARS = 60_000;
 const schema = (type: MailboxType) => ({
   type: "object",
   additionalProperties: false,
-  required: ["category", "confidence", "vendor", "invoice_number", "amount", "due_date", "summary", "next_step"],
+  required: ["category", "confidence", "vendor", "invoice_number", "amount", "due_date", "summary", "next_step",
+    ...(type === "ap" ? ["statement_invoices"] : [])],
   properties: {
     category: { type: "string", enum: [...CATEGORIES[type]] },
     confidence: { type: "string", enum: ["high", "medium", "low"] },
@@ -83,6 +86,15 @@ const schema = (type: MailboxType) => ({
     },
     summary: { type: "string", description: "One-line summary of the email, at most 20 words." },
     next_step: { type: "string", description: `The concrete action the ${type.toUpperCase()} employee should take next.` },
+    ...(type === "ap"
+      ? {
+        statement_invoices: {
+          type: "array",
+          items: { type: "string" },
+          description: "For a statement: every invoice number it lists, exactly as printed (no amounts). Empty for any other category.",
+        },
+      }
+      : {}),
   },
 });
 
@@ -94,7 +106,7 @@ Classify by what the email and its attachments contain:
 - invoice: the email is, or carries, an invoice or bill from a vendor (in the body or as an attachment). This includes invoices that are already auto-charged to a card, subscription invoices, and invoices the sender calls a test or sample. Put those circumstances in next_step instead of changing the category.
 - utility_bill: a utility bill (electric, gas, water, telecom) that must be viewed or paid through the vendor's online portal rather than processed as a normal invoice.
 - vendor_info: informational or compliance paperwork from a vendor (W-9, certificate of insurance, banking/remit-to changes, contracts, price notices).
-- statement: an account statement listing several invoices, payments or balances that AP should reconcile.
+- statement: an account statement listing several invoices, payments or balances that AP should reconcile. List every invoice number on it in statement_invoices (they are checked against the invoices already received).
 - other: no invoice, bill, statement or vendor paperwork at all (marketing, notifications, internal chatter, reports about other emails, bounce messages, verification codes).
 
 Use confidence "low" only when you cannot tell whether an invoice is present.

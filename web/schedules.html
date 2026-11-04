@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Schedules</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <link rel="icon" type="image/png" href="images/favicon.png" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="assets/brand.js"></script>
+  <script src="assets/common.js"></script>
+</head>
+<body>
+  <div class="shell" hidden>
+    <aside id="sidebar" class="sidebar"></aside>
+
+    <main class="content">
+      <div id="message" class="message" hidden></div>
+      <h1>Schedules</h1>
+      <p class="sub">Everything the scheduler runs for your mailboxes and your organization's: processing the inbox, the daily
+        forwarded invoices report and the weekly one. When each runs next, when it last ran and what came of it.</p>
+
+      <div class="toolbar">
+        <div class="tabs" role="tablist" id="task-tabs">
+          <button class="tab active" data-task="">All</button>
+          <button class="tab" data-task="process">Process inbox</button>
+          <button class="tab" data-task="daily">Daily invoice report</button>
+          <button class="tab" data-task="weekly">Weekly invoice report</button>
+        </div>
+        <div class="toolbar-actions">
+          <label class="checkbox"><input type="checkbox" id="show-off" /> Show turned off</label>
+          <button class="secondary" id="refresh">Refresh</button>
+        </div>
+      </div>
+
+      <div class="message error" id="overdue-banner" hidden></div>
+
+      <div class="panel log-panel">
+        <table class="logs schedules">
+          <thead><tr><th>Task</th><th>Mailbox</th><th>Schedule</th><th>Next run</th><th>Last run</th><th>Result</th><th></th></tr></thead>
+          <tbody id="schedule-rows"></tbody>
+        </table>
+        <p class="empty" id="schedule-empty" hidden>Nothing scheduled. Set a mailbox's processing schedule on the Inbox page and
+          its reports on the Settings page.</p>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // The scheduler runs every 5 minutes (pg_cron); a task this far past its time hasn't been picked up.
+    const OVERDUE_MS = 15 * 60_000;
+    const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const TASKS = { process: "Process inbox", daily: "Daily invoice report", weekly: "Weekly invoice report" };
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    let task = "";
+    let mailboxes = [];
+
+    (async () => {
+      const session = await requireSession();
+      if (!session) return;
+      renderSidebar("schedules", session);
+      document.querySelector(".shell").hidden = false;
+      await load();
+    })();
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    const formatWhen = (iso) => new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+    const hhmm = (t) => String(t || "").slice(0, 5);
+    // The zone a schedule's times are in, when it isn't the viewer's.
+    const zone = (tz) => (tz && tz !== timezone ? ` (${tz})` : "");
+    const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+    async function load() {
+      const { data, error } = await callApi("mailboxes", { method: "GET" });
+      if (error) return showMessage(`Could not load the schedules: ${error}`, "error");
+      mailboxes = data.mailboxes;
+      render();
+    }
+
+    // Each mailbox's three tasks, as rows: on or off, the schedule in words, next / last run and the last result.
+    function tasksOf(m) {
+      return [
+        {
+          key: "process",
+          on: !!m.schedule_enabled,
+          schedule: processSchedule(m),
+          next: m.schedule_enabled ? m.schedule_next_run_at : null,
+          last: m.schedule_last_result?.at ?? m.schedule_last_run_at,
+          result: processResult(m.schedule_last_result),
+          edit: { href: "inbox.html", label: "Edit on Inbox", mailbox: m.id },
+        },
+        {
+          key: "daily",
+          on: !!m.forward_report_enabled,
+          schedule: `Daily at ${hhmm(m.forward_report_time)}${zone(m.forward_report_timezone)}`,
+          to: m.forward_report_addresses,
+          next: m.forward_report_enabled ? m.forward_report_next_at : null,
+          last: m.forward_report_last_result?.at ?? m.forward_report_last_at,
+          result: reportResult(m.forward_report_last_result),
+          edit: { href: "dashboard.html", label: "Edit in Settings" },
+        },
+        {
+          key: "weekly",
+          on: !!m.weekly_report_enabled,
+          schedule: `Every ${DAYS[m.weekly_report_day ?? 1]} at ${hhmm(m.weekly_report_time)}${zone(m.weekly_report_timezone)}`,
+          to: m.weekly_report_addresses,
+          next: m.weekly_report_enabled ? m.weekly_report_next_at : null,
+          last: m.weekly_report_last_result?.at ?? m.weekly_report_last_at,
+          result: reportResult(m.weekly_report_last_result),
+          edit: { href: "dashboard.html", label: "Edit in Settings" },
+        },
+      ];
+    }
+
+    function processSchedule(m) {
+      const at = `at ${hhmm(m.schedule_time)}${zone(m.schedule_timezone)}`;
+      switch (m.schedule_frequency) {
+        case "alternate": return `Every other day ${at}`;
+        case "weekdays": return `${(m.schedule_days ?? []).slice().sort().map((d) => DAYS[d].slice(0, 3)).join(", ") || "No days"} ${at}`;
+        case "interval": return `Every ${plural(m.schedule_interval || 1, (m.schedule_interval_unit || "hours").replace(/s$/, ""))}, from ${m.schedule_anchor ?? ""} ${at}`;
+        default: return `Daily ${at}`;
+      }
+    }
+
+    // { text, kind: ok | error | muted }
+    function processResult(r) {
+      if (!r?.at) return { text: "Not run yet", kind: "muted" };
+      if (r.error) return { text: `Failed: ${r.error}`, kind: "error" };
+      const counts = Object.entries(r.counts ?? {}).filter(([, n]) => n).map(([k, n]) => `${n} ${k.replace("_", " ")}`);
+      return {
+        text: `${plural(r.processed ?? 0, "new email")}${counts.length ? ` (${counts.join(", ")})` : ""}${r.remaining ? `, ${r.remaining} continuing` : ""}`,
+        kind: "ok",
+      };
+    }
+
+    function reportResult(r) {
+      if (!r?.at) return { text: "Not sent yet", kind: "muted" };
+      if (r.error) return { text: `Failed: ${r.error}`, kind: "error" };
+      if (!r.sent) return { text: "Nothing to send (no invoices forwarded)", kind: "muted" };
+      return { text: `Sent: ${plural(r.count ?? 0, "invoice")}${r.to?.length ? ` to ${r.to.join(", ")}` : ""}`, kind: "ok" };
+    }
+
+    function render() {
+      const showOff = document.getElementById("show-off").checked;
+      const now = Date.now();
+      const rows = mailboxes.flatMap((m) => tasksOf(m).map((t) => ({ m, ...t })))
+        .filter((t) => (!task || t.key === task) && (showOff || t.on))
+        .map((t) => ({ ...t, overdue: t.on && t.next && now - new Date(t.next).getTime() > OVERDUE_MS }))
+        // Overdue first, then by when they run next; turned off last.
+        .sort((a, b) => (b.overdue - a.overdue) || (b.on - a.on) ||
+          (a.next ? new Date(a.next).getTime() : Infinity) - (b.next ? new Date(b.next).getTime() : Infinity));
+
+      document.getElementById("schedule-rows").replaceChildren(...rows.map(row));
+      document.getElementById("schedule-empty").hidden = rows.length > 0;
+
+      // Several overdue tasks at once usually means the scheduler itself isn't being called.
+      const overdue = rows.filter((t) => t.overdue);
+      const banner = document.getElementById("overdue-banner");
+      banner.hidden = !overdue.length;
+      banner.textContent = overdue.length
+        ? `${plural(overdue.length, "scheduled task")} ${overdue.length === 1 ? "is" : "are"} overdue: the scheduler runs every 5 minutes, so ${overdue.length === 1 ? "it" : "they"} should have run by now. ` +
+          "If none of the tasks run, the scheduler isn't being called; see \"Scheduler URL\" in the README."
+        : "";
+    }
+
+    function row(t) {
+      const tr = el("tr", t.on ? (t.overdue ? "overdue" : "") : "off");
+      tr.append(el("td", "nowrap", TASKS[t.key]));
+
+      const box = el("td");
+      box.append(el("div", null, t.m.email_address));
+      if (t.to) box.append(el("div", "muted", `To ${t.to}`));
+      tr.append(box);
+
+      const schedule = el("td");
+      schedule.append(el("div", null, t.schedule));
+      if (!t.on) schedule.append(el("span", "badge", "Off"));
+      tr.append(schedule);
+
+      const next = el("td", "nowrap");
+      if (t.next) next.append(el("div", null, formatWhen(t.next)));
+      else next.append(el("span", "muted", t.on ? "Not set: save the schedule again" : "—"));
+      if (t.overdue) next.append(el("span", "badge status-error", "Overdue"));
+      tr.append(next);
+
+      tr.append(el("td", "nowrap", t.last ? formatWhen(t.last) : "—"));
+      tr.append(el("td", `result-${t.result.kind}`, t.result.text));
+
+      const edit = el("td", "nowrap");
+      const link = el("a", "link-button", t.edit.label);
+      link.href = t.edit.href;
+      // The Inbox opens on the mailbox it remembers.
+      if (t.edit.mailbox) link.addEventListener("click", () => {
+        try {
+          localStorage.setItem("inbox-mailbox", t.edit.mailbox);
+        } catch {
+          // Storage blocked: the Inbox opens on its default mailbox.
+        }
+      });
+      edit.append(link);
+      tr.append(edit);
+      return tr;
+    }
+
+    for (const tab of document.querySelectorAll("#task-tabs .tab")) {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll("#task-tabs .tab").forEach((t) => t.classList.toggle("active", t === tab));
+        task = tab.dataset.task;
+        render();
+      });
+    }
+    document.getElementById("show-off").addEventListener("change", render);
+    document.getElementById("refresh").addEventListener("click", load);
+  </script>
+</body>
+</html>

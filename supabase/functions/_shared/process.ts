@@ -15,6 +15,7 @@ import {
   embedInlineImages, htmlToText, INVOICES_FOLDERS, isEmailAttachment, type MailClient, mailClient, type MailMessage, type Provider,
 } from "./mail.ts";
 import { buildReport, type ReportItem } from "./report.ts";
+import { checkStatement, type StatementLine } from "./statement.ts";
 import { adminClient } from "./supabase.ts";
 
 // Keeps one call well inside the Edge Function time limit; the UI calls again until none remain (see `untilDone`).
@@ -184,6 +185,7 @@ export async function processMailbox(
 
   await db.from("mailboxes").update({
     last_processed_at: new Date().toISOString(), last_processed_by: userId, last_processed_by_name: run.userName,
+    last_processed_trigger: run.trigger,
   }).eq("id", mailbox.id);
   // Only when the mailbox's "Send summary email" setting is on, it has a recipient, and there is something to report.
   // Run until done: only with the last batch, covering every batch of the run.
@@ -265,7 +267,7 @@ async function markManuallyForwarded(db: Db, run: Run, mailbox: Mailbox, client:
         ...Object.fromEntries(SNAPSHOT_COLUMNS.split(", ").map((c) => [c, (row as Record<string, unknown>)[c]])),
         subject: row.subject || "(no subject)",
         owner_user_id: mailbox.owner_user_id,
-        ...by,
+        ...by, processed_trigger: undefined, // not a column of the log (its trigger is below)
         trigger: run.trigger,
         run_id: run.id,
         status: "done",
@@ -531,6 +533,21 @@ async function processMessage(
     const { status, action, moved } = await takeAction(run, mailbox, client, msg, c, email);
     await step(run, "process/action", `"${subject}" → ${status.replace("_", " ")}${action ? `: ${action}` : ""}`, { ...email, status });
 
+    // A statement: which of its invoices were already received and forwarded. Never fails the email.
+    const statementInvoices = c.category === "statement" ? c.statement_invoices ?? [] : [];
+    let statementCheck: StatementLine[] | null = null;
+    if (statementInvoices.length) {
+      try {
+        statementCheck = await checkStatement(db, mailbox.id, rowId, statementInvoices);
+        const count = (r: string) => statementCheck!.filter((l) => l.result === r).length;
+        await step(run, "process/statement",
+          `Statement "${subject}": ${statementCheck.length} invoices, ${count("forwarded")} forwarded, ${count("received")} received but not forwarded, ${count("not_found")} not found`,
+          { ...email, statement_check: statementCheck });
+      } catch (err) {
+        await logApi("process/statement", err, { userId, level: "warn", context: { run: run.id, mailbox: mailbox.email_address, ...email } });
+      }
+    }
+
     const { error } = await db.from("processed_emails").update({
       attachment_names: attachments.names,
       category: c.category,
@@ -543,6 +560,9 @@ async function processMessage(
       next_step: c.next_step,
       action_taken: action,
       status,
+      statement_invoices: statementInvoices,
+      statement_check: statementCheck,
+      statement_checked_at: statementCheck ? new Date().toISOString() : null,
       // Moved to the Invoices folder: Outlook gave it a new id and link.
       ...(moved ? { message_id: moved.id, web_link: moved.webLink ?? msg.webLink ?? null } : {}),
       ...processedBy(run),
@@ -552,7 +572,7 @@ async function processMessage(
     await logProcessing(db, run, mailbox, rowId, moved ? { ...msg, id: moved.id, webLink: moved.webLink ?? msg.webLink } : msg, {
       status, action, category: c.category, confidence: c.confidence, attachment_names: attachments.names,
       vendor: c.vendor || null, invoice_number: c.invoice_number || null, amount: c.amount || null, due_date: c.due_date || null,
-      summary: c.summary, next_step: c.next_step,
+      summary: c.summary, next_step: c.next_step, statement_check: statementCheck,
     });
     return { ...item, category: c.category, summary: c.summary, next_step: c.next_step, action, status };
   } catch (err) {
@@ -566,6 +586,8 @@ async function processMessage(
 
 const processedBy = (run: Run) => ({
   processed_by: run.userId, processed_by_email: run.userEmail, processed_by_name: run.userName, processed_at: new Date().toISOString(),
+  // A scheduled run is recorded as the mailbox owner; this says it was the scheduler.
+  processed_trigger: run.trigger,
 });
 
 // One email_processing_log row per processed email; a re-check adds another, so earlier outcomes are kept. Each row
@@ -576,7 +598,7 @@ async function logProcessing(
   outcome: {
     status: string; category?: string; action?: string | null; error?: string; confidence?: string;
     attachment_names?: string[]; vendor?: string | null; invoice_number?: string | null; amount?: string | null;
-    due_date?: string | null; summary?: string | null; next_step?: string | null;
+    due_date?: string | null; summary?: string | null; next_step?: string | null; statement_check?: StatementLine[] | null;
   },
 ) {
   const from = msg.from?.emailAddress ?? {};

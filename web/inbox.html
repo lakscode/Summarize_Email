@@ -352,7 +352,7 @@
         m.org_id && m.role && m.role !== "owner" ? `organization mailbox of ${m.owner_name || "a colleague"} (you: ${m.role === "admin" ? "admin" : "member"})` : null,
         m.smart_ap_address ? `forwards to ${m.smart_ap_address}` : "no destination email",
         m.last_processed_at
-          ? `last processed ${formatWhen(m.last_processed_at)}${m.last_processed_by_name ? ` by ${m.last_processed_by_name}` : ""}`
+          ? `last processed ${formatWhen(m.last_processed_at)}${m.last_processed_trigger === "schedule" ? " by the scheduler" : m.last_processed_by_name ? ` by ${m.last_processed_by_name}` : ""}`
           : "not processed yet",
       ].filter(Boolean).join(" · ");
     }
@@ -500,6 +500,10 @@
 
     const historyDialog = document.getElementById("history-dialog");
     const TRIGGER_LABELS = { manual: "Process inbox", schedule: "Scheduled run", user: "By hand" };
+    // Who last processed the email, in words: the scheduler, or the person's name.
+    const processedByText = (e) => e.processed_trigger === "schedule"
+      ? "the scheduler (automatic)"
+      : e.processed_by_name || e.processed_by_email;
     let historyEmail = null;
     let historyRequest = 0;
 
@@ -552,7 +556,9 @@
         [h.vendor, h.invoice_number && `#${h.invoice_number}`, h.amount, h.due_date && `due ${h.due_date}`].filter(Boolean).join(" · ")]) {
         if (line) details.append(el("div", line.startsWith("Error") ? "error-text" : null, line));
       }
-      tr.append(el("td", "muted", formatWhen(h.processed_at)), el("td", null, h.processed_by_name || h.processed_by_email || "—"),
+      // A scheduled run is recorded as the mailbox owner: say it was the scheduler.
+      tr.append(el("td", "muted", formatWhen(h.processed_at)),
+        el("td", null, h.trigger === "schedule" ? "Scheduler" : h.processed_by_name || h.processed_by_email || "—"),
         el("td", "muted", TRIGGER_LABELS[h.trigger] || h.trigger || ""), result, details);
       return tr;
     }
@@ -640,14 +646,21 @@
         next.title = e.next_step;
         nextCell.append(next);
       }
+      // A statement: how many of its invoices were forwarded, received or not found (the list is in the details).
+      if (e.statement_check?.length) nextCell.append(el("div", "statement-counts", statementCounts(e.statement_check)));
 
-      // When it was last processed (a run, or someone marking it done / reopening it) and by whom.
+      // When it was last processed and how: automatically by the scheduler (which runs as the mailbox owner, so the
+      // name alone would read as if they did it), or by a person (Process inbox, or marking it done / changing it).
       const processedCell = el("td", "email-processed");
-      const processedBy = e.processed_by_name || e.processed_by_email;
+      const processedBy = processedByText(e);
       if (e.processed_at) processedCell.append(el("div", null, formatWhen(e.processed_at)));
-      if (e.processed_at && processedBy) {
+      if (e.processed_at && e.processed_trigger === "schedule") {
+        const auto = el("span", "badge trigger-schedule", "Scheduler");
+        auto.title = "Processed automatically by the scheduler";
+        processedCell.append(auto);
+      } else if (e.processed_at && processedBy) {
         const who = el("div", "who", processedBy);
-        who.title = e.processed_by_email || processedBy;
+        who.title = [e.processed_by_email || processedBy, TRIGGER_LABELS[e.processed_trigger]].filter(Boolean).join(" · ");
         processedCell.append(who);
       }
 
@@ -664,7 +677,8 @@
         ["Next step", e.next_step],
         ["Action taken", e.action_taken],
         ["Error", e.error],
-        ["Last processed", e.processed_at && `${formatWhen(e.processed_at)}${processedBy ? ` by ${processedBy}` : ""}`],
+        ["Last processed", e.processed_at && `${formatWhen(e.processed_at)}${processedBy ? ` by ${processedBy}` : ""}` +
+          (e.processed_trigger === "manual" ? " (Process inbox)" : e.processed_trigger === "user" ? " (by hand)" : "")],
         ["Assigned", e.assigned_at && `to ${e.assigned_to_name || "someone"}${e.assigned_by_name ? ` by ${e.assigned_by_name}` : ""}, ${formatWhen(e.assigned_at)}`],
         ["Category changed", e.category_changed_at && `${formatWhen(e.category_changed_at)}${e.category_changed_by_name ? ` by ${e.category_changed_by_name}` : ""}`],
       ].filter(([, v]) => v);
@@ -690,6 +704,7 @@
         // Who changed it and when (runs, marked done, reopened), loaded the first time the row opens.
         const statusHistory = el("div", "status-history");
         cell.append(dl);
+        if (e.category === "statement" && e.statement_invoices?.length) cell.append(statementSection(e));
         if (e.status !== "processing") cell.append(categoryPicker(e), assignPicker(e));
         cell.append(statusHistory, links);
         detailRow.append(cell);
@@ -777,6 +792,59 @@
       return label;
     }
 
+    // --- Account statements: each invoice on the statement looked up among the mailbox's invoices
+    // (_shared/statement.ts) ---
+    function statementCounts(check) {
+      const count = (r) => check.filter((l) => l.result === r).length;
+      return [
+        count("forwarded") && `${count("forwarded")} forwarded`,
+        count("received") && `${count("received")} not forwarded`,
+        count("not_found") && `${count("not_found")} not found`,
+      ].filter(Boolean).join(" · ") + ` (of ${check.length} invoice${check.length === 1 ? "" : "s"})`;
+    }
+
+    // One line per invoice: forwarded on <date>, received on <date> but not forwarded, or not found; with Check again
+    // for invoices that came in since.
+    function statementSection(e) {
+      const box = el("div", "statement-check");
+      const render = (check, checkedAt) => {
+        const head = el("div", "statement-check-head");
+        head.append(el("strong", null, "Invoices on this statement"));
+        if (checkedAt) head.append(el("span", "muted", `checked ${formatWhen(checkedAt)}`));
+        const again = el("button", "secondary", "Check again");
+        again.type = "button";
+        again.addEventListener("click", async () => {
+          again.disabled = true;
+          const { data, error } = await callApi("inbox", { method: "POST", body: { action: "check_statement", id: e.id } });
+          if (error) {
+            again.disabled = false;
+            return showMessage(`Could not check the statement: ${error}`, "error");
+          }
+          e.statement_check = data.statement_check;
+          e.statement_checked_at = data.statement_checked_at;
+          render(data.statement_check, data.statement_checked_at);
+        });
+        head.append(again);
+        const list = el("ul");
+        for (const line of check ?? []) {
+          const li = el("li", `statement-${line.result}`);
+          li.append(el("span", "statement-invoice", `#${line.invoice_number}`));
+          const found = line.subject ? ` (${line.vendor ? `${line.vendor}: ` : ""}${line.subject})` : "";
+          li.append(el("span", null,
+            line.result === "forwarded"
+              ? `Invoice found and forwarded${line.forwarded_at ? ` on ${formatWhen(line.forwarded_at)}` : ""}${found}`
+              : line.result === "received"
+                ? `Invoice found${line.received_at ? ` (received ${formatWhen(line.received_at)})` : ""} but not forwarded: ${ACTION_LABELS[line.email_status] || line.email_status}${found}`
+                : "Invoice not found: no email with this invoice number in this mailbox"));
+          list.append(li);
+        }
+        if (!check) list.append(el("li", "muted", "Not checked yet. Use Check again."));
+        box.replaceChildren(head, list);
+      };
+      render(e.statement_check, e.statement_checked_at);
+      return box;
+    }
+
     // The email's status history, oldest first: each run that processed it and each time someone marked it done or
     // reopened it, with who and when.
     async function loadStatusHistory(emailId, container) {
@@ -792,7 +860,7 @@
           : `${h.trigger === "schedule" ? "Scheduled run" : "Processed"}: ${ACTION_LABELS[h.status] || h.status}`;
         const li = el("li", h.trigger === "user" ? "by-user" : null);
         li.append(el("span", "when", formatWhen(h.processed_at)), el("span", "what", what));
-        const who = h.processed_by_name || h.processed_by_email;
+        const who = h.trigger === "schedule" ? "Scheduler" : h.processed_by_name || h.processed_by_email;
         if (who) {
           const whoNode = el("span", "who", who);
           whoNode.title = h.processed_by_email || who;

@@ -655,6 +655,19 @@ a.button-link.secondary { background: transparent; color: var(--text); border: 1
 .badge.new { background: var(--error-text); color: #fff; border-color: transparent; }
 .category-picker { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 0.88rem; }
 .category-picker select { width: auto; min-width: 180px; }
+/* Account statements: each listed invoice, forwarded / not forwarded / not found (inbox.html statementSection). */
+.statement-counts { margin-top: 4px; color: var(--muted); font-size: 0.8rem; }
+.statement-check { margin: 12px 0; font-size: 0.88rem; }
+.statement-check-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.statement-check-head .muted { color: var(--muted); font-size: 0.82rem; }
+.statement-check-head button { padding: 4px 10px; font-size: 0.8rem; }
+.statement-check ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.statement-check li { display: flex; gap: 10px; padding-left: 10px; border-left: 3px solid var(--border); }
+.statement-check li.statement-forwarded { border-left-color: var(--ok-text); }
+.statement-check li.statement-received { border-left-color: var(--accent); }
+.statement-check li.statement-not_found { border-left-color: var(--error-text); }
+.statement-check li.muted { color: var(--muted); }
+.statement-invoice { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .status-history { margin: 12px 0; font-size: 0.88rem; }
 .status-history:empty { display: none; }
 .status-history-title { font-weight: 600; margin-bottom: 4px; }
@@ -713,3 +726,14 @@ a.button-link.secondary { background: transparent; color: var(--text); border: 1
 /* Reports page: the invoices a report listed, inside its detail row. */
 table.report-items { margin: 4px 0; font-size: 0.85rem; }
 table.report-items th, table.report-items td { padding: 6px 8px; }
+
+/* Schedules page: one row per mailbox task; overdue ones stand out, turned-off ones are dimmed. */
+table.schedules tr.overdue td:first-child { box-shadow: inset 3px 0 0 var(--error-text); }
+table.schedules tr.off td { color: var(--muted); }
+table.schedules td .badge { margin-top: 4px; }
+table.schedules .result-error { color: var(--error-text); }
+table.schedules .result-muted { color: var(--muted); }
+#overdue-banner { margin-bottom: 12px; }
+
+/* Processed automatically by the scheduler, rather than by a person (Inbox "Processed" column). */
+.badge.trigger-schedule { margin-top: 2px; color: var(--muted); }

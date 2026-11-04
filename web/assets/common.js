@@ -226,6 +226,7 @@ const ICONS = {
   reports: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
   profile: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
   settings: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+  schedules: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   collapse: '<path d="M15 18l-6-6 6-6"/>',
@@ -240,6 +241,8 @@ const NAV = [
   { page: "settings", label: "Organization" },
   // History of the forwarded invoices reports.
   { page: "reports", label: "Reports" },
+  // What the scheduler runs (processing, daily and weekly reports), when, and how it went.
+  { page: "schedules", label: "Schedules" },
   { page: "logs", label: "Logs" },
   { page: "profile", label: "Profile" },
 ];

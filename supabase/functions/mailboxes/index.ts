@@ -131,7 +131,7 @@ Deno.serve(async (req) => {
       // RLS returns the caller's own mailboxes and those shared with their organization.
       const { data, error } = await sb
         .from("mailboxes")
-        .select("id, owner_user_id, org_id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, send_summary, summary_address, last_processed_at, last_processed_by_name, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result, forward_report_enabled, forward_report_time, forward_report_timezone, forward_report_addresses, forward_report_next_at, forward_report_last_at, forward_report_last_result")
+        .select("id, owner_user_id, org_id, provider, auth_type, connection_id, mailbox_type, forward_categories, email_address, delegate_address, display_name, active, smart_ap_address, send_summary, summary_address, last_processed_at, last_processed_by_name, last_processed_trigger, access_expires_at, created_at, schedule_enabled, schedule_frequency, schedule_days, schedule_time, schedule_timezone, schedule_interval, schedule_interval_unit, schedule_anchor, schedule_next_run_at, schedule_last_run_at, schedule_last_result, forward_report_enabled, forward_report_time, forward_report_timezone, forward_report_addresses, forward_report_next_at, forward_report_last_at, forward_report_last_result")
         .order("created_at");
       if (error) return await fail("mailboxes/list", error.message, 500, { userId: user.id });
       await addWeeklyReportSettings(user.id, sb, data);
