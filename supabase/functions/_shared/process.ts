@@ -247,7 +247,8 @@ async function markManuallyForwarded(db: Db, run: Run, mailbox: Mailbox, client:
       const by = processedBy(run);
       // Only if it is still action needed (someone may have marked it done meanwhile).
       const { data: updated, error: updateError } = await db.from("processed_emails")
-        .update({ status: "done", action_taken: MANUALLY_FORWARDED, ...by, updated_at: by.processed_at })
+        // completion_seen_at: if someone assigned it, their bell says it's done.
+        .update({ status: "done", action_taken: MANUALLY_FORWARDED, ...by, completion_seen_at: null, updated_at: by.processed_at })
         .eq("id", row.id).eq("status", "action_needed").select("id");
       if (updateError) throw new Error(updateError.message);
       if (!updated?.length) continue;

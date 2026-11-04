@@ -24,6 +24,8 @@ const sb = window.supabase.createClient(SUPABASE_URL || "http://invalid", SUPABA
 });
 
 const pageUrl = (name) => new URL(`${name}.html`, location.href).href;
+// Set when the user presses Log out, so the login page doesn't say their session expired.
+let loggingOut = false;
 // A page link that carries ?details: without ".html", because the local server (npx serve) answers "x.html?..." with
 // a redirect to "x" that drops them (Vercel keeps them). Both serve "x" directly.
 const pageLink = (name, params) => `${new URL(name, location.href).href}?${new URLSearchParams(params)}`;
@@ -106,7 +108,8 @@ async function requireSession() {
     return null;
   }
   sb.auth.onAuthStateChange((event) => {
-    if (event === "SIGNED_OUT") location.replace(pageUrl("login"));
+    // Signed out here, or the session couldn't be renewed: say why on the login page (unless they pressed Log out).
+    if (event === "SIGNED_OUT") location.replace(loggingOut ? pageUrl("login") : `${pageUrl("login")}?expired=1`);
   });
   await joinOrganization(session);
   return session;
@@ -144,7 +147,7 @@ function showMessage(text, kind = "info") {
 // Calls a Supabase Edge Function and returns { data, error } where error is the function's own
 // message (e.g. "Azure isn't set up...") rather than supabase-js's generic HTTP error text.
 // While it runs, the page's loading indicator is shown.
-async function callApi(name, options) {
+async function callApi(name, options, retried = false) {
   trackLoading(1);
   try {
     // Run the function next to the database (FUNCTION_REGION), not near the visitor: each of its queries is then a
@@ -155,6 +158,16 @@ async function callApi(name, options) {
       : name;
     const { data, error } = await sb.functions.invoke(target, options);
     if (!error) return { data, error: null };
+    // 401: the request went without a valid sign-in (the session expired and wasn't renewed in time). Renew it and try
+    // once more; if it can't be renewed, go to the login page saying so, rather than showing "Not signed in".
+    // (Rejected again right after a renewal is a server problem, not an expiry: reported below, so the login page,
+    // which sends signed-in users on, can't bounce back and forth.)
+    if (error.context?.status === 401 && !retried) {
+      const { data: renewed } = await sb.auth.refreshSession();
+      if (renewed?.session) return await callApi(name, options, true);
+      location.replace(`${pageUrl("login")}?expired=1`);
+      return { data: null, error: "Your session expired. Please log in again." };
+    }
     let message = error.message;
     try {
       const body = await error.context.json();
@@ -317,7 +330,10 @@ function renderSidebar(active, session) {
   logout.className = "secondary side-logout";
   logout.title = "Log out";
   logout.append(...labelled("logout", "Log out"));
-  logout.addEventListener("click", () => sb.auth.signOut());
+  logout.addEventListener("click", () => {
+    loggingOut = true;
+    sb.auth.signOut();
+  });
   const legal = document.createElement("div");
   legal.className = "side-legal";
   for (const [page, label] of [["terms", "Terms"], ["privacy", "Privacy"]]) {
@@ -333,7 +349,7 @@ function renderSidebar(active, session) {
 }
 
 // --- Notifications: tasks assigned to the user (inbox/index.ts assignEmail). A bell in the sidebar counts the new
-// ones (not yet seen); clicking it lists the open tasks, newest first, and counts as seeing them. ---
+// ones (not yet seen); clicking it lists the tasks, newest first, and counts as seeing them. ---
 
 let notifications = [];
 
@@ -357,18 +373,28 @@ function notificationBell() {
 
 // Read straight from the database (RLS: only emails of mailboxes the user still has access to) rather than through the
 // inbox function, so every page load doesn't wait on a function start-up, and in the background (no "Loading…").
+// Two kinds: tasks assigned to the user (any status; new until they open the bell) and tasks they assigned to someone
+// else (new once done, until they open the bell).
+let notificationUser = null;
+
 async function loadNotifications() {
   const { data: { session } } = await sb.auth.getSession();
   if (!session) return;
+  notificationUser = session.user.id;
   const { data, error } = await sb.from("processed_emails")
-    .select("id, mailbox_id, subject, assigned_to_name, assigned_by_name, assigned_at, assignment_seen_at")
-    .eq("assigned_to", session.user.id).neq("status", "done")
+    .select("id, mailbox_id, subject, status, assigned_to, assigned_to_name, assigned_by, assigned_by_name, assigned_at, " +
+      "assignment_seen_at, completion_seen_at, processed_by_name, processed_at")
+    .or(`assigned_to.eq.${notificationUser},assigned_by.eq.${notificationUser}`)
     .order("assigned_at", { ascending: false })
-    .limit(300);
+    .limit(500);
   if (error) return;
   notifications = data;
-  setNotificationCount(data.filter((e) => !e.assignment_seen_at).length);
+  setNotificationCount(data.filter(isNewNotification).length);
 }
+
+const isMine = (e) => e.assigned_to === notificationUser;
+// Assigned to the user and not seen yet, or assigned by them to someone else and done since they last looked.
+const isNewNotification = (e) => isMine(e) ? !e.assignment_seen_at : e.status === "done" && !e.completion_seen_at;
 
 // The count on the bell; 0 removes it.
 function setNotificationCount(count) {
@@ -398,36 +424,14 @@ function openNotifications(bell) {
   head.append(title);
 
   const list = document.createElement("ul");
-  for (const e of notifications.slice(0, 20)) {
-    const li = document.createElement("li");
-    if (!e.assignment_seen_at) li.className = "unread";
-    const a = document.createElement("a");
-    // Opens this email in the Inbox: its mailbox selected, the email scrolled to and opened.
-    a.href = pageLink("inbox", { assigned: "1", mailbox: e.mailbox_id, email: e.id });
-    openTaskOnClick(a, e.mailbox_id, e.id);
-    const what = document.createElement("div");
-    what.className = "notification-what";
-    what.textContent = `${e.assigned_by_name && e.assigned_by_name !== e.assigned_to_name ? `${e.assigned_by_name} assigned you` : "Assigned to you"}: ${e.subject || "(no subject)"}`;
-    const when = document.createElement("div");
-    when.className = "notification-when";
-    when.textContent = e.assigned_at ? new Date(e.assigned_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "";
-    a.append(what, when);
-    li.append(a);
-    list.append(li);
-  }
-  if (!notifications.length) {
-    const empty = document.createElement("li");
-    empty.className = "notification-empty";
-    empty.textContent = "No notifications. Tasks assigned to you show here.";
-    list.append(empty);
-  }
+  renderNotificationList(list);
   const all = document.createElement("a");
   all.className = "notification-all";
-  // The mailbox of the newest task, as "Assigned to me" lists one mailbox at a time.
-  const newest = notifications[0]?.mailbox_id;
+  // The mailbox of the user's newest task, as "Assigned to me" lists one mailbox at a time.
+  const newest = notifications.find(isMine)?.mailbox_id;
   all.href = pageLink("inbox", { assigned: "1", ...(newest ? { mailbox: newest } : {}) });
   openTaskOnClick(all, newest, null);
-  all.textContent = notifications.length > 20 ? `View all ${notifications.length} tasks` : "View my tasks";
+  all.textContent = "View my tasks";
   panel.append(head, list, all);
 
   // Below the bell, kept on screen.
@@ -438,17 +442,77 @@ function openNotifications(bell) {
   bell.setAttribute("aria-expanded", "true");
   document.addEventListener("click", closeNotifications);
   document.addEventListener("keydown", closeOnEscape);
-  markNotificationsSeen();
+  // Shown at once from what was loaded with the page, then again with anything assigned or done since.
+  loadNotifications().then(() => {
+    if (!list.isConnected) return;
+    renderNotificationList(list);
+    markNotificationsSeen();
+  });
+}
+
+// Every task, in two groups: assigned to the user, and assigned by them to others. New ones are highlighted.
+function renderNotificationList(list) {
+  const mine = notifications.filter(isMine);
+  const theirs = notifications.filter((e) => !isMine(e));
+  const items = [];
+  const group = (label) => {
+    const li = document.createElement("li");
+    li.className = "notification-group";
+    li.textContent = label;
+    return li;
+  };
+  if (mine.length) items.push(group(`Assigned to you (${mine.length})`), ...mine.map(notificationItem));
+  if (theirs.length) items.push(group(`You assigned (${theirs.length})`), ...theirs.map(notificationItem));
+  if (!items.length) {
+    const empty = document.createElement("li");
+    empty.className = "notification-empty";
+    empty.textContent = "No notifications. Tasks assigned to you, and tasks you assign, show here.";
+    items.push(empty);
+  }
+  list.replaceChildren(...items);
+}
+
+const STATUS_TEXT = { action_needed: "Action needed", done: "Done", no_action: "No action needed", error: "Error", processing: "Processing" };
+
+function notificationItem(e) {
+  const li = document.createElement("li");
+  if (isNewNotification(e)) li.classList.add("unread");
+  if (e.status === "done") li.classList.add("done");
+  const a = document.createElement("a");
+  // Opens this email in the Inbox: its mailbox selected, the email scrolled to and opened; on "Assigned to me" for the
+  // user's own open tasks, on All for done ones and ones they assigned to someone else (not on that tab).
+  const tab = isMine(e) && e.status !== "done" ? "assigned" : "";
+  a.href = pageLink("inbox", tab ? { assigned: "1", mailbox: e.mailbox_id, email: e.id } : { tab: "all", mailbox: e.mailbox_id, email: e.id });
+  openTaskOnClick(a, e.mailbox_id, e.id, tab);
+  const subject = e.subject || "(no subject)";
+  const what = document.createElement("div");
+  what.className = "notification-what";
+  const when = document.createElement("div");
+  when.className = "notification-when";
+  const at = (iso) => (iso ? new Date(iso).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "");
+  if (isMine(e)) {
+    what.textContent = `${e.assigned_by_name && e.assigned_by && e.assigned_by !== e.assigned_to ? `${e.assigned_by_name} assigned you` : "Assigned to you"}: ${subject}`;
+    when.textContent = [at(e.assigned_at), STATUS_TEXT[e.status] || e.status].filter(Boolean).join(" · ");
+  } else if (e.status === "done") {
+    what.textContent = `${e.processed_by_name || e.assigned_to_name || "Someone"} marked done: ${subject}`;
+    when.textContent = [at(e.processed_at), `assigned to ${e.assigned_to_name || "someone"}`].join(" · ");
+  } else {
+    what.textContent = `You assigned ${e.assigned_to_name || "someone"}: ${subject}`;
+    when.textContent = [at(e.assigned_at), STATUS_TEXT[e.status] || e.status].filter(Boolean).join(" · ");
+  }
+  a.append(what, when);
+  li.append(a);
+  return li;
 }
 
 // Already on the Inbox: open the task there (inbox.html openTaskInInbox) instead of reloading the page. Elsewhere, or
 // with Ctrl / Cmd / Shift held, the link opens normally.
-function openTaskOnClick(link, mailboxId, emailId) {
+function openTaskOnClick(link, mailboxId, emailId, tab = "assigned") {
   link.addEventListener("click", (ev) => {
     if (typeof openTaskInInbox !== "function" || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
     ev.preventDefault();
     closeNotifications();
-    openTaskInInbox(mailboxId, emailId);
+    openTaskInInbox(mailboxId, emailId, tab);
   });
 }
 
@@ -466,11 +530,13 @@ function closeOnEscape(ev) {
 // Opening the panel (or the Inbox's "Assigned to me" tab) counts as seeing them; the panel keeps them highlighted
 // until it closes.
 async function markNotificationsSeen() {
-  if (!notifications.some((e) => !e.assignment_seen_at)) return;
+  if (!notifications.some(isNewNotification)) return;
   const { error } = await callApi("inbox", { method: "POST", body: { action: "seen" } });
   if (error) return;
   const now = new Date().toISOString();
-  notifications = notifications.map((e) => ({ ...e, assignment_seen_at: e.assignment_seen_at ?? now }));
+  notifications = notifications.map((e) => isMine(e)
+    ? { ...e, assignment_seen_at: e.assignment_seen_at ?? now }
+    : { ...e, completion_seen_at: e.completion_seen_at ?? (e.status === "done" ? now : null) });
   setNotificationCount(0);
 }
 

@@ -15,7 +15,8 @@
 //                                                          mailbox (the Inbox tab) or, without mailbox_id, any (the bell)
 //   PATCH {id, assign_to: <user id> | null}             -> assigns the email to someone / unassigns it (see assignEmail)
 //   POST  {action: "seen", mailbox_id?}                 -> the caller has seen their assigned tasks (of that mailbox only,
-//                                                          when given), so they no longer count as new on the bell
+//                                                          when given), so they no longer count as new on the bell;
+//                                                          without mailbox_id also the done tasks they assigned
 //   POST  {action: "check_statement", id}               -> checks a statement's invoices again (_shared/statement.ts), e.g.
 //         after more invoices came in -> { statement_check, statement_checked_at }
 import { corsHeaders, json } from "../_shared/cors.ts";
@@ -257,7 +258,7 @@ Deno.serve(async (req) => {
         .update({ status: body.status, updated_at: new Date().toISOString() })
         .eq("id", body.id)
         .neq("status", body.status)
-        .select("id, status, mailbox_id, owner_user_id, subject, mailboxes(email_address), message_id, received_at, from_name, from_address, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step")
+        .select("id, status, mailbox_id, owner_user_id, subject, assigned_by, mailboxes(email_address), message_id, received_at, from_name, from_address, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step")
         .maybeSingle();
       if (error) return await fail("inbox/update", error.message, 500, { userId: user.id, context: { email_id: body.id } });
       if (!data) {
@@ -272,7 +273,12 @@ Deno.serve(async (req) => {
       const processor = await processorOf(db, user.id);
       const by = { processed_by: user.id, processed_by_email: processor.email ?? user.email ?? null, processed_by_name: processor.name ?? user.email ?? null };
       const processedAt = new Date().toISOString();
-      const { error: byError } = await db.from("processed_emails").update({ ...by, processed_trigger: "user", processed_at: processedAt }).eq("id", data.id);
+      // Done: whoever assigned it is told on their bell (completion_seen_at cleared), unless they did it themselves.
+      const completion = data.status === "done" && data.assigned_by
+        ? { completion_seen_at: data.assigned_by === user.id ? processedAt : null }
+        : {};
+      const { error: byError } = await db.from("processed_emails")
+        .update({ ...by, processed_trigger: "user", processed_at: processedAt, ...completion }).eq("id", data.id);
       const mailboxAddress = (data.mailboxes as { email_address?: string } | null)?.email_address ?? null;
       const logContext = { email_id: data.id, subject: data.subject, mailbox: mailboxAddress };
       if (byError) await logApi("inbox/update", byError.message, { userId: user.id, level: "warn", context: logContext });
@@ -320,6 +326,12 @@ Deno.serve(async (req) => {
         if (body.mailbox_id) seen = seen.eq("mailbox_id", body.mailbox_id);
         const { error } = await seen;
         if (error) return await fail("inbox/seen", error.message, 500, { userId: user.id });
+        // The bell (no mailbox_id) also shows the tasks the caller assigned that were done since.
+        if (!body.mailbox_id) {
+          const { error: doneError } = await adminClient().from("processed_emails").update({ completion_seen_at: new Date().toISOString() })
+            .eq("assigned_by", user.id).eq("status", "done").is("completion_seen_at", null);
+          if (doneError) return await fail("inbox/seen", doneError.message, 500, { userId: user.id });
+        }
         return json({ ok: true });
       }
       if (!["process", "preview"].includes(body.action) || !body.mailbox_id) {

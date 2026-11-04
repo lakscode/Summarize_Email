@@ -240,8 +240,10 @@
       }
       await loadMailboxes();
       if (opensTask) {
-        await openTaskInInbox(linked.get("mailbox"), linked.get("email"));
-        history.replaceState(null, "", `${location.pathname}?assigned=1`);
+        // ?tab=all: a task the user assigned to someone else (common.js notificationItem), on the All tab.
+        const tab = linked.get("tab") === "all" ? "" : "assigned";
+        await openTaskInInbox(linked.get("mailbox"), linked.get("email"), tab);
+        history.replaceState(null, "", tab ? `${location.pathname}?assigned=1` : location.pathname);
       } else if (!early || document.getElementById("mailbox-select").value !== remembered) {
         await loadEmails();
       }
@@ -249,7 +251,8 @@
 
     // Opens the "Assigned to me" tab of the task's mailbox and, given an email, scrolls to it, opens it and outlines it.
     // Also called by the bell (common.js) while already on the Inbox, so a notification needs no page reload.
-    async function openTaskInInbox(mailboxId, emailId) {
+    // tab: "assigned" (a task assigned to the user) or "" (All: a task they assigned to someone else).
+    async function openTaskInInbox(mailboxId, emailId, tab = "assigned") {
       const select = document.getElementById("mailbox-select");
       // The task's mailbox isn't one this user has in the Inbox (e.g. not shared with them): say so rather than
       // quietly showing another mailbox instead.
@@ -258,7 +261,7 @@
           "Ask the person who assigned it to share that mailbox with you.", "error");
       }
       showMessage("");
-      status = "assigned";
+      status = tab;
       document.querySelectorAll(".tab[data-status]").forEach((t) => t.classList.toggle("active", t.dataset.status === status));
       if (mailboxId && mailboxId !== select.value) {
         select.value = mailboxId;

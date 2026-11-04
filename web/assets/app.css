@@ -254,6 +254,9 @@ a.side-email:hover { color: var(--accent); text-decoration: underline; }
 .notification-what { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .notification-when, .notification-empty { color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
 .notification-empty { padding: 14px; }
+.notification-panel li.notification-group { padding: 8px 14px 4px; color: var(--muted); font-size: 0.75rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.4px; background: var(--bg); }
+.notification-panel li.done:not(.unread) .notification-what { color: var(--muted); }
 .notification-all { padding: 10px 14px; border-top: 1px solid var(--border); font-weight: 600; }
 .side-logout { justify-content: center; }
 .sidebar .label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
