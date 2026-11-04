@@ -212,7 +212,7 @@ form.busy :is(button:not([type]), button[type="submit"])::before,
 .sidebar .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; padding: 0 4px 0 6px; }
 .sidebar .brand img { width: 32px; height: 32px; border-radius: 8px; flex: none; }
 .sidebar nav { display: grid; gap: 4px; }
-.sidebar nav a { padding: 9px 10px; border-radius: 8px; color: var(--text); text-decoration: none; font-weight: 500; }
+.sidebar nav a { padding: 9px 10px; border-radius: 8px; color: var(--text); text-decoration: none; font-weight: 500; font-size: 0.94rem; }
 .sidebar nav a:hover { background: var(--bg); }
 .sidebar nav a.active { background: var(--accent); color: var(--accent-text); }
 .side-foot { margin-top: auto; display: grid; gap: 10px; padding: 14px 4px 0; border-top: 1px solid var(--border); }
