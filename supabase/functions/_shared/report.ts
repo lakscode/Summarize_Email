@@ -14,7 +14,7 @@ export interface ReportItem {
   web_link: string | null;
 }
 
-const CATEGORY_LABELS: Record<string, string> = {
+export const CATEGORY_LABELS: Record<string, string> = {
   invoice: "Invoice",
   utility_bill: "Utility bill",
   vendor_info: "Vendor info",

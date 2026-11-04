@@ -9,16 +9,76 @@
 //   POST  {action: "preview", mailbox_id, lookback_hours} -> { new, already_processed, ... } to confirm a re-check first
 //   PATCH {id, status: "done" | "action_needed"}       -> employee marks an item handled / reopens it; 409 when it
 //         already has that status (someone else changed it first), naming who
+//   PATCH {id, category}                                -> corrects the category (see changeCategory)
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { fail, logApi, logStep } from "../_shared/log.ts";
 import { previewEmail, previewMailbox, processMailbox, processorOf, STATUSES } from "../_shared/process.ts";
+import { CATEGORIES, type MailboxType } from "../_shared/classify.ts";
 import { isNotFound } from "../_shared/mail.ts";
+import { CATEGORY_LABELS } from "../_shared/report.ts";
 import { adminClient, callerUser } from "../_shared/supabase.ts";
+import type { SupabaseClient, User } from "jsr:@supabase/supabase-js@2";
 
 // The email's details copied into its email_processing_log row (a full snapshot, as process.ts writes); also in the
 // PATCH select below.
 const SNAPSHOT_COLUMNS =
   "message_id, received_at, from_name, from_address, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step";
+
+// Someone corrects an email's category to another of its mailbox type's (classify.ts CATEGORIES). Unless it is done,
+// its status follows: "other" has nothing to do, any other category needs action. Nothing is forwarded; a re-check
+// run leaves the correction alone (process.ts recheckable). Logged in email_processing_log like marking done.
+async function changeCategory(user: User, sb: SupabaseClient, id: string, category: string) {
+  // The caller's own client first: RLS says whether they may see (and so change) the email.
+  const { data: email, error } = await sb.from("processed_emails")
+    .select(`id, status, mailbox_id, owner_user_id, subject, mailboxes(email_address, mailbox_type), ${SNAPSHOT_COLUMNS}`)
+    .eq("id", id).maybeSingle();
+  if (error) return await fail("inbox/category", error.message, 500, { userId: user.id, context: { email_id: id } });
+  if (!email) return json({ error: "Email not found" }, 404);
+  const mailbox = email.mailboxes as { email_address?: string; mailbox_type?: MailboxType } | null;
+  const allowed = CATEGORIES[mailbox?.mailbox_type ?? "ap"];
+  if (!allowed.includes(category)) return json({ error: `category must be one of: ${allowed.join(", ")}` }, 400);
+  if (email.category === category) return json({ email: { id, category, status: email.status } });
+
+  const db = adminClient();
+  const processor = await processorOf(db, user.id);
+  const by = { processed_by: user.id, processed_by_email: processor.email ?? user.email ?? null, processed_by_name: processor.name ?? user.email ?? null };
+  const at = new Date().toISOString();
+  const label = (c: string | null) => CATEGORY_LABELS[c ?? ""] ?? c ?? "none";
+  const status = email.status === "done" ? "done" : category === "other" ? "no_action" : "action_needed";
+  // The classifier's next step was for the old category; say what it is now when that changes what to do.
+  const nextStep = status === email.status ? email.next_step
+    : status === "no_action" ? `Changed to ${label(category)} by ${by.processed_by_name}: nothing to do.`
+    : `Changed to ${label(category)} by ${by.processed_by_name}: check it and handle it.`;
+  // Only from the category read above, so a change made meanwhile by someone else isn't overwritten unseen.
+  const { data: updated, error: updateError } = await db.from("processed_emails").update({
+    category, status, next_step: nextStep, ...by, processed_at: at, updated_at: at,
+    category_changed_by: user.id, category_changed_by_name: by.processed_by_name, category_changed_at: at,
+  }).eq("id", id).filter("category", email.category === null ? "is" : "eq", email.category).select("id");
+  if (updateError) return await fail("inbox/category", updateError.message, 500, { userId: user.id, context: { email_id: id } });
+  if (!updated?.length) return json({ error: "Someone else changed this email meanwhile. Reload and try again." }, 409);
+
+  const action = `Category changed from ${label(email.category)} to ${label(category)}`;
+  const logContext = { email_id: id, subject: email.subject, mailbox: mailbox?.email_address ?? null };
+  const { error: logError } = await db.from("email_processing_log").insert({
+    processed_email_id: id,
+    mailbox_id: email.mailbox_id,
+    mailbox_address: mailbox?.email_address ?? null,
+    ...Object.fromEntries(SNAPSHOT_COLUMNS.split(", ").map((c) => [c, (email as Record<string, unknown>)[c]])),
+    category,
+    next_step: nextStep,
+    subject: email.subject,
+    owner_user_id: email.owner_user_id,
+    ...by,
+    processed_at: at,
+    trigger: "user",
+    status,
+    action,
+  });
+  if (logError) await logApi("inbox/category", logError.message, { userId: user.id, level: "warn", context: logContext });
+  await logStep("inbox/category", `"${email.subject || "(no subject)"}": ${action.toLowerCase()} by ${by.processed_by_name ?? "unknown"}`,
+    user.id, { ...logContext, category, status });
+  return json({ email: { id, category, status } });
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -59,7 +119,7 @@ Deno.serve(async (req) => {
     if (req.method === "GET") {
       let query = sb
         .from("processed_emails")
-        .select("id, mailbox_id, received_at, from_name, from_address, subject, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step, action_taken, status, error, processed_by_email, processed_by_name, processed_at")
+        .select("id, mailbox_id, received_at, from_name, from_address, subject, web_link, attachment_names, category, confidence, vendor, invoice_number, amount, due_date, summary, next_step, action_taken, status, error, processed_by_email, processed_by_name, processed_at, category_changed_by_name, category_changed_at")
         .order("received_at", { ascending: false })
         .limit(300);
       const status = url.searchParams.get("status");
@@ -73,6 +133,7 @@ Deno.serve(async (req) => {
 
     if (req.method === "PATCH") {
       const body = await req.json().catch(() => ({}));
+      if (body.id && typeof body.category === "string") return await changeCategory(user, sb, body.id, body.category);
       if (!body.id || !["done", "action_needed"].includes(body.status)) {
         return json({ error: "id and status (done | action_needed) are required" }, 400);
       }

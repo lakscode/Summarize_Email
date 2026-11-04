@@ -80,7 +80,7 @@ async function listInbox(db: Db, mailbox: Mailbox, client: MailClient, hours: nu
   const ids = await client.listInboxIds(new Date(Date.now() - hours * 3600_000), MAX_INBOX);
   const seen: ExistingRow[] = [];
   for (let i = 0; i < ids.length; i += 100) { // keeps the request URL short
-    const { data, error } = await db.from("processed_emails").select("id, message_id, status, action_taken, processed_at, updated_at")
+    const { data, error } = await db.from("processed_emails").select("id, message_id, status, action_taken, processed_at, updated_at, category_changed_at")
       .eq("mailbox_id", mailbox.id).in("message_id", ids.slice(i, i + 100));
     if (error) throw new Error(error.message);
     seen.push(...data as ExistingRow[]);
@@ -88,9 +88,10 @@ async function listInbox(db: Db, mailbox: Mailbox, client: MailClient, hours: nu
   return { ids, seenById: new Map(seen.map((r) => [r.message_id, r])) };
 }
 
-// Already processed emails that a re-check classifies again: never ones that were forwarded or marked done.
+// Already processed emails that a re-check classifies again: never ones that were forwarded, marked done, or whose
+// category someone corrected in the Inbox.
 const recheckable = (row: ExistingRow) =>
-  RECHECKABLE.includes(row.status) && !(row.action_taken ?? "").startsWith("Forwarded");
+  RECHECKABLE.includes(row.status) && !(row.action_taken ?? "").startsWith("Forwarded") && !row.category_changed_at;
 const staleClaim = (row: ExistingRow) =>
   row.status === "processing" && Date.now() - new Date(row.updated_at).getTime() > STALE_CLAIM_MS;
 
@@ -382,6 +383,7 @@ interface Mailbox {
 }
 interface ExistingRow {
   id: string; message_id: string; status: string; action_taken: string | null; processed_at: string | null; updated_at: string;
+  category_changed_at: string | null;
 }
 
 // Claims the message for this run: inserts a new row, or (re-check) flips an existing row back to processing

@@ -175,6 +175,11 @@
       other: "Other",
       not_relevant: "Not relevant",
     };
+    // The categories an email can be changed to, by its mailbox's type (as _shared/classify.ts CATEGORIES).
+    const CATEGORIES_BY_TYPE = {
+      ap: ["invoice", "utility_bill", "vendor_info", "statement", "other"],
+      ar: ["remittance", "purchase_order", "customer_inquiry", "other"],
+    };
     const STATUS_LABELS = {
       processing: "Processing",
       action_needed: "Action needed",
@@ -482,6 +487,7 @@
         ["Action taken", e.action_taken],
         ["Error", e.error],
         ["Last processed", e.processed_at && `${formatWhen(e.processed_at)}${processedBy ? ` by ${processedBy}` : ""}`],
+        ["Category changed", e.category_changed_at && `${formatWhen(e.category_changed_at)}${e.category_changed_by_name ? ` by ${e.category_changed_by_name}` : ""}`],
       ].filter(([, v]) => v);
       const rows = [tr];
       if (facts.length) {
@@ -501,7 +507,9 @@
         links.append(historyLink, logsLink);
         // Who changed it and when (runs, marked done, reopened), loaded the first time the row opens.
         const statusHistory = el("div", "status-history");
-        cell.append(dl, statusHistory, links);
+        cell.append(dl);
+        if (e.status !== "processing") cell.append(categoryPicker(e));
+        cell.append(statusHistory, links);
         detailRow.append(cell);
         rows.push(detailRow);
 
@@ -538,6 +546,26 @@
         actions.prepend(toggle);
       }
       return rows;
+    }
+
+    // Corrects the email's category when the classifier got it wrong. Unless the email is done, its status follows:
+    // Other needs no action, any other category does. Nothing is forwarded.
+    function categoryPicker(e) {
+      const type = mailboxes.find((m) => m.id === e.mailbox_id)?.mailbox_type || "ap";
+      const label = el("label", "category-picker", "Change category");
+      const select = el("select");
+      if (!e.category) select.append(new Option("Choose…", "", true, true));
+      for (const c of CATEGORIES_BY_TYPE[type]) select.append(new Option(CATEGORY_LABELS[c] || c, c, false, c === e.category));
+      select.addEventListener("change", async () => {
+        if (!select.value || select.value === e.category) return;
+        select.disabled = true;
+        const { error } = await callApi("inbox", { method: "PATCH", body: { id: e.id, category: select.value } });
+        if (error) showMessage(`Could not change the category: ${error}`, "error");
+        else showMessage(`"${e.subject || "(no subject)"}" is now ${CATEGORY_LABELS[select.value] || select.value}.`, "ok");
+        await loadEmails();
+      });
+      label.append(select);
+      return label;
     }
 
     // The email's status history, oldest first: each run that processed it and each time someone marked it done or
