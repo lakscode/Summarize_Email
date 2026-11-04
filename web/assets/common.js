@@ -480,8 +480,8 @@ function notificationItem(e) {
   if (e.status === "done") li.classList.add("done");
   const a = document.createElement("a");
   // Opens this email in the Inbox: its mailbox selected, the email scrolled to and opened; on "Assigned to me" for the
-  // user's own open tasks, on All for done ones and ones they assigned to someone else (not on that tab).
-  const tab = isMine(e) && e.status !== "done" ? "assigned" : "";
+  // user's own tasks, on All for ones they assigned to someone else (not on that tab).
+  const tab = isMine(e) ? "assigned" : "";
   a.href = pageLink("inbox", tab ? { assigned: "1", mailbox: e.mailbox_id, email: e.id } : { tab: "all", mailbox: e.mailbox_id, email: e.id });
   openTaskOnClick(a, e.mailbox_id, e.id, tab);
   const subject = e.subject || "(no subject)";

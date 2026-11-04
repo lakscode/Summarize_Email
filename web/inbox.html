@@ -479,7 +479,8 @@
         document.getElementById("email-empty").hidden = false;
         return;
       }
-      // "Assigned to me": the caller's open tasks in the selected mailbox only; opening it counts as seeing them.
+      // "Assigned to me": every task assigned to the caller in the selected mailbox (open first, then done); opening it
+      // counts as seeing them.
       const assigned = status === "assigned";
       const query = new URLSearchParams(assigned ? { assigned: "me", mailbox_id: mailboxId } : { mailbox_id: mailboxId, ...(status ? { status } : {}) });
       const { data, error } = await callApi(`inbox?${query}`, { method: "GET" });

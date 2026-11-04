@@ -11,8 +11,8 @@
 //         already has that status (someone else changed it first), naming who
 //   PATCH {id, category}                                -> corrects the category (see changeCategory)
 //   GET   ?assignees=<mailbox id>                       -> { people: [{id, name, email}] } who an email can be assigned to
-//   GET   ?assigned=me&mailbox_id=                      -> { emails, unseen } the caller's open tasks (not done), in that
-//                                                          mailbox (the Inbox tab) or, without mailbox_id, any (the bell)
+//   GET   ?assigned=me&mailbox_id=                      -> { emails, unseen } every task assigned to the caller (done ones
+//                                                          too, open ones first), in that mailbox or, without it, any
 //   PATCH {id, assign_to: <user id> | null}             -> assigns the email to someone / unassigns it (see assignEmail)
 //   POST  {action: "seen", mailbox_id?}                 -> the caller has seen their assigned tasks (of that mailbox only,
 //                                                          when given), so they no longer count as new on the bell;
@@ -218,14 +218,16 @@ Deno.serve(async (req) => {
     }
 
     if (req.method === "GET" && url.searchParams.get("assigned") === "me") {
-      // The caller's own client: an email of a mailbox they have since lost access to drops out.
-      let query = sb.from("processed_emails").select(LIST_COLUMNS)
-        .eq("assigned_to", user.id).neq("status", "done");
+      // The caller's own client: an email of a mailbox they have since lost access to drops out. Done ones are kept: an
+      // email can be assigned after it was done (e.g. forwarded automatically, then given to someone to check).
+      let query = sb.from("processed_emails").select(LIST_COLUMNS).eq("assigned_to", user.id);
       const mailboxId = url.searchParams.get("mailbox_id");
       if (mailboxId) query = query.eq("mailbox_id", mailboxId);
       const { data, error } = await query.order("assigned_at", { ascending: false }).limit(300);
       if (error) return await fail("inbox/assigned", error.message, 500, { userId: user.id });
-      return json({ emails: data, unseen: data.filter((e) => !e.assignment_seen_at).length });
+      // Open tasks first, then done ones; newest assigned first within each.
+      const emails = [...data.filter((e) => e.status !== "done"), ...data.filter((e) => e.status === "done")];
+      return json({ emails, unseen: data.filter((e) => !e.assignment_seen_at).length });
     }
 
     if (req.method === "GET") {
